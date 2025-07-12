@@ -50,7 +50,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 try:
     import optuna
-    from optuna.samplers import TPESampler, NSGAIISampler
+    from optuna.samplers import TPESampler, NSGAIISampler, RandomSampler
     from optuna.trial import TrialState
 except ImportError as exc:  # pragma: no cover
     sys.exit("[fatal] Optuna missing – install via `pip install optuna`.")

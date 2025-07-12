@@ -173,7 +173,7 @@ class BuildProject:
 @dataclasses.dataclass
 class SearchSpec:
     method: str = "optuna"  # only optuna for now
-    sampler: str = "tpe"     # "tpe" | "nsga3"
+    sampler: str = "tpe"     # "tpe" | "nsga3" | "rs"
     n_startup_trials: int = 10  # for TPE
     population_size: int = 50
     random_seed: int | None = None
