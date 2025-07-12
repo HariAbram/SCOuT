@@ -48,17 +48,6 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 
 ###############################################################################
-# Third‑party imports                                                         #
-###############################################################################
-
-try:
-    import optuna
-    from optuna.samplers import TPESampler, NSGAIISampler
-    from optuna.trial import TrialState
-except ImportError as exc:  # pragma: no cover
-    sys.exit("[fatal] Optuna missing – install via `pip install optuna`.")
-
-###############################################################################
 # Type helpers                                                                #
 ###############################################################################
 
