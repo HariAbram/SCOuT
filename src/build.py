@@ -70,7 +70,7 @@ MetricDict = Dict[str, Number]
 # Local imports                                                               #
 ###############################################################################
 
-from config import BuildProject
+from src.config import BuildProject
 
 ###############################################################################
 # Shell helpers                                                               #

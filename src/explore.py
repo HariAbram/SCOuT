@@ -69,10 +69,10 @@ MetricDict = Dict[str, Number]
 # Local imports                                                               #
 ###############################################################################
 
-from config import Config
-from metrics import measure_likwid, measure_perf
-from build import compile_project, compile_single_source
-from misc import suggest_compiler_flags, suggest_env
+from src.config import Config
+from src.metrics import measure_likwid, measure_perf
+from src.build import compile_project, compile_single_source
+from src.misc import suggest_compiler_flags, suggest_env
 
 ###############################################################################
 # Optuna‑driven exploration                                                   #

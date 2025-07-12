@@ -68,8 +68,8 @@ MetricDict = Dict[str, Number]
 # Local imports                                                               #
 ###############################################################################
 
-from config import PerfConfig, MetricSpec, LikwidConfig
-from build import _run
+from src.config import PerfConfig, MetricSpec, LikwidConfig
+from src.build import _run
 
 ###############################################################################
 # Measurement helpers (perf & likwid) – unchanged from original               #

@@ -60,8 +60,8 @@ except ImportError as exc:  # pragma: no cover
 # Local imports                                                               #
 ###############################################################################
 
-from explore import explore_optuna
-from config import Config
+from src.explore import explore_optuna
+from src.config import Config
 
 ###############################################################################
 # Type helpers                                                                #
