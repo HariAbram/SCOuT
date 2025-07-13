@@ -109,7 +109,7 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path)
         cmake_cmd = [
             "cmake", "-S", str(cfg.dir), "-B", str(build_dir),
              f"-DCMAKE_CXX_COMPILER={compiler}",
-             f"-DCMAKE_CXX_FLAGS={flags}",
+             f"-DCMAKE_CXX_FLAGS+={flags}",
              "-DCMAKE_BUILD_TYPE=Release"
             ] + [f"-D{d}" for d in defs]
 
