@@ -120,7 +120,7 @@ def _expand_env(env: Dict[str, Sequence[str]]) -> List[EnvMap]:
     combos = itertools.product(*(normd[k] for k in keys))
     return [{k: str(val) for k, val in zip(keys, combo)} for combo in combos]
 
-def unique_csv_path(path: str | Path) -> Path:
+def unique_csv_path(path: Union[str, Path]) -> Path:
     """
     Return a writable CSV filename.
     If <path> does **not** exist → return as‑is.
