@@ -6,6 +6,8 @@
 import itertools
 import shlex
 import sys
+from pathlib import Path
+from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 ###############################################################################
@@ -117,3 +119,16 @@ def _expand_env(env: Dict[str, Sequence[str]]) -> List[EnvMap]:
     keys = list(normd)
     combos = itertools.product(*(normd[k] for k in keys))
     return [{k: str(val) for k, val in zip(keys, combo)} for combo in combos]
+
+def unique_csv_path(path: str | Path) -> Path:
+    """
+    Return a writable CSV filename.
+    If <path> does **not** exist → return as‑is.
+    Otherwise append an ISO timestamp:  results.csv  → results_20250715‑1423.csv
+    """
+    p = Path(path)
+    if not p.exists():
+        return p
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M")
+    return p.with_stem(f"{p.stem}_{stamp}")

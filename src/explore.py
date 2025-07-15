@@ -72,7 +72,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config
 from src.metrics import measure_likwid, measure_perf
 from src.build import compile_project, compile_single_source
-from src.misc import suggest_compiler_flags, suggest_env
+from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 
 ###############################################################################
 # Optuna‑driven exploration                                                   #
@@ -166,8 +166,9 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     # CSV / SQLite logging
     # ------------------------------------------------------------------
     if cfg.csv_log:
-        print(f"[info] writing CSV log → {cfg.csv_log}")
-        with open(cfg.csv_log, "w", newline="") as fp:
+        csv_path = unique_csv_path(cfg.csv_log)
+        print(f"[info] writing CSV log → {csv_path}")
+        with open(csv_path, "w", newline="") as fp:
             writer = csv.writer(fp)
             # Header
             header = [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"]
