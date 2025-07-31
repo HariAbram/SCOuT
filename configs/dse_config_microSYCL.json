@@ -30,7 +30,6 @@
         "-ffast-math",
         "-funsafe-math-optimizations",
         "-mllvm -enable-misched"
-
     ],
 
   "compiler_params": {                
