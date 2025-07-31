@@ -1,7 +1,7 @@
 # SCOuT – SYCL **C**ompile-time **O**ptimisation & runtime **T**uning
 *(pronounced **“scout”)*  
 
-Design-space exploration for SYCL workloads on Linux.
+Design-space exploration for SYCL workloads.
 
 ---
 
