@@ -1,7 +1,7 @@
 # SCOuT – Systematic **C**ompile-time **O**ptimisation & runtime **T**uning
 *(pronounced **“scout”)*  
 
-Design-space exploration for SYCL workloads.
+Design-space exploration for Parallel workloads.
 
 ---
 
