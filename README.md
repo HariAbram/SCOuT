@@ -24,4 +24,4 @@ git clone https://github.com/HariAbram/SCOuT.git
 cd SCOuT
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt                
-python main.py configs/minimal.json --trials 100
+python main.py configs/dse_config.json --trials 100
