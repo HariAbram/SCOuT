@@ -8,7 +8,7 @@
 *.idea
 *.o
 *.so
-*.json
+#*.json
 */bin/*
 */*/bin/*
 *.data
