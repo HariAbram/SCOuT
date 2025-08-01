@@ -21,7 +21,7 @@ Design-space exploration for Parallel workloads.
 
 ```bash
 git clone https://github.com/HariAbram/SCOuT.git
-cd scout
+cd SCOuT
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt                
 python main.py configs/minimal.json --trials 100
