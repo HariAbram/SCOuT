@@ -1,4 +1,4 @@
-# SCOuT – SYCL **C**ompile-time **O**ptimisation & runtime **T**uning
+# SCOuT – Systematic **C**ompile-time **O**ptimisation & runtime **T**uning
 *(pronounced **“scout”)*  
 
 Design-space exploration for SYCL workloads.
