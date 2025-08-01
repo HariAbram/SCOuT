@@ -12,7 +12,7 @@ Design-space exploration for Parallel workloads.
 | **Builds anything**  |  a single `.cpp` file *or* a full CMake/Make project (AdaptiveCpp, Clang, DPC++ …).
 | **Explores flags & env**  | –flag bundles, per-option parameters, on/off flag pools, CMake `-D` switches, conditional env-vars.
 | **Measures with LIKWID or perf**  | TIMERS, CPI, custom PMCs or any perf event set.
-| **Multi-objective search**  | Optuna **TPE** (Bayesian), **NSGA-II** (Pareto genetic), **RF** (Random-Forest surrogate).
+| **Multi-objective search**  | Optuna **TPE** (Bayesian), **NSGA-III** (Pareto genetic), **RF** (Random-Forest surrogate).
 | **CSV archive**  |  full metrics × config matrix for offline analysis.
 
 ---
