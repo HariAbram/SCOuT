@@ -1,1 +1,2 @@
 optuna==4.4.0
+pip3 install cmaes
