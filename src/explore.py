@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 try:
     import optuna
-    from optuna.samplers import TPESampler, NSGAIIISampler, RandomSampler
+    from optuna.samplers import TPESampler, NSGAIIISampler, RandomSampler, CmaEsSampler
     from optuna.trial import TrialState
 except ImportError as exc:  # pragma: no cover
     sys.exit("[fatal] Optuna missing – install via `pip install optuna`.")
@@ -54,6 +54,8 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         sampler = NSGAIIISampler(population_size=cfg.search.population_size,seed=cfg.search.random_seed,)
     if cfg.search.sampler == "rs":
         sampler = RandomSampler(seed=cfg.search.random_seed,)
+    if cfg.search.sampler == "cmaes":
+        sampler = CmaEsSampler(seed=cfg.search.random_seed,)
     else:
         sampler = TPESampler(n_startup_trials=cfg.search.n_startup_trials)
 
