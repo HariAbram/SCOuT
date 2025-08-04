@@ -46,7 +46,7 @@ from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 ###############################################################################
 
 def explore_optuna(cfg: Config, n_trials: int) -> None:
-    workdir_root = Path(tempfile.mkdtemp(prefix="dse_optuna_"))
+    workdir_root = Path(tempfile.mkdtemp(prefix="SCOuT_"))
     print(f"[info] working directory root: {workdir_root}\n")
 
     # Sampler choice
