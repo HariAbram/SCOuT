@@ -6,7 +6,7 @@ for AdaptiveCpp / SYCL workloads.
 
 Highlights
 ----------
-* **Any SYCL build target** – same as the original script (single TU or
+* **Any SYCL build target** – same as the original script (single file or
   full CMake/Make project).
 * **Search space = Cartesian product** of compiler‑flag variants and
   environment sets – represented as discrete indices for Optuna.
