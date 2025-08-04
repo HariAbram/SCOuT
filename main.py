@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dse_multiobj_optuna.py
+"""
 ============================================================
 Multi‑objective, Optuna‑driven design‑space exploration tool
 for AdaptiveCpp / SYCL workloads.
@@ -13,7 +13,7 @@ Highlights
 * **Multi‑objective optimisation** – optimise an arbitrary list of
   metrics, each with its own *min/max* goal.
 * **Bayesian / evolutionary samplers** – choose between Optunaʼs
-  `TPESampler` (Bayesian) or `NSGAIISampler` (evolutionary) from the
+  `TPESampler` (Bayesian) or `NSGAIIISampler` (evolutionary) from the
   JSON.
 * **Pareto front report** – prints the non‑dominated set at the end and
   writes the full trial table to CSV/SQLite.
