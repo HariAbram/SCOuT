@@ -108,8 +108,8 @@ def _normalize_args(raw) -> List[str]:
 
 def _expand_env(env: Dict[str, Sequence[str]]) -> List[EnvMap]:
     """
-    Turn {"OMP_PLACES":["cores","sockets"], "MASK":["a","b"]}
-    into [{'OMP_PLACES':'cores','MASK':'a'}, …]  (Cartesian product).
+    Turn {"OMP_PLACES":["cores","sockets"], "ACPP_VISIBILITY_MASK":["a","b"]}
+    into [{'OMP_PLACES':'cores','ACPP_VISIBILITY_MASK':'a'}, …]  (Cartesian product).
     """
     if not env:
         return [{}]
