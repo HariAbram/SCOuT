@@ -98,5 +98,6 @@
     },
 
   "runs": 5,                                 
-  "csv_log": "results.csv"                
+  "csv_log": "results.csv",
+  "failed_builds":"failed_builds.csv"            
 }

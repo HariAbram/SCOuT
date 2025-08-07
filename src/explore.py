@@ -52,9 +52,9 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     # Sampler choice
     if cfg.search.sampler == "nsga3":
         sampler = NSGAIIISampler(population_size=cfg.search.population_size,seed=cfg.search.random_seed,)
-    if cfg.search.sampler == "rs":
+    elif cfg.search.sampler == "rs":
         sampler = RandomSampler(seed=cfg.search.random_seed,)
-    if cfg.search.sampler == "cmaes":
+    elif cfg.search.sampler == "cmaes":
         sampler = CmaEsSampler(seed=cfg.search.random_seed,)
     else:
         sampler = TPESampler(n_startup_trials=cfg.search.n_startup_trials)
@@ -80,9 +80,9 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         workdir = workdir_root / f"trial_{trial.number:05d}"
         workdir.mkdir()
         if cfg.source:
-            binary_path = compile_single_source(cfg.compiler, cfg.source, flags, workdir / "a.out")
+            binary_path = compile_single_source(cfg.compiler, cfg.source, flags, workdir / "a.out", trial)
         else:
-            binary_path = compile_project(cfg.project, cfg.compiler, flags, workdir)
+            binary_path = compile_project(cfg.project, cfg.compiler, flags, workdir, trial)
         if not binary_path:
             raise optuna.TrialPruned("build failed")
 
@@ -156,6 +156,21 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                 row = list(t.values) + [t.user_attrs.get("compiler_flags", ""), json.dumps(t.user_attrs.get("env", {})), t.user_attrs.get("binary","")]
                 row += [metrics.get(k, "") for k in sorted(extra_metrics)]
                 writer.writerow(row)
+
+    failed   = study.get_trials(states=(TrialState.FAIL,))
+    if failed:
+        with open(cfg.fail_log, "w", newline="") as fp:
+            writer = csv.writer(fp)
+            writer.writerow(["trial","flags","env","reason","log"])
+            for t in failed:
+                writer.writerow([
+                    t.number,
+                    t.user_attrs.get("compiler_flags"),
+                    json.dumps(t.user_attrs.get("env")),
+                    t.system_attrs.get("fail_reason"),
+                    t.system_attrs.get("build_log"),
+                ])
+    
 
     if cfg.sqlite_log:
         storage = getattr(study, "storage", None) or getattr(study, "_storage", None)

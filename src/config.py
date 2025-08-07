@@ -178,6 +178,7 @@ class Config:
     runs: int
     # CSV / SQLite log paths
     csv_log: Optional[str]
+    fai_log_log: Optional[str]
     sqlite_log: Optional[str]
     compiler_flag_pool: List[str] = dataclasses.field(default_factory=list)
 
@@ -246,5 +247,6 @@ class Config:
             search=SearchSpec.from_dict(raw.get("search", {})),
             runs=raw.get("runs"),
             csv_log=raw.get("csv_log"),
+            fail_log=raw.get("failed_builds"),
             sqlite_log=raw.get("sqlite_log"),
         )

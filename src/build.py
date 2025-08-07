@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 from statistics import mean, variance
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
-
+import optuna
 
 ###############################################################################
 # Type helpers                                                                #
@@ -47,13 +47,28 @@ def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | Non
         check=False,
     )
 
+def _save_log(workdir: Path, trial: optuna.Trial,
+              step: str, proc) -> None:
+    """Write cmd stdout/stderr → file and annotate trial."""
+    log_dir = workdir / "build_logs"
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"trial_{trial.number:05d}_{step}.log"
+    log_path.write_text(proc.stdout + "\n" + proc.stderr)
+
+    trial.set_system_attr("fail_reason", f"{step} exited {proc.returncode}")
+    trial.set_system_attr("build_log", str(log_path))
+
 ###############################################################################
 # Build logic (identical to original)                                         #
 ###############################################################################
 
-def compile_single_source(compiler: str, src: Path, flags: str, out: Path) -> Optional[Path]:
+def compile_single_source(compiler: str, src: Path, flags: str, out: Path, trial: optuna.Trial) -> Optional[Path]:
     cmd = f"{compiler} {flags} {shlex.quote(str(src))} -o {shlex.quote(str(out))}"
-    return out if _run(cmd).returncode == 0 else None
+    proc = _run(cmd)
+    if proc.returncode:
+        _save_log(out, trial, "make", proc)
+        return None
+    return out if proc.returncode == 0 else None
 
 
 def _last_executable(root: Path) -> Optional[Path]:
@@ -67,7 +82,7 @@ def _last_executable(root: Path) -> Optional[Path]:
     return latest
 
 
-def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path) -> Optional[Path]:
+def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path, trial: optuna.Trial) -> Optional[Path]:
     if cfg.build_system == "cmake":
         build_dir = workdir / f"cmake_{uuid.uuid4().hex[:8]}"
         build_dir.mkdir()
@@ -80,14 +95,19 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path)
              "-DCMAKE_BUILD_TYPE=Release"
             ] + [f"-D{d}" for d in defs]
 
-        if _run(cmake_cmd).returncode:
+        proc = _run(cmake_cmd)
+        if proc.returncode:
+            _save_log(workdir, trial, "cmake_config", proc)
             return None
         
         build_cmd = ["cmake", "--build", str(build_dir), "--parallel"]
         if cfg.target:
             build_cmd += ["--target", cfg.target]
-        if _run(build_cmd).returncode:
+        proc = _run(build_cmd)
+        if proc.returncode:
+            _save_log(workdir, trial, "cmake_build", proc)
             return None
+        
         return (build_dir / cfg.target) if cfg.target else _last_executable(build_dir)
 
     if cfg.build_system == "make":
@@ -97,8 +117,12 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path)
             build_cmd.append(f"{var}={val}")
         if cfg.target:
             build_cmd.append(cfg.target)
-        if _run(build_cmd, cwd=cfg.dir).returncode:
+
+        proc = _run(build_cmd, cwd=cfg.dir)
+        if proc.returncode:
+            _save_log(workdir, trial, "make", proc)
             return None
+        
         return (cfg.dir / cfg.target) if cfg.target else _last_executable(cfg.dir)
 
     raise ValueError(f"unknown build_system '{cfg.build_system}'")
