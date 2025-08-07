@@ -178,7 +178,7 @@ class Config:
     runs: int
     # CSV / SQLite log paths
     csv_log: Optional[str]
-    fai_log_log: Optional[str]
+    fail_log: Optional[str]
     sqlite_log: Optional[str]
     compiler_flag_pool: List[str] = dataclasses.field(default_factory=list)
 
