@@ -91,9 +91,15 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
         cmake_cmd = [
             "cmake", "-S", str(cfg.dir), "-B", str(build_dir),
              f"-DCMAKE_CXX_COMPILER={compiler}",
-             f"-DCMAKE_CXX_FLAGS+={flags}",
              "-DCMAKE_BUILD_TYPE=Release"
-            ] + [f"-D{d}" for d in defs]
+            ] 
+        
+        if cfg.cmake_flag_vars:
+            for var in cfg.cmake_flag_vars:
+                cmake_cmd += [f"-D{var}+={flags}"]
+        
+        if cfg.cmake_defs:
+            cmake_cmd +=[f"-D{d}" for d in defs]
 
         proc = _run(cmake_cmd)
         if proc.returncode:
@@ -112,7 +118,10 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
 
     if cfg.build_system == "make":
         _run(["make", "clean"], cwd=cfg.dir)
-        build_cmd = ["make", f"CXX={compiler}", f"CXXFLAGS+={flags}", "-j"]
+        build_cmd = ["make", f"CXX={compiler}", "-j"]
+
+        if flags:
+            build_cmd.append(f"{cfg.make_flags_var}+={flags}")
         for var, val in cfg.make_vars.items():
             build_cmd.append(f"{var}={val}")
         if cfg.target:

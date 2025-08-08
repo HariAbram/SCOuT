@@ -6,7 +6,7 @@
 CC        = acpp
 LAUNCHER=
 
-OPTIMIZE  = yes
+OPTIMIZE  = no
 DEBUG     = no
 OUTPUT    = no
 

@@ -5,10 +5,11 @@
     "dir": "/cephyr/users/hariv/Vera/SYCL-benchmarks/microSYCL",      
     "build_system": "make",    
     "target": "",
+    "make_flags_var":"CXX_FLAGS",
     "make_vars": {                    
-      "MY_DEFINE": "1",
-      "ANOTHER_VAR": "foo"
-    }          
+      "MY_DEFINE": "1"
+    },
+    "cmake_flag_vars": ["EXTRA_FLAGS", "CMAKE_CXX_FLAGS"]        
   },
 
   "source": "",                

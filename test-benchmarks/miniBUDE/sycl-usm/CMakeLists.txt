@@ -95,7 +95,6 @@ separate_arguments(CXX_EXTRA_LINKER_FLAGS)
 
 target_compile_options(bude
         PUBLIC
-        -O3
         -Wall
         -Wextra
         -Wcast-align

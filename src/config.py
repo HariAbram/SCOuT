@@ -112,7 +112,12 @@ class BuildProject:
     build_system: str = "cmake"  # "cmake" | "make"
     target: Optional[str] = None
     make_vars: Dict[str, str] = dataclasses.field(default_factory=dict)
+    make_flags_var: str = "CXXFLAGS"
+
     cmake_defs: List[str] = dataclasses.field(default_factory=list)
+    cmake_flag_vars: List[str] = dataclasses.field(       
+        default_factory=lambda: ["CMAKE_CXX_FLAGS"]
+    )
 
     @classmethod
     def from_dict(cls, d: Dict) -> "BuildProject":
@@ -121,6 +126,8 @@ class BuildProject:
             build_system=d.get("build_system", "cmake"),
             target=d.get("target"),
             make_vars=d.get("make_vars", {}),
+            make_flags_var=d.get("make_flags_var", "CXXFLAGS"),
+            cmake_flag_vars=d.get("cmake_flag_vars", ["CMAKE_CXX_FLAGS"]),
             cmake_defs=d.get("cmake_defs", []),
         )
 
