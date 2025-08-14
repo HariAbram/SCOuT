@@ -50,6 +50,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     print(f"[info] working directory root: {workdir_root}\n")
 
     # Sampler choice
+    is_multi = len(cfg.objectives) > 1
     if cfg.search.sampler == "nsga3":
         sampler = NSGAIIISampler(population_size=cfg.search.population_size,seed=cfg.search.random_seed,)
     elif cfg.search.sampler == "rs":
@@ -57,7 +58,15 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     elif cfg.search.sampler == "cmaes":
         sampler = CmaEsSampler(seed=cfg.search.random_seed,)
     else:
-        sampler = TPESampler(n_startup_trials=cfg.search.n_startup_trials)
+        startup = cfg.search.n_startup_trials or 0
+        if is_multi and startup < 5:
+            print("[info] MOTPE bootstrap: bumping n_startup_trials → 5")
+            startup = 5
+        sampler = TPESampler(n_startup_trials=cfg.search.n_startup_trials,
+                            multivariate=True,
+                            group=True,
+                            seed=cfg.search.random_seed
+                            )
 
     directions = ["minimize" if o.goal == "min" else "maximize" for o in cfg.objectives]
     study = optuna.create_study(sampler=sampler, directions=directions)
