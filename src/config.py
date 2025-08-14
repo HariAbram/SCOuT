@@ -60,7 +60,7 @@ class PerfConfig:
 @dataclasses.dataclass
 class MetricSpec:
     name: str                      # row name in LIKWID report
-    agg: str = "avg"               # "avg" | "max" | "min"
+    agg: str = "avg"               # "avg" | "max" | "min" | "median"
     var: bool = False              # also compute variance?
 
     @classmethod
@@ -164,6 +164,7 @@ class Config:
     compiler_flags_base: str
     compiler_flags: List[str]
     compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]]
+    compiler_params_select: Dict[str, Any] = dataclasses.field(default_factory=dict)
     
 
     # Program arguments and environment sets
