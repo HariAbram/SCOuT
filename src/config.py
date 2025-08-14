@@ -159,26 +159,25 @@ class Config:
     source: Optional[Path]
     project: Optional[BuildProject]
 
+    # Program arguments and environment sets
+    program_args: List[str] = dataclasses.field(default_factory=list)
+
     # Compiler flags
     compiler: str
     compiler_flags_base: str
-    compiler_flags: List[str]
-    compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]]
+    compiler_flags: List[str] = dataclasses.field(default_factory=list)
+    compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]] = dataclasses.field(default_factory=dict)
     compiler_params_select: Dict[str, Any] = dataclasses.field(default_factory=dict)
     
-
-    # Program arguments and environment sets
-    program_args: List[str]
-    #env: Dict[str, List[str]] 
-    #env_sets: List[EnvMap]
-    env: Dict[str, Union[List[str], Dict[str, Any]]]
+    #Environment variables
+    env: Dict[str, Union[List[str], Dict[str, Any]]] = dataclasses.field(default_factory=dict)
 
     # Backend‑specific blocks
     perf: Optional[PerfConfig]
     likwid: Optional[LikwidConfig]
 
     # Objectives (≥1)
-    objectives: List[Objective]
+    objectives: List[Objective] = dataclasses.field(default_factory=list)
 
     # Search algorithm details
     search: SearchSpec
@@ -207,6 +206,24 @@ class Config:
         project = raw.get("project")
         if bool(source) == bool(project):
             raise ValueError("Provide exactly one of 'source' or 'project'.")
+        
+        # Compiler flags
+        def _validate_params_select(sel: Dict[str, Any], available: List[str]) -> Dict[str, Any]:
+            if not sel:
+                return {}
+            if "k" in sel and ("min" in sel or "max" in sel):
+                raise ValueError("compiler_params_select: use either 'k' or 'min/max', not both")
+            if "always" in sel:
+                unknown = [k for k in sel["always"] if k not in available]
+                if unknown:
+                    print(f"[warn] compiler_params_select.always has unknown keys: {unknown}")
+            return sel
+        
+        compiler_params = raw.get("compiler_params", {})
+        compiler_params_select = _validate_params_select(
+            raw.get("compiler_params_select", {}),
+            list(compiler_params.keys())
+        )
 
         # Environment space
         env_schema = raw.get("env")
@@ -245,7 +262,8 @@ class Config:
             compiler=raw.get("compiler", "acpp"),
             compiler_flags_base=raw.get("compiler_flags_base", ""),
             compiler_flags=raw.get("compiler_flags", []),
-            compiler_params = raw.get("compiler_params", {}),
+            compiler_params = compiler_params,
+            compiler_params_select = compiler_params_select,
             compiler_flag_pool  = raw.get("compiler_flag_pool", []),
             program_args=program_args,
             env=env_schema,
