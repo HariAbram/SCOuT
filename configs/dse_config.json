@@ -47,6 +47,12 @@
             "values": [true, false]
         }
     },
+    
+  "compiler_params_select": {
+		"min": 0,          
+		"max": 5,          
+		"always": ["-march"]   
+	},
 
   "env": {
         "ACPP_VISIBILITY_MASK": ["omp", "ocl"],
