@@ -160,24 +160,25 @@ class Config:
     project: Optional[BuildProject]
 
     # Program arguments and environment sets
-    program_args: List[str] = dataclasses.field(default_factory=list)
+    program_args: List[str] 
 
     # Compiler flags
-    compiler: str = dataclasses.field(default_factory=str)
-    compiler_flags_base: str = dataclasses.field(default_factory=str)
-    compiler_flags: List[str] = dataclasses.field(default_factory=list)
-    compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]] = dataclasses.field(default_factory=dict)
-    compiler_params_select: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    compiler: str 
+    compiler_flags_base: str 
+    compiler_flags: List[str] 
+    compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]] 
+    compiler_params_select: Dict[str, Any] 
+    compiler_flag_pool: List[str]
     
     #Environment variables
-    env: Dict[str, Union[List[str], Dict[str, Any]]] = dataclasses.field(default_factory=dict)
+    env: Dict[str, Union[List[str], Dict[str, Any]]] 
 
     # Backend‑specific blocks
     perf: Optional[PerfConfig]
     likwid: Optional[LikwidConfig]
 
     # Objectives (≥1)
-    objectives: List[Objective] = dataclasses.field(default_factory=list)
+    objectives: List[Objective] 
 
     # Search algorithm details
     search: SearchSpec
@@ -187,7 +188,7 @@ class Config:
     csv_log: Optional[str]
     fail_log: Optional[str]
     sqlite_log: Optional[str]
-    compiler_flag_pool: List[str] = dataclasses.field(default_factory=list)
+     
 
     # ------------------------------------------------------------------
     # Factory
