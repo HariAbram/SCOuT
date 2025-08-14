@@ -163,8 +163,8 @@ class Config:
     program_args: List[str] = dataclasses.field(default_factory=list)
 
     # Compiler flags
-    compiler: str
-    compiler_flags_base: str
+    compiler: str = dataclasses.field(default_factory=str)
+    compiler_flags_base: str = dataclasses.field(default_factory=str)
     compiler_flags: List[str] = dataclasses.field(default_factory=list)
     compiler_params: Dict[str, Union[List[Any], Dict[str, Any]]] = dataclasses.field(default_factory=dict)
     compiler_params_select: Dict[str, Any] = dataclasses.field(default_factory=dict)
