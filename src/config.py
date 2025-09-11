@@ -186,6 +186,7 @@ class Config:
     runs: int
     # CSV / SQLite log paths
     csv_log: Optional[str]
+    pareto_log: Optional[str]
     fail_log: Optional[str]
     sqlite_log: Optional[str]
      
@@ -274,6 +275,7 @@ class Config:
             search=SearchSpec.from_dict(raw.get("search", {})),
             runs=raw.get("runs"),
             csv_log=raw.get("csv_log"),
+            pareto_log=raw.get("pareto_log"),
             fail_log=raw.get("failed_builds"),
             sqlite_log=raw.get("sqlite_log"),
         )

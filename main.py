@@ -49,6 +49,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 from src.explore import explore_optuna
 from src.config import Config
+from src.misc import export_pareto_front
 
 ###############################################################################
 # Type helpers                                                                #
@@ -67,6 +68,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="AdaptiveCpp/SYCL multi‑objective explorer with Optuna")
     parser.add_argument("config", type=Path, help="Path to JSON config file")
     parser.add_argument("--trials", type=int, default=50, help="Number of Optuna trials")
+    parser.add_argument("--pareto-log", action="store_true", help="Store pareto front)")
+
     args = parser.parse_args()
 
     cfg = Config.load(args.config)

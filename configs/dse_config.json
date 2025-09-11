@@ -106,5 +106,6 @@
 
   "runs": 5,                                 
   "csv_log": "results.csv",
+  "pareto_log": "pareto.csv",
   "failed_builds":"failed_builds.csv"            
 }

@@ -71,6 +71,52 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     directions = ["minimize" if o.goal == "min" else "maximize" for o in cfg.objectives]
     study = optuna.create_study(sampler=sampler, directions=directions)
 
+    # --- Optional: pick a Pareto CSV path (only for multi-objective) ---------
+    pareto_path: Optional[Path] = None
+    if is_multi:
+        dest = getattr(cfg, "pareto_csv", None)
+        if dest:
+            pareto_path = Path(dest)
+        elif cfg.csv_log:
+            base = Path(cfg.csv_log)
+            pareto_path = base.with_name(f"{base.stem}_pareto.csv")
+        else:
+            pareto_path = workdir_root / "pareto.csv"
+
+    def _export_pareto_front(study: optuna.study.Study, out_csv: Path) -> None:
+        """Write current Pareto set to CSV (overwrites on each call)."""
+        try:
+            front = study.best_trials  # Optuna ≥ 3.x
+        except AttributeError:
+            from optuna.visualization._pareto_front import _get_pareto_front_trials
+            front = _get_pareto_front_trials(study)
+        if not front:
+            return
+        # Collect any extra metric keys stored in user_attrs["metrics"].
+        extra_metrics: set[str] = set()
+        for t in front:
+            extra_metrics.update((t.user_attrs.get("metrics") or {}).keys())
+        header = [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"] + sorted(extra_metrics)
+        with open(out_csv, "w", newline="") as fp:
+            w = csv.writer(fp)
+            w.writerow(header)
+            for t in front:
+                if t.values is None:
+                    continue
+                metrics: MetricDict = t.user_attrs.get("metrics", {})
+                row = list(t.values) + [
+                    t.user_attrs.get("compiler_flags", ""),
+                    json.dumps(t.user_attrs.get("env", {})),
+                    t.user_attrs.get("binary", ""),
+                ]
+                row += [metrics.get(k, "") for k in sorted(extra_metrics)]
+                w.writerow(row)
+
+    # Live-update Pareto CSV after each completed trial (multi-objective only)
+    def _pareto_cb(study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        if is_multi and pareto_path is not None:
+            _export_pareto_front(study, pareto_path)
+
     def trial_objective(trial: optuna.Trial):
         # --------------------------------------------------------------
         # 1) Sample discrete indices
@@ -125,7 +171,8 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         trial.set_user_attr("binary", str(binary_path))
         return obj_values
 
-    study.optimize(trial_objective, n_trials=n_trials, show_progress_bar=True)
+    study.optimize(trial_objective, n_trials=n_trials, show_progress_bar=True,
+                   callbacks=([_pareto_cb] if is_multi and pareto_path is not None else None))
 
     # ------------------------------------------------------------------
     # Pareto front summary
@@ -140,6 +187,10 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     for t in front:
         print(f"Trial#{t.number}: objectives={t.values} flags='{t.user_attrs['compiler_flags']}' env={t.user_attrs['env']}")
     print("==============================================================\n")
+    
+    if is_multi and pareto_path is not None:
+        _export_pareto_front(study, pareto_path)
+        print(f"[info] Pareto CSV written → {pareto_path}")
 
     # ------------------------------------------------------------------
     # CSV / SQLite logging
