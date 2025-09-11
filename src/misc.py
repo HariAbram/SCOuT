@@ -22,6 +22,8 @@ MetricDict = Dict[str, Number]
 # Misc helpers                                                                #
 ###############################################################################
 
+##### Optuna helpers
+
 def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
     """
     Returns (key_for_logging, flag_string) for a single compiler param.
@@ -136,6 +138,7 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
     return env
 
 
+##### General helpers
 
 def _normalize_args(raw) -> List[str]:
     if raw is None:
