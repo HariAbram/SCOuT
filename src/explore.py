@@ -246,3 +246,8 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
             else:
                 # Persistent storages (SQLite, RDB) don’t need copying
                 print("[info] Study already uses persistent storage – no copy needed")
+
+def explore_synergy(cfg: Config) -> None:
+    # lightweight adapter – calls the new study module
+    from src.studies.synergy_flags import run_synergy_study
+    return run_synergy_study(cfg)

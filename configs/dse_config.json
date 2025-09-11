@@ -84,9 +84,25 @@
         {"metric": "Total_Vectorization", "goal": "max"}
     ],
 
-  "search": { "sampler": "tpe",
+  "search": { "method":"optuna",
+              "sampler": "tpe",
               "population_size": 64,     
-              "random_seed": 42},
+              "random_seed": 42,
+              "study": "synergy"},
+  "synergy": {
+      "base_flags":"-O1",
+      "flag_atoms": ["-funroll-loops","-fno-exceptions","-fno-rtti"],
+      "eval_budget": 400,
+      "strategy": "ga",
+      "ga_pop": 24,
+      "ga_elite": 4,
+      "ga_gens": 18,
+      "ga_mut": 0.25,
+      "max_seq_len": 12,
+      "min_seq_len": 4,
+      "epsilon": 0.0,
+      "out_dir": "out/synergy_run"
+  },
 
   "likwid": {
         "group": "SCOuT", 

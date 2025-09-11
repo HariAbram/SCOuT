@@ -47,9 +47,8 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 # Local imports                                                               #
 ###############################################################################
 
-from src.explore import explore_optuna
+from src.explore import explore_optuna, explore_synergy
 from src.config import Config
-from src.misc import export_pareto_front
 
 ###############################################################################
 # Type helpers                                                                #
@@ -74,7 +73,12 @@ def main() -> None:
 
     cfg = Config.load(args.config)
 
-    explore_optuna(cfg, args.trials)
+    if getattr(getattr(cfg, "search", object()), "study", "") == "synergy":
+      explore_synergy(cfg)
+    else:
+      explore_optuna(cfg, args.n_trials)
+
+    #explore_optuna(cfg, args.trials)
 
 
 if __name__ == "__main__":
