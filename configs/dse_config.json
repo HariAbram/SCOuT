@@ -93,7 +93,7 @@
       "base_flags":"-O1",
       "flag_atoms": ["-funroll-loops","-fno-exceptions","-fno-rtti"],
       "eval_budget": 400,
-      "strategy": "ga",
+      "strategy": "greedy",
       "ga_pop": 24,
       "ga_elite": 4,
       "ga_gens": 18,
@@ -102,6 +102,18 @@
       "min_seq_len": 4,
       "epsilon": 0.0,
       "out_dir": "out/synergy_run"
+  },
+
+  "wavefront": {
+      "flag_atoms": ["-O2","-O3","-funroll-loops","-fno-exceptions","-fno-rtti"],
+      "base_flags": ["-O1"],
+      "max_k": 3,
+      "mode": "beam",
+      "beam_width": 16,
+      "per_wave_cap": null,
+      "stop_if_no_improve": true,
+      "improvement_eps": 0.0,
+      "env": { }
   },
 
   "likwid": {

@@ -416,7 +416,7 @@ def run_synergy_study(cfg: Config) -> None:
     atoms = _collect_flag_atoms(cfg, params)
     print(f"[synergy] candidate flag atoms: {len(atoms)}")
 
-    base_env: Dict[str, str] = {}
+    base_env: Dict[str, str] = dict(getattr(getattr(cfg, "synergy", object()), "env", {}) or {})
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_synergy_"))
     out_dir = Path(params.out_dir or workroot)
     out_dir.mkdir(parents=True, exist_ok=True)

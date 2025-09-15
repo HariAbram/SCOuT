@@ -73,10 +73,14 @@ def main() -> None:
 
     cfg = Config.load(args.config)
 
-    if getattr(getattr(cfg, "search", object()), "study", "") == "synergy":
-      explore_synergy(cfg)
+    study_kind = getattr(getattr(cfg, "search", object()), "study", "").lower()
+    if study_kind in {"wavefront", "wave-front", "wf"}:
+        from src.explore import explore_wavefront
+        explore_wavefront(cfg)
+    elif study_kind == "synergy":
+       explore_synergy(cfg)
     else:
-      explore_optuna(cfg, args.n_trials)
+        explore_optuna(cfg, args.trials)
 
     #explore_optuna(cfg, args.trials)
 
