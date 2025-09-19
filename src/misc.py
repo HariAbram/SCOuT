@@ -89,7 +89,7 @@ def suggest_compiler_flags(trial,
     chosen: List[str] = []
     label_parts: List[str] = []
 
-    # -- 0. base flag
+    # ── 0. base flag
 
     chosen.append(compiler_flags_base)
 
