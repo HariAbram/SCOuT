@@ -14,6 +14,7 @@
 *.data
 /parallel_micro
 *.old
+main
 
 # Packages #
 ############
