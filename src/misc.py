@@ -79,6 +79,7 @@ def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any]) -> List[st
 
 
 def suggest_compiler_flags(trial,
+                           compiler_flags_base: str,
                            variants: List[str],
                            params_schema: Dict[str, Union[List[Any], Dict[str, Any]]],
                            flag_pool: List[str],
@@ -87,6 +88,10 @@ def suggest_compiler_flags(trial,
     
     chosen: List[str] = []
     label_parts: List[str] = []
+
+    # -- 0. base flag
+
+    chosen.append(compiler_flags_base)
 
     # ── 1. Variant strings
     if variants:

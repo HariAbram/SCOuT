@@ -123,6 +123,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         # --------------------------------------------------------------
         flag_key, flags = suggest_compiler_flags(
                             trial,
+                            cfg.compiler_flags_base,
                             cfg.compiler_flags,
                             cfg.compiler_params,
                             cfg.compiler_flag_pool,
