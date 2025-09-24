@@ -77,7 +77,7 @@ def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
 
     raise ValueError(f"Unsupported compiler_param entry for '{opt}'")
 
-def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any], max_k: int | None = None) -> List[str]:
+def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any], max_k: Optional[int] = None) -> List[str]:
     if not sel:                 # default: include ALL params (old behaviour)
         return keys
 
