@@ -128,6 +128,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                             cfg.compiler_params,
                             cfg.compiler_flag_pool,
                             cfg.compiler_params_select,
+                            cfg.search.n_startup_trials,
                         )
         env = suggest_env(trial, cfg.env)
         

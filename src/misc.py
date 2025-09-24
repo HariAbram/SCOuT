@@ -24,6 +24,35 @@ MetricDict = Dict[str, Number]
 
 ##### Optuna helpers
 
+# --- complexity schedule based on trial number ---
+def _complexity_limits(
+    trial,
+    n_startup_trials: int,
+    n_params_total: int,
+    n_pool_total: int,
+) -> tuple[int, int]:
+    """Return (param_cap, pool_cap) for this trial number.
+    Early trials: keep very small; later: gradually relax."""
+    t = int(getattr(trial, "number", 0))
+    if t < n_startup_trials:                 # stage 0
+        return min(1, n_params_total), min(2, n_pool_total)
+    elif t < 3 * n_startup_trials:           # stage 1
+        return min(2, n_params_total), min(4, n_pool_total)
+    else:                                    # stage 2+
+        return n_params_total, n_pool_total
+
+# --- choose up to pool_cap on/off flags using scores ---
+def _select_pool_flags(trial, pool_flags: list[str], pool_cap: int) -> list[str]:
+    """Pick 0..pool_cap booleans from the pool using scores + a sampled k."""
+    if not pool_flags or pool_cap <= 0:
+        return []
+    k = int(trial.suggest_int("pool_k", 0, min(pool_cap, len(pool_flags))))
+    scored = [(float(trial.suggest_float(f"score::pool::{f}", 0.0, 1.0)), f) for f in pool_flags]
+    scored.sort(reverse=True)
+    return [f for _, f in scored[:k]]
+
+
+
 def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
     """
     Returns (key_for_logging, flag_string) for a single compiler param.
@@ -48,7 +77,7 @@ def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
 
     raise ValueError(f"Unsupported compiler_param entry for '{opt}'")
 
-def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any]) -> List[str]:
+def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any], max_k: int | None = None) -> List[str]:
     if not sel:                 # default: include ALL params (old behaviour)
         return keys
 
@@ -58,6 +87,9 @@ def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any]) -> List[st
         k = int(sel["k"])
     else:
         k = trial.suggest_int("params_k", int(sel.get("min", 0)), int(sel.get("max", len(keys))))
+
+    if max_k is not None:
+        k = min(k, max_k)
 
     # scores for a permutation; higher score = more likely to be chosen
     scored = []
@@ -83,7 +115,8 @@ def suggest_compiler_flags(trial,
                            variants: List[str],
                            params_schema: Dict[str, Union[List[Any], Dict[str, Any]]],
                            flag_pool: List[str],
-                           compiler_params_select: Optional[Dict[str, Any]] = None
+                           compiler_params_select: Optional[Dict[str, Any]] = None,
+                           n_startup_trials: int = 10,
                            ) -> Tuple[str, str]:
     
     chosen: List[str] = []
@@ -99,21 +132,36 @@ def suggest_compiler_flags(trial,
         chosen.append(variant)
         label_parts.append(variant)
 
+    param_cap, pool_cap = _complexity_limits(
+        trial,
+        n_startup_trials=n_startup_trials,
+        n_params_total=len(params_schema or {}),
+        n_pool_total=len(flag_pool or []),
+    )
+
     # ── 2. Parametric flags
     param_keys = list(params_schema.keys())
-    active_keys = _select_param_subset(trial, param_keys, compiler_params_select or {})
+    active_keys = _select_param_subset(trial, param_keys, compiler_params_select or {}, max_k=param_cap)
 
     for opt in active_keys:
         key_for_log, flag = _render_one_param(trial, opt, params_schema[opt])
         chosen.append(flag)
         label_parts.append(key_for_log)
 
-    # ── 2. flag pool
-    for flag in flag_pool:
-        use_it = trial.suggest_categorical(flag, [0, 1])
-        if use_it:
-            chosen.append(flag)
-            label_parts.append(flag)
+    # ── 3. flag pool
+
+    pool_list = list(flag_pool or [])
+    picked_pool = _select_pool_flags(trial, pool_list, pool_cap)
+    for f in picked_pool:
+        chosen.append(f)
+        label_parts.append(f)
+
+
+    #for flag in flag_pool:
+    #    use_it = trial.suggest_categorical(flag, [0, 1])
+    #    if use_it:
+    #        chosen.append(flag)
+    #        label_parts.append(flag)
 
     flag_str  = " ".join(chosen)
     pretty_id = "|".join(chosen) or "default"
