@@ -75,6 +75,31 @@ class MetricSpec:
         raise TypeError("metrics entries must be string or object")
 
 
+@dataclasses.dataclass
+class ParserConfig:
+    selector: str = "min"              # "min" | "mean" | "max" | "first" | "last"
+    out_unit: str = "s"               # "ms" | "s" | "us" | "ns"
+    timeout: Optional[int] = None      # seconds; None = no timeout
+    require_any: Optional[List[str]] = None
+    source: str = "both" 
+    patterns: Optional[List[str]] = None
+    log_raw: bool = False                   # save raw out/err on failures
+    log_dir: str = "parser_logs"
+    # If you ever want to override patterns in the future:
+    # patterns: Optional[List[str]] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "ParserConfig":
+        return cls(
+            selector=d.get("selector", "min"),
+            out_unit=d.get("out_unit", "s"),
+            timeout=d.get("timeout"),
+            require_any=d.get("require_any"),
+            source=d.get("source", "both"),
+            patterns=d.get("patterns"),
+            log_raw=bool(d.get("log_raw", False)),
+            log_dir=d.get("log_dir", "parser_logs")
+        )
 
 @dataclasses.dataclass
 class LikwidConfig:
@@ -176,6 +201,7 @@ class Config:
     # Backend‑specific blocks
     perf: Optional[PerfConfig]
     likwid: Optional[LikwidConfig]
+    parser: Optional[ParserConfig] 
 
     # Objectives (≥1)
     objectives: List[Objective] 
@@ -200,7 +226,7 @@ class Config:
             raw = json.load(fp)
 
         backend = raw.get("backend", "likwid").lower()
-        if backend not in {"perf", "likwid"}:
+        if backend not in {"perf", "likwid", "parser"}:
             raise ValueError("backend must be 'perf' or 'likwid'")
 
         # Build description
@@ -271,6 +297,7 @@ class Config:
             env=env_schema,
             perf=PerfConfig.from_dict(raw.get("perf", {})) if backend == "perf" else None,
             likwid=LikwidConfig.from_dict(raw.get("likwid", {})) if backend == "likwid" else None,
+            parser=ParserConfig.from_dict(raw.get("parser", {})) if backend == "parser" else None,
             objectives=objectives,
             search=SearchSpec.from_dict(raw.get("search", {})),
             runs=raw.get("runs"),

@@ -15,6 +15,7 @@
 /parallel_micro
 *.old
 main
+__pycache__
 
 # Packages #
 ############

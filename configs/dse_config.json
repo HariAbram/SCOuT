@@ -49,9 +49,9 @@
     },
     
   "compiler_params_select": {
-		"min": 0,          
-		"max": 5,          
-		"always": ["-march"]   
+      "min": 0,          
+      "max": 5,          
+      "always": ["-march"]   
 	},
 
   "env": {
@@ -78,18 +78,21 @@
     },
 
   "objectives": [
-        {"metric": "CPI",    "goal": "min"},
-        {"metric": "Runtime (RDTSC) [s]", "goal": "min"},
-        {"metric": "Runtime unhalted [s]", "goal": "min"},
-        {"metric": "Total_Vectorization", "goal": "max"}
+      {"metric": "CPI",    "goal": "min"},
+      {"metric": "Runtime (RDTSC) [s]", "goal": "min"},
+      {"metric": "Runtime unhalted [s]", "goal": "min"},
+      {"metric": "Total_Vectorization", "goal": "max"},
+      {"metric": "kernel_time_s", "goal": "min" }
     ],
 
-  "search": { "method":"optuna",
-              "sampler": "tpe",
-              "population_size": 64,     
-              "random_seed": 42,
-              "n_startup_trials" : 10,
-              "study": "synergy"},
+  "search": { 
+      "method":"optuna",
+      "sampler": "tpe",
+      "population_size": 64,     
+      "random_seed": 42,
+      "n_startup_trials" : 10,
+      "study": "synergy"},
+
   "synergy": {
       "base_flags":"-O1",
       "flag_atoms": ["-funroll-loops","-fno-exceptions","-fno-rtti"],
@@ -118,20 +121,27 @@
   },
 
   "likwid": {
-        "group": "SCOuT", 
-        "events":[], 
-        "metrics":[{ "name": "CPI", "agg": "avg" ,"var":false}, 
-                   { "name": "Runtime (RDTSC) [s]", "agg": "avg" ,"var":false},
-                   { "name": "Runtime unhalted [s]", "agg": "avg" ,"var":false},
-                   { "name": "Total_Vectorization", "agg": "avg" ,"var":false}], 
-        "core_list": ""
+      "group": "SCOuT", 
+      "events":[], 
+      "metrics":[{ "name": "CPI", "agg": "avg" ,"var":false}, 
+                  { "name": "Runtime (RDTSC) [s]", "agg": "avg" ,"var":false},
+                  { "name": "Runtime unhalted [s]", "agg": "avg" ,"var":false},
+                  { "name": "Total_Vectorization", "agg": "avg" ,"var":false}], 
+      "core_list": ""
     },
 
   "perf": {
-        "events": ["cycles","instructions"],
-        "core_list": "",
-        "objective": {"metric": "CPI", "goal": "min"}
+      "events": ["cycles","instructions"],
+      "core_list": "",
+      "objective": {"metric": "CPI", "goal": "min"}
     },
+
+  "parser": {                       
+      "selector": "min",
+      "out_unit": "s",
+      "source" : "both",
+      "require_any": ["kernel", "time"]
+  },
 
   "runs": 5,                                 
   "csv_log": "results.csv",

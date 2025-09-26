@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 import re
-import sys
+import sys, subprocess
 from pathlib import Path
 from statistics import mean, variance, median
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
@@ -27,7 +27,7 @@ from src.config import PerfConfig, MetricSpec, LikwidConfig
 from src.build import _run
 
 ###############################################################################
-# Measurement helpers (perf & likwid) – unchanged from original               #
+# Measurement helpers (perf & likwid)                                         #
 ###############################################################################
 
 _PERF_LINE_RE = re.compile(r"^\s*([0-9,]+)\s+([^\s#]+)")
@@ -171,3 +171,132 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
             if k in buckets:
                 buckets[k].append(v)
     return {k: mean(v) for k, v in buckets.items() if v}
+
+
+###############################################################################
+# Parser helpers (Parsers for HeCBench)                                       #
+###############################################################################
+
+
+# Reuse the same patterns from output_parse.py (simplified here)
+_UNIT = r"\(?\s*(ns|µs|us|ms|s|sec|secs|seconds)\s*\)?"
+_DEFAULT_PATTERNS = [
+    r"\bkernel(?:\s+execution)?\s*time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\b(?:avg|average)\s+kernel\s*time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\btotal\s+kernel\s+time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\btime\s*\(kernel\)[^0-9]*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\btime\s*\(ms\)\s*[:=]\s*([0-9]*\.?[0-9]+)\b",  # unit implied ms
+    r"\bkernel\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\bgpu\s+kernel\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\bdevice\s+execution\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\bexecution\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\bdevice\s+offloading\s+time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\btotal\s+execution\s+time\s+of\s+kernels[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
+    r"\b([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",  # fallback
+]
+
+def _compile_patterns(patterns: Optional[List[str]]) -> List[re.Pattern]:
+    pats = patterns if patterns else _DEFAULT_PATTERNS
+    return [re.compile(p, re.IGNORECASE) for p in pats]
+
+def _to_ms(val_s: str, unit: Optional[str]) -> float:
+    # strip commas in numbers like "12,345.6"
+    v = float(val_s.replace(",", ""))
+    if not unit:
+        return v  # assume ms if unit omitted in some patterns
+    u = unit.lower()
+    if u in ("s", "sec", "seconds"): return v * 1000.0
+    if u in ("ms", "msec"):          return v
+    if u in ("us", "µs"):            return v / 1000.0
+    if u == "ns":                    return v / 1_000_000.0
+    return v  # fallback
+
+def _reduce(vals: List[float], how: str) -> Optional[float]:
+    if not vals:
+        return None
+    h = how.lower()
+    if h == "min":   return min(vals)
+    if h == "max":   return max(vals)
+    if h == "mean":  return mean(vals)
+    if h == "first": return vals[0]
+    if h == "last":  return vals[-1]
+    return min(vals)
+
+def _capture(proc_out: subprocess.CompletedProcess, source: str) -> str:
+    if source == "stdout": return proc_out.stdout or ""
+    if source == "stderr": return proc_out.stderr or ""
+    return ((proc_out.stdout or "") + "\n" + (proc_out.stderr or "")).strip()
+
+def _filter_lines(text: str, require_any: Optional[List[str]]) -> str:
+    if not require_any:
+        return text
+    wanted = []
+    low_needles = [s.lower() for s in require_any]
+    for line in text.splitlines():
+        low = line.lower()
+        if any(n in low for n in low_needles):
+            wanted.append(line)
+    return "\n".join(wanted) if wanted else text  # if filter yields nothing, keep original
+
+def _log_raw(cfg, workdir: Path, idx: int, content: str, why: str) -> None:
+    if not cfg.log_raw:
+        return
+    outdir = workdir / cfg.log_dir
+    outdir.mkdir(parents=True, exist_ok=True)
+    (outdir / f"run_{idx:02d}_{why}.log").write_text(content)
+
+def measure_parser(
+    cfg,                     # ParserConfig
+    bin_path: Path,
+    prog_args: List[str],
+    env: EnvMap,
+    runs: int,
+    workdir: Optional[Path] = None,     # pass the trial workdir if you have it
+) -> MetricDict:
+    regexes = _compile_patterns(cfg.patterns)
+    values_ms: List[float] = []
+
+    argv = [str(bin_path), *prog_args]
+    print(argv)
+
+    for i in range(max(1, runs)):
+        proc = subprocess.run(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, **env},
+            timeout=cfg.timeout,
+            check=False,
+        )
+        text = _capture(proc, cfg.source)
+        text = _filter_lines(text, cfg.require_any)
+
+        found_this_run: List[float] = []
+        for rx in regexes:
+            for m in rx.finditer(text):
+                # groups: num + optional exponent is group 1, unit is last group
+                num_val = m.group(1)
+                unit    = m.groups()[-1] if m.groups() else None
+                try:
+                    found_this_run.append(_to_ms(num_val, unit))
+                except Exception:
+                    continue
+
+        if not found_this_run:
+            _log_raw(cfg, workdir or Path("."), i, text, "no_match")
+        picked = _reduce(found_this_run, cfg.selector)
+        if picked is not None:
+            values_ms.append(picked)
+
+    if not values_ms:
+        raise RuntimeError("Parser backend: no kernel times found in output.")
+
+    avg_ms = mean(values_ms)
+    # provide both ms and requested unit
+    mets: MetricDict = {"kernel_time_ms": avg_ms}
+    if cfg.out_unit != "ms":
+        if cfg.out_unit == "s":  mets["kernel_time_s"]  = avg_ms / 1000.0
+        if cfg.out_unit == "us": mets["kernel_time_us"] = avg_ms * 1000.0
+        if cfg.out_unit == "ns": mets["kernel_time_ns"] = avg_ms * 1_000_000.0
+    return mets
