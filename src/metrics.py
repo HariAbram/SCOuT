@@ -256,19 +256,15 @@ def measure_parser(
     regexes = _compile_patterns(cfg.patterns)
     values_ms: List[float] = []
 
-    argv = [str(bin_path), *prog_args]
-    print(argv)
+    cmd: List[str] = []
+    
+    cmd.append(str(bin_path))
+    cmd.extend(prog_args)
+    
+    print(cmd)
 
     for i in range(max(1, runs)):
-        proc = subprocess.run(
-            argv,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, **env},
-            timeout=cfg.timeout,
-            check=False,
-        )
+        proc = _run(cmd, env=env)
         text = _capture(proc, cfg.source)
         text = _filter_lines(text, cfg.require_any)
 
