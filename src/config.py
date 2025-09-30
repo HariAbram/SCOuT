@@ -77,28 +77,27 @@ class MetricSpec:
 
 @dataclasses.dataclass
 class ParserConfig:
-    selector: str = "min"              # "min" | "mean" | "max" | "first" | "last"
-    out_unit: str = "s"               # "ms" | "s" | "us" | "ns"
-    timeout: Optional[int] = None      # seconds; None = no timeout
-    require_any: Optional[List[str]] = None
-    source: str = "both" 
-    patterns: Optional[List[str]] = None
-    log_raw: bool = False                   # save raw out/err on failures
-    log_dir: str = "parser_logs"
-    # If you ever want to override patterns in the future:
-    # patterns: Optional[List[str]] = None
+    # which lines to use from the SYCL output
+    label: str = "avg"                 # "avg" | "sum"
+    # which kernel ids to consider (None = all ids found)
+    kernels: Optional[List[int]] = None
+    # how to aggregate across multiple kernels
+    aggregate: str = "sum"             # "sum" | "mean" | "max" | "min"
+
+    # launch options to mimic perf/likwid
+    core_list: Optional[str] = None    # e.g. "0-15" → taskset -c
+    prefix: Optional[List[str]] = None # e.g. ["numactl","-N","0","-m","0"]
+    run_cwd: str = "binary_dir"        # "binary_dir" | "project_dir" | "workdir"
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ParserConfig":
         return cls(
-            selector=d.get("selector", "min"),
-            out_unit=d.get("out_unit", "s"),
-            timeout=d.get("timeout"),
-            require_any=d.get("require_any"),
-            source=d.get("source", "both"),
-            patterns=d.get("patterns"),
-            log_raw=bool(d.get("log_raw", False)),
-            log_dir=d.get("log_dir", "parser_logs")
+            label=d.get("label", "avg"),
+            kernels=d.get("kernels"),
+            aggregate=d.get("aggregate", "sum"),
+            core_list=d.get("core_list"),
+            prefix=d.get("prefix"),
+            run_cwd=d.get("run_cwd", "binary_dir"),
         )
 
 @dataclasses.dataclass
@@ -282,6 +281,9 @@ class Config:
         objectives = [Objective.from_dict(o) for o in objs_raw]
         if not objectives:
             raise ValueError("At least one objective required.")
+        
+        # Parser
+        parser_cfg = ParserConfig.from_dict(raw.get("parser", {})) if backend == "parser" else None
 
         return cls(
             backend=backend,
@@ -297,7 +299,7 @@ class Config:
             env=env_schema,
             perf=PerfConfig.from_dict(raw.get("perf", {})) if backend == "perf" else None,
             likwid=LikwidConfig.from_dict(raw.get("likwid", {})) if backend == "likwid" else None,
-            parser=ParserConfig.from_dict(raw.get("parser", {})) if backend == "parser" else None,
+            parser=parser_cfg,
             objectives=objectives,
             search=SearchSpec.from_dict(raw.get("search", {})),
             runs=raw.get("runs"),

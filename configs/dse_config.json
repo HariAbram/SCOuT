@@ -136,11 +136,11 @@
       "objective": {"metric": "CPI", "goal": "min"}
     },
 
-  "parser": {                       
-      "selector": "min",
-      "out_unit": "s",
-      "source" : "both",
-      "require_any": ["kernel", "time"]
+  "parser": {
+    "label": "avg",               
+    "aggregate": "sum",            
+    "core_list": "0-15",
+    "run_cwd": "project_dir"
   },
 
   "runs": 5,                                 

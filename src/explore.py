@@ -37,7 +37,7 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 
 from src.config import Config
-from src.metrics import measure_likwid, measure_perf, measure_parser
+from src.metrics import measure_likwid, measure_perf, measure_parser_sycl
 from src.build import compile_project, compile_single_source
 from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 
@@ -151,7 +151,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
             if cfg.backend == "perf":
                 metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, env)  # type: ignore[arg-type]
             elif cfg.backend == "parser": 
-                metrics = measure_parser(cfg.parser, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
+                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, env, cfg.runs, workdir, cfg.project)
             else:
                 metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]        
         except Exception as exc:

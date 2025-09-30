@@ -23,7 +23,7 @@ MetricDict = Dict[str, Number]
 # Local imports                                                               #
 ###############################################################################
 
-from src.config import PerfConfig, MetricSpec, LikwidConfig
+from src.config import PerfConfig, MetricSpec, LikwidConfig, ParserConfig, BuildProject
 from src.build import _run
 
 ###############################################################################
@@ -177,122 +177,116 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
 # Parser helpers (Parsers for HeCBench)                                       #
 ###############################################################################
 
+# Matches: [SYCL][avg] kernel 2: 0.000664 s over 1000 iters
+_SYCL_RE = re.compile(
+    r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
+    r'(?P<val>[0-9]*\.?[0-9]+)\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
+    re.IGNORECASE | re.MULTILINE
+)
 
-# Reuse the same patterns from output_parse.py (simplified here)
-_UNIT = r"\(?\s*(ns|µs|us|ms|s|sec|secs|seconds)\s*\)?"
-_DEFAULT_PATTERNS = [
-    r"\bkernel(?:\s+execution)?\s*time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\b(?:avg|average)\s+kernel\s*time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\btotal\s+kernel\s+time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\btime\s*\(kernel\)[^0-9]*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\btime\s*\(ms\)\s*[:=]\s*([0-9]*\.?[0-9]+)\b",  # unit implied ms
-    r"\bkernel\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\bgpu\s+kernel\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\bdevice\s+execution\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\bexecution\s*time[^0-9]*[:=]\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\bdevice\s+offloading\s+time[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\btotal\s+execution\s+time\s+of\s+kernels[^0-9]*=\s*([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",
-    r"\b([0-9]*\.?[0-9]+)\s*" + _UNIT + r"\b",  # fallback
-]
+def _resolve_cwd(run_cwd: str, bin_path: Path, workdir: Optional[Path], project: Optional[BuildProject]) -> Path:
+    if run_cwd == "workdir" and workdir: return workdir
+    if run_cwd == "project_dir" and project: return project.dir
+    return bin_path.parent
 
-def _compile_patterns(patterns: Optional[List[str]]) -> List[re.Pattern]:
-    pats = patterns if patterns else _DEFAULT_PATTERNS
-    return [re.compile(p, re.IGNORECASE) for p in pats]
+def _aggregate(vals: List[float], how: str) -> float:
+    how = how.lower()
+    if how == "sum":  return float(sum(vals))
+    if how == "mean": return float(mean(vals))
+    if how == "max":  return float(max(vals))
+    if how == "min":  return float(min(vals))
+    return float(sum(vals))
 
-def _to_ms(val_s: str, unit: Optional[str]) -> float:
-    # strip commas in numbers like "12,345.6"
-    v = float(val_s.replace(",", ""))
-    if not unit:
-        return v  # assume ms if unit omitted in some patterns
-    u = unit.lower()
-    if u in ("s", "sec", "seconds"): return v * 1000.0
-    if u in ("ms", "msec"):          return v
-    if u in ("us", "µs"):            return v / 1000.0
-    if u == "ns":                    return v / 1_000_000.0
-    return v  # fallback
-
-def _reduce(vals: List[float], how: str) -> Optional[float]:
-    if not vals:
-        return None
-    h = how.lower()
-    if h == "min":   return min(vals)
-    if h == "max":   return max(vals)
-    if h == "mean":  return mean(vals)
-    if h == "first": return vals[0]
-    if h == "last":  return vals[-1]
-    return min(vals)
-
-def _capture(proc_out: subprocess.CompletedProcess, source: str) -> str:
-    if source == "stdout": return proc_out.stdout or ""
-    if source == "stderr": return proc_out.stderr or ""
-    return ((proc_out.stdout or "") + "\n" + (proc_out.stderr or "")).strip()
-
-def _filter_lines(text: str, require_any: Optional[List[str]]) -> str:
-    if not require_any:
-        return text
-    wanted = []
-    low_needles = [s.lower() for s in require_any]
-    for line in text.splitlines():
-        low = line.lower()
-        if any(n in low for n in low_needles):
-            wanted.append(line)
-    return "\n".join(wanted) if wanted else text  # if filter yields nothing, keep original
-
-def _log_raw(cfg, workdir: Path, idx: int, content: str, why: str) -> None:
-    if not cfg.log_raw:
-        return
-    outdir = workdir / cfg.log_dir
-    outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / f"run_{idx:02d}_{why}.log").write_text(content)
-
-def measure_parser(
-    cfg,                     # ParserConfig
+def measure_parser_sycl(
+    cfg: ParserConfig,
     bin_path: Path,
     prog_args: List[str],
     env: EnvMap,
     runs: int,
-    workdir: Optional[Path] = None,     # pass the trial workdir if you have it
+    workdir: Optional[Path] = None,
+    project: Optional[BuildProject] = None,
 ) -> MetricDict:
-    regexes = _compile_patterns(cfg.patterns)
-    values_ms: List[float] = []
-
+    """
+    Runs the binary like perf/likwid (taskset/prefix, controlled cwd),
+    parses lines printed as:
+        [SYCL][avg] kernel K: <seconds> s over N iters
+        [SYCL][sum] kernel K: <seconds> s over N iters
+    Returns per-kernel metrics (seconds) and one aggregate key:
+        sycl_<label>_<aggregate>_s
+    """
+    merged_env = {**os.environ, **env}
     cmd: List[str] = []
-    
+    if cfg.prefix:     cmd.extend(cfg.prefix)
+    if cfg.core_list:  cmd.extend(["taskset", "-c", cfg.core_list])
     cmd.append(str(bin_path))
     cmd.extend(prog_args)
-    
-    print(cmd)
+    cwd = _resolve_cwd(cfg.run_cwd, bin_path, workdir, project)
 
-    for i in range(max(1, runs)):
-        proc = _run(cmd, env=env)
-        text = _capture(proc, cfg.source)
-        text = _filter_lines(text, cfg.require_any)
+    # collect per-run kernel maps {kid -> value_s}
+    runs_kernel_vals: List[Dict[int, float]] = []
+    iterations_seen: List[int] = []
 
-        found_this_run: List[float] = []
-        for rx in regexes:
-            for m in rx.finditer(text):
-                # groups: num + optional exponent is group 1, unit is last group
-                num_val = m.group(1)
-                unit    = m.groups()[-1] if m.groups() else None
-                try:
-                    found_this_run.append(_to_ms(num_val, unit))
-                except Exception:
-                    continue
+    for _ in range(max(1, runs)):
+        proc = _run(cmd, cwd=cwd, env=merged_env)
+        if proc.returncode != 0:
+            raise RuntimeError(f"program exited with rc={proc.returncode}")
 
-        if not found_this_run:
-            _log_raw(cfg, workdir or Path("."), i, text, "no_match")
-        picked = _reduce(found_this_run, cfg.selector)
-        if picked is not None:
-            values_ms.append(picked)
+        text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        per_kernel: Dict[int, float] = {}
+        iters_val: Optional[int] = None
 
-    if not values_ms:
-        raise RuntimeError("Parser backend: no kernel times found in output.")
+        for m in _SYCL_RE.finditer(text):
+            label = m.group("label").lower()
+            if label != cfg.label.lower():
+                continue
+            kid = int(m.group("kid"))
+            val = float(m.group("val"))
+            iters = int(m.group("iters"))
+            # keep last seen iters (they should be consistent)
+            iters_val = iters
+            per_kernel[kid] = val  # seconds
 
-    avg_ms = mean(values_ms)
-    # provide both ms and requested unit
-    mets: MetricDict = {"kernel_time_ms": avg_ms}
-    if cfg.out_unit != "ms":
-        if cfg.out_unit == "s":  mets["kernel_time_s"]  = avg_ms / 1000.0
-        if cfg.out_unit == "us": mets["kernel_time_us"] = avg_ms * 1000.0
-        if cfg.out_unit == "ns": mets["kernel_time_ns"] = avg_ms * 1_000_000.0
+        if not per_kernel:
+            # Helpful dump for debugging
+            logs = (workdir or cwd) / "parser_logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / "no_match.out").write_text(proc.stdout or "")
+            (logs / "no_match.err").write_text(proc.stderr or "")
+            raise RuntimeError("Parser backend (SYCL): no matching [SYCL] lines found.")
+
+        runs_kernel_vals.append(per_kernel)
+        iterations_seen.append(iters_val if iters_val is not None else -1)
+
+    # average across runs per kernel
+    all_kids = sorted({k for d in runs_kernel_vals for k in d.keys()})
+    # filter by cfg.kernels if provided
+    if cfg.kernels:
+        selected = [k for k in all_kids if k in set(cfg.kernels)]
+    else:
+        selected = all_kids
+
+    per_kernel_avg: Dict[int, float] = {}
+    for k in selected:
+        vals = [d[k] for d in runs_kernel_vals if k in d]
+        if vals:
+            per_kernel_avg[k] = float(mean(vals))
+
+    if not per_kernel_avg:
+        raise RuntimeError("Parser backend (SYCL): selected kernels missing in output.")
+
+    # aggregate across selected kernels
+    aggregate_val = _aggregate(list(per_kernel_avg.values()), cfg.aggregate)
+
+    # build metrics dict
+    mets: MetricDict = {}
+    # per-kernel seconds
+    for k, v in per_kernel_avg.items():
+        mets[f"sycl_kernel_{k}_{cfg.label}_s"] = v
+    # aggregate seconds
+    mets[f"sycl_{cfg.label}_{cfg.aggregate}_s"] = aggregate_val
+
+    # if iterations consistent and positive, report it too
+    if all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
+        mets["sycl_iters"] = float(iterations_seen[0])
+
     return mets
