@@ -36,8 +36,8 @@ def _complexity_limits(
     t = int(getattr(trial, "number", 0))
     if t < n_startup_trials:                 # stage 0
         return min(1, n_params_total), min(2, n_pool_total)
-    elif t < 3 * n_startup_trials:           # stage 1
-        return min(2, n_params_total), min(4, n_pool_total)
+    elif t < 2 * n_startup_trials:           # stage 1
+        return min(2, n_params_total), min(8, n_pool_total)
     else:                                    # stage 2+
         return n_params_total, n_pool_total
 
