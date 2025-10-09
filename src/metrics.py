@@ -164,7 +164,7 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
     meas_runs = max(1, runs)
     total_runs = cfg.warmup_runs + meas_runs
 
-    for _ in range(total_runs
+    for i in range(total_runs):
         cmd = ["likwid-perfctr"]
 
         if cfg.core_list:

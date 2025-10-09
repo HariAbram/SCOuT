@@ -140,7 +140,8 @@
     "label": "avg",               
     "aggregate": "sum",            
     "core_list": "0-15",
-    "run_cwd": "project_dir"
+    "run_cwd": "project_dir",
+    "warmup_runs": 1 
   },
 
   "runs": 5,                                 
