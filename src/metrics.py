@@ -54,18 +54,26 @@ def perf_parse(stderr: str, events: Sequence[str]) -> MetricDict:
 
 
 def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: EnvMap, runs: int = 1) -> MetricDict:
+    meas_runs = max(1, runs)
+    total_runs = cfg.warmup_runs + meas_runs
     buckets: Dict[str, List[Number]] = {e: [] for e in cfg.events + ["CPI"]}
-    for _ in range(runs):
+
+    for i in range(total_runs):
         cmd = ["perf", "stat", "-e", ",".join(cfg.events), "--", str(bin_path), *prog_args]
         if cfg.core_list:
             cmd = ["taskset", "-c", cfg.core_list, *cmd]
         proc = _run(cmd, env={**os.environ, **env})
+
+        # Parse always, but only store if not warm-up
         data = perf_parse(proc.stderr, cfg.events)
+        if i < cfg.warmup_runs:
+            continue
         if not data:
             raise RuntimeError("Perf parse failure – received no matching events.")
         for k, v_list in buckets.items():
             if k in data:
                 v_list.append(data[k])
+
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
@@ -152,19 +160,27 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
     for s in specs:
         if s.var:
             buckets[f"{s.name}_var"] = []
-    for _ in range(runs):
+    
+    meas_runs = max(1, runs)
+    total_runs = cfg.warmup_runs + meas_runs
+
+    for _ in range(total_runs
         cmd = ["likwid-perfctr"]
+
         if cfg.core_list:
             cmd += ["-C", cfg.core_list]
-        
+
         if cfg.group:
             cmd += ["-g", cfg.group]
         else:                       # raw events
             cmd += ["-g", ",".join(cfg.events)]
         cmd += [str(bin_path), *prog_args]
-        #cmd += ["-g", cfg.group, str(bin_path), *prog_args]
+
         proc = _run(cmd, env={**os.environ, **env})
         data = likwid_parse(proc.stdout, cfg.metrics)
+
+        if i < cfg.warmup_runs:
+            continue
         if not data:
             raise RuntimeError("LIKWID parse failure – no metrics captured.")
         for k, v in data.items():
@@ -226,12 +242,18 @@ def measure_parser_sycl(
     runs_kernel_vals: List[Dict[int, float]] = []
     iterations_seen: List[int] = []
 
-    for _ in range(max(1, runs)):
+    meas_runs = max(1, runs)
+    total_runs = cfg.warmup_runs + meas_runs
+
+    for i in range(total_runs):
         proc = _run(cmd, cwd=cwd, env=merged_env)
         if proc.returncode != 0:
             raise RuntimeError(f"program exited with rc={proc.returncode}")
 
+        # For warm-up iterations, don’t enforce parsing or errors
+        is_warmup = i < cfg.warmup_runs
         text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+
         per_kernel: Dict[int, float] = {}
         iters_val: Optional[int] = None
 
@@ -239,19 +261,22 @@ def measure_parser_sycl(
             label = m.group("label").lower()
             if label != cfg.label.lower():
                 continue
-            kid = int(m.group("kid"))
-            val = float(m.group("val"))
+            kid   = int(m.group("kid"))
+            val   = float(m.group("val"))       # seconds
             iters = int(m.group("iters"))
-            # keep last seen iters (they should be consistent)
+
             iters_val = iters
-            per_kernel[kid] = val  # seconds
+            per_kernel[kid] = val
+
+        if is_warmup:
+            continue
 
         if not per_kernel:
-            # Helpful dump for debugging
+        
             logs = (workdir or cwd) / "parser_logs"
             logs.mkdir(parents=True, exist_ok=True)
-            (logs / "no_match.out").write_text(proc.stdout or "")
-            (logs / "no_match.err").write_text(proc.stderr or "")
+            (logs / f"no_match_{i:02d}.out").write_text(proc.stdout or "")
+            (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
             raise RuntimeError("Parser backend (SYCL): no matching [SYCL] lines found.")
 
         runs_kernel_vals.append(per_kernel)

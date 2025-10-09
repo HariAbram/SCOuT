@@ -48,12 +48,15 @@ class Objective:
 class PerfConfig:
     events: List[str]
     core_list: Optional[str]
+    warmup_runs: int = 0
+    
 
     @classmethod
     def from_dict(cls, d: Dict) -> "PerfConfig":
         return cls(
             events=d.get("events", ["cycles", "instructions"]),
             core_list=d.get("core_list"),
+            warmup_runs=int(d.get("warmup_runs", 0))
         )
 
 
@@ -83,6 +86,7 @@ class ParserConfig:
     kernels: Optional[List[int]] = None
     # how to aggregate across multiple kernels
     aggregate: str = "sum"             # "sum" | "mean" | "max" | "min"
+    warmup_runs: int = 0
 
     # launch options to mimic perf/likwid
     core_list: Optional[str] = None    # e.g. "0-15" → taskset -c
@@ -98,6 +102,7 @@ class ParserConfig:
             core_list=d.get("core_list"),
             prefix=d.get("prefix"),
             run_cwd=d.get("run_cwd", "binary_dir"),
+            warmup_runs=int(d.get("warmup_runs", 0)),
         )
 
 @dataclasses.dataclass
@@ -106,6 +111,7 @@ class LikwidConfig:
     events: List[str] 
     metrics: List[MetricSpec]
     core_list: Optional[str]
+    warmup_runs: int = 0
 
     @classmethod
     def from_dict(cls, d: Dict) -> "LikwidConfig":
@@ -127,6 +133,7 @@ class LikwidConfig:
             events=events,
             metrics=metrics,
             core_list=d.get("core_list"),
+            warmup_runs=int(d.get("warmup_runs", 0)),
         )
 
 
