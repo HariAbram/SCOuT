@@ -6,6 +6,7 @@
 import itertools
 import shlex
 import sys
+import hashlib, json, os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
@@ -189,6 +190,58 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
         # else – silently skip
 
     return env
+
+
+##### JIT helpers
+
+def _looks_like_acpp(compiler: str) -> bool:
+    c = (compiler or "").lower()
+    return any(tag in c for tag in ("acpp", "accpp", "acppcc", "adaptivecpp"))
+
+def jit_enabled(cfg) -> bool:
+    # Only if user provided jit_policy AND compiler looks like AdaptiveCpp
+    return bool(cfg.jit) and _looks_like_acpp(getattr(cfg, "compiler", ""))
+
+def _stable_config_id(flags: Sequence[str], env: Dict[str, str]) -> str:
+    payload = {"flags": list(flags), "env": {k: env[k] for k in sorted(env)}}
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Sequence[str], base_env: Dict[str, str]) -> Tuple[Dict[str,str], "Path | None"]:
+    """Return (run_env, appdb_dir_or_None). If JIT disabled, returns (base_env, None)."""
+    if not jit_enabled(cfg):
+        return dict(base_env), None
+
+    env = dict(base_env)
+    if phase == "A" or cfg.jit.mode == "isolate_only":
+        appdb = workdir / "appdb"
+        appdb.mkdir(parents=True, exist_ok=True)
+        env["ACPP_APPDB_DIR"] = str(appdb)
+        env["ACPP_ADAPTIVITY_LEVEL"] = "0"
+        if cfg.jit.cuda_disable_cache_in_phase_a:
+            env["CUDA_CACHE_DISABLE"] = "1"
+        return env, appdb
+
+    # Phase B or adapt-only
+    config_id = _stable_config_id(flags, base_env)
+    appdb = Path(cfg.jit.cache_root) / config_id / "appdb"
+    appdb.mkdir(parents=True, exist_ok=True)
+    env["ACPP_APPDB_DIR"] = str(appdb)
+    env["ACPP_ADAPTIVITY_LEVEL"] = str(cfg.jit.adaptivity_level)
+    env.pop("CUDA_CACHE_DISABLE", None)
+    return env, appdb
+
+def summarize_appdb(appdb: "Path | None") -> Dict[str, int]:
+    if appdb is None or not appdb.exists():
+        return {"files": 0, "bytes": 0}
+    files, total = 0, 0
+    for p in appdb.rglob("*"):
+        if p.is_file():
+            files += 1
+            try:
+                total += p.stat().st_size
+            except OSError:
+                pass
+    return {"files": files, "bytes": total}
 
 
 ##### General helpers

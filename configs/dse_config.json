@@ -120,6 +120,14 @@
       "env": { }
   },
 
+  "jit_policy": {
+    "mode": "isolate_then_adapt",
+    "adaptivity_level": 1,
+    "top_k": 5,
+    "cache_root": "jit_caches",
+    "cuda_disable_cache_in_phase_a": false
+  },
+
   "likwid": {
       "group": "SCOuT", 
       "events":[], 
