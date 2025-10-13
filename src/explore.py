@@ -62,7 +62,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         if is_multi and startup < 5:
             print("[info] MOTPE bootstrap: bumping n_startup_trials → 5")
             startup = 5
-        sampler = TPESampler(n_startup_trials=cfg.search.n_startup_trials,
+        sampler = TPESampler(n_startup_trials=startup,
                             multivariate=True,
                             group=True,
                             seed=cfg.search.random_seed
@@ -150,16 +150,19 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         else:
             phase = "A" 
 
+        run_env, appdb = jit_env_for_phase(cfg, phase, workdir, flags, env)
+
+
         # --------------------------------------------------------------
         # 3) Measure
         # --------------------------------------------------------------
         try:
             if cfg.backend == "perf":
-                metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
+                metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]
             elif cfg.backend == "parser": 
-                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, env, cfg.runs, workdir, cfg.project)
+                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, run_env, cfg.runs, workdir, cfg.project)
             else:
-                metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]        
+                metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]        
         except Exception as exc:
             raise optuna.TrialPruned(f"measurement failed: {exc}")
         
