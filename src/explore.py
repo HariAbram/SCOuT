@@ -130,6 +130,8 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                             cfg.compiler_params_select,
                             cfg.search.n_startup_trials,
                         )
+        trial.set_user_attr("compiler_flags_str", flags)  
+
         env = suggest_env(trial, cfg.env)
         
         # --------------------------------------------------------------
@@ -206,10 +208,15 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
 
         print(f"[jit] Phase B re-evaluation of top {len(top)} configs…")
         for t in top:
-            flags_key = t.user_attrs["compiler_flags"]
-            # if you stored the rendered string, keep it; otherwise rebuild flags from key
-            flags_str = flags_key if isinstance(flags_key, str) else flags_key
-            flags = flags_str.split() if isinstance(flags_str, str) else list(flags_str)
+            flags = t.user_attrs.get("compiler_flags_str")
+
+            if not flags:
+                raw = t.user_attrs.get("compiler_flags", "") or t.user_attrs.get("compiler_flags_key", "")
+                parts = []
+                for seg in str(raw).split("|"):
+                    parts.extend(seg.split())
+                flags = " ".join(parts)
+
             base_env = t.user_attrs["env"]
             # rebuild (optional: reuse existing binary)
             workdir = workdir_root / f"phaseB_trial_{t.number:05d}"
