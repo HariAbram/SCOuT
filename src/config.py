@@ -216,9 +216,6 @@ class Config:
     source: Optional[Path]
     project: Optional[BuildProject]
 
-    # JIT policy
-    jit: "JITPolicy | None" = None
-
     # Program arguments and environment sets
     program_args: List[str] 
 
@@ -250,6 +247,9 @@ class Config:
     pareto_log: Optional[str]
     fail_log: Optional[str]
     sqlite_log: Optional[str]
+
+    # JIT policy
+    jit: "JITPolicy | None" = None
      
 
     # ------------------------------------------------------------------
