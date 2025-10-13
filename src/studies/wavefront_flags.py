@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+###############################################################################
+# Standard library imports                                                    #
+###############################################################################
 import csv
 import json
 import math
@@ -12,13 +15,20 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Iterable
 from statistics import mean, variance, median
 
-from src.config import Config, ParserConfig, BuildProject
-from src.build import compile_project, compile_single_source, _run
-from src.metrics import measure_likwid, measure_perf
 
+###############################################################################
+# Type helpers                                                                #
+###############################################################################
 Number = float
 MetricDict = Dict[str, Number]
 
+###############################################################################
+# Local imports                                                               #
+###############################################################################
+from src.config import Config, ParserConfig, BuildProject
+from src.build import compile_project, compile_single_source, _run
+from src.metrics import measure_likwid, measure_perf
+from src.misc import unique_csv_path
 
 @dataclass
 class _WFParams:
@@ -109,8 +119,7 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
     if cfg.backend == "perf":
         metrics = measure_perf(cfg.perf, binary, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]
     elif cfg.backend == "parser":
-        metrics = measure_parser_sycl_wavefront(  # make sure this is imported/defined
-            cfg.parser, Path(binary), cfg.program_args, run_env, cfg.runs, work, cfg.project)
+        metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, run_env, cfg.runs, work, cfg.project)
     else:  # "likwid"
         metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
 
@@ -315,7 +324,13 @@ def run_wavefront_study(cfg: Config) -> None:
     print(f"[wavefront] baseline {metric_name} = {base_val:.6g}")
 
     # Prepare CSV
-    results_path = workroot / params.results_csv
+    if cfg.csv_log:
+        results_path = unique_csv_path(cfg.csv_log)
+        Path(results_path).parent.mkdir(parents=True, exist_ok=True)
+    else:
+        results_path = workroot / "wavefront_results.csv"
+
+    #print(f"[wavefront] writing CSV → {results_path}")
     with open(results_path, "w", newline="") as fp:
         w = csv.writer(fp)
         w.writerow(["k", "value", "flags", "metrics_json", "binary"])
