@@ -330,7 +330,7 @@ def run_wavefront_study(cfg: Config) -> None:
     else:
         results_path = workroot / "wavefront_results.csv"
 
-    #print(f"[wavefront] writing CSV → {results_path}")
+    print(f"[wavefront] writing CSV → {results_path}")
     with open(results_path, "w", newline="") as fp:
         w = csv.writer(fp)
         w.writerow(["k", "value", "flags", "metrics_json", "binary"])
