@@ -47,16 +47,23 @@ def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | Non
         check=False,
     )
 
-def _save_log(workdir: Path, trial: optuna.Trial,
-              step: str, proc) -> None:
-    """Write cmd stdout/stderr → file and annotate trial."""
-    log_dir = workdir / "build_logs"
-    log_dir.mkdir(exist_ok=True)
-    log_path = log_dir / f"trial_{trial.number:05d}_{step}.log"
-    log_path.write_text(proc.stdout + "\n" + proc.stderr)
+def _trial_tag(trial: Optional["optuna.Trial"]) -> str:
+    return f"trial_{trial.number:05d}" if trial is not None else f"phaseB_{uuid.uuid4().hex[:8]}"
 
-    trial.set_system_attr("fail_reason", f"{step} exited {proc.returncode}")
-    trial.set_system_attr("build_log", str(log_path))
+def _save_log(workdir: Path,
+              trial: Optional["optuna.Trial"],
+              step: str,
+              proc) -> None:
+    """
+    Save stdout/stderr of a subprocess to workdir/logs.
+    Works even when trial is None (e.g., Phase-B rebuilds).
+    """
+    log_dir = Path(workdir) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    tag = _trial_tag(trial)
+    (log_dir / f"{tag}_{step}.out").write_text(proc.stdout or "")
+    (log_dir / f"{tag}_{step}.err").write_text(proc.stderr or "")
 
 ###############################################################################
 # Build logic (identical to original)                                         #
