@@ -164,7 +164,7 @@ class BuildProject:
 
 @dataclasses.dataclass
 class SearchSpec:
-    method: str = "optuna"  # only optuna for now
+    study: str = "optuna"  # only optuna for now
     sampler: str = "tpe"     # "tpe" | "nsga3" | "rs" | "cmaes"
     n_startup_trials: int = 10  # for TPE
     population_size: int = 50
@@ -173,7 +173,7 @@ class SearchSpec:
     @classmethod
     def from_dict(cls, d: Dict) -> "SearchSpec":
         return cls(
-            method=d.get("method", "optuna"),
+            method=d.get("study", "optuna"),
             sampler=d.get("sampler", "tpe"),
             n_startup_trials=int(d.get("n_startup_trials", 10)),
             population_size=int(d.get("population_size", 50)),

@@ -48,6 +48,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 ###############################################################################
 
 from src.config import Config
+from src.explore import explore_optuna, explore_wavefront, explore_synergy
 
 ###############################################################################
 # Type helpers                                                                #
@@ -72,15 +73,16 @@ def main() -> None:
 
     cfg = Config.load(args.config)
 
-    study_kind = getattr(getattr(cfg, "search", object()), "study", "").lower()
-    if study_kind in {"wavefront", "wave-front", "wf"}:
-        from src.explore import explore_wavefront
+    study = getattr(cfg, "search", None).study if getattr(cfg, "search", None) else "optuna"
+    study = (study or "optuna").lower()
+
+    if study == "wavefront":
         explore_wavefront(cfg)
-    elif study_kind == "synergy":
-       from src.explore import explore_synergy
-       explore_synergy(cfg)
+        return
+    elif study == "synergy":
+        explore_synergy(cfg)
+        return
     else:
-        from src.explore import explore_optuna
         explore_optuna(cfg, args.trials)
 
     #explore_optuna(cfg, args.trials)
