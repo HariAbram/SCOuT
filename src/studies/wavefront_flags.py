@@ -83,7 +83,7 @@ def _collect_atoms(cfg: Config, p: _WFParams) -> List[str]:
 def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str], work: Path
 ) -> Tuple[float, MetricDict, str]:
     work.mkdir(parents=True, exist_ok=True)
-    flags_str = " ".join(flags).strip()
+    flags_str = " ".join(flags)
 
     # Build
     if cfg.source:
