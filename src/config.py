@@ -55,6 +55,7 @@ class JITPolicy:
     adaptivity_level: int = 2          # e.g., 1 or 2
     top_k: int = 1                     # how many finalists to re-evaluate in Phase B
     cache_root: str = "jit_caches"     # base directory for persistent per-config caches
+    redirect_home: bool = True
 
     # CUDA-only convenience (ignored on non-CUDA backends)
     cuda_disable_cache_in_phase_a: bool = True
@@ -66,6 +67,7 @@ class JITPolicy:
             adaptivity_level=int(d.get("adaptivity_level", 1)),
             top_k=int(d.get("top_k", 5)),
             cache_root=d.get("cache_root", "jit_caches"),
+            redirect_home=d.get("redirect_home", True),
             cuda_disable_cache_in_phase_a=bool(d.get("cuda_disable_cache_in_phase_a", True)),
         )
 

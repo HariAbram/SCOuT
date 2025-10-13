@@ -217,10 +217,16 @@ def _stable_config_id(flags: Sequence[str], env: Dict[str, str]) -> str:
 
 def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Union[str, Sequence[str]], base_env: Dict[str, str],) -> Tuple[Dict[str, str], Optional[Path]]:
     env = dict(base_env)
-
-    # Normalize flags for hashing/stability
     flag_list = flags_as_list(flags)
 
+    # (A) Optional: redirect HOME so ~/.acpp goes under the trial folder
+    if getattr(cfg, "jit", None) and getattr(cfg.jit, "redirect_home", False):
+        # put HOME at <workdir>/home to keep things tidy
+        home_dir = workdir / "home"
+        home_dir.mkdir(parents=True, exist_ok=True)
+        env["HOME"] = str(home_dir)  # <-- this makes ~/.acpp resolve inside workdir
+
+    # (B) AppDB policy (as before)
     if not jit_enabled(cfg):
         return env, None
 
@@ -233,9 +239,10 @@ def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Union[str, Sequence
             env["CUDA_CACHE_DISABLE"] = "1"
         return env, appdb
 
-    # Phase B
-    config_id = _stable_config_id(flag_list, base_env)
-    appdb = Path(cfg.jit.cache_root) / config_id / "appdb"
+    # Phase B: persistent/adaptive
+    # keep your existing hashing if you like; not strictly necessary if HOME is redirected
+    appdb = Path(cfg.jit.cache_root) / "appdb"
+    appdb = (workdir / appdb) if not appdb.is_absolute() else appdb
     appdb.mkdir(parents=True, exist_ok=True)
     env["ACPP_APPDB_DIR"] = str(appdb)
     env["ACPP_ADAPTIVITY_LEVEL"] = str(cfg.jit.adaptivity_level)
