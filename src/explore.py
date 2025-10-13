@@ -209,29 +209,30 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         print(f"[jit] Phase B re-evaluation of top {len(top)} configs…")
         for t in top:
             flags = t.user_attrs.get("compiler_flags_str")
-
             if not flags:
                 raw = t.user_attrs.get("compiler_flags", "") or t.user_attrs.get("compiler_flags_key", "")
                 parts = []
                 for seg in str(raw).split("|"):
                     parts.extend(seg.split())
                 flags = " ".join(parts)
-            
-            flags = flags_as_str(flags) 
+
+            flags_str = flags_as_str(flags)  # normalize to a proper string
 
             base_env = t.user_attrs["env"]
-            # rebuild (optional: reuse existing binary)
             workdir = workdir_root / f"phaseB_trial_{t.number:05d}"
             workdir.mkdir()
+
             if cfg.source:
-                binary_path = compile_single_source(cfg.compiler, cfg.source, " ".join(flags), workdir / "a.out", trial=None)
+                binary_path = compile_single_source(cfg.compiler, cfg.source, flags_str, workdir / "a.out", trial=None)
             else:
-                binary_path = compile_project(cfg.project, cfg.compiler, " ".join(flags), workdir, trial=None)
+                binary_path = compile_project(cfg.project, cfg.compiler, flags_str, workdir, trial=None)
+
             if not binary_path:
-                print(f"[jit] skip trial {t.number}: rebuild failed")
+                print(f"[jit] skip trial {t.number}: rebuild failed (see {workdir/'logs'})")
                 continue
 
-            run_env, appdb = jit_env_for_phase(cfg, "B", workdir, flags, base_env)
+            run_env, appdb = jit_env_for_phase(cfg, "B", workdir, flags_str, base_env)
+
             if cfg.backend == "perf":
                 metsB = measure_perf(cfg.perf, binary_path, cfg.program_args, run_env, cfg.runs)
             elif cfg.backend == "likwid":
