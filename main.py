@@ -47,7 +47,6 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 # Local imports                                                               #
 ###############################################################################
 
-from src.explore import explore_optuna, explore_synergy
 from src.config import Config
 
 ###############################################################################
@@ -78,8 +77,10 @@ def main() -> None:
         from src.explore import explore_wavefront
         explore_wavefront(cfg)
     elif study_kind == "synergy":
+       from src.explore import explore_synergy
        explore_synergy(cfg)
     else:
+        from src.explore import explore_optuna
         explore_optuna(cfg, args.trials)
 
     #explore_optuna(cfg, args.trials)

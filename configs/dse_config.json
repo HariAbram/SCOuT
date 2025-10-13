@@ -109,8 +109,8 @@
   },
 
   "wavefront": {
-      "flag_atoms": ["-O2","-O3","-funroll-loops","-fno-exceptions","-fno-rtti"],
-      "base_flags": ["-O1"],
+      "flag_atoms": ["-funroll-loops", "-ffast-math", "-funsafe-math-optimizations", "-mllvm -enable-misched", "-mllvm -enable-interleaved-mem-accesses"],
+      "base_flags": ["-O2"],
       "max_k": 3,
       "mode": "beam",
       "beam_width": 16,

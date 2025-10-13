@@ -15,7 +15,6 @@ from statistics import mean, variance, median
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import jit_env_for_phase, summarize_appdb, jit_enabled
 
 Number = float
 MetricDict = Dict[str, Number]
@@ -94,9 +93,7 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
     if not binary:
         raise RuntimeError("build failed")
     
-     # Phase selection for Wavefront search
-    phase = "A" if jit_enabled(cfg) and cfg.jit.mode in ("isolate_then_adapt","isolate_only") else "B"
-    run_env, appdb = jit_env_for_phase(cfg, phase, work, flags, env)
+    run_env = dict(env)
 
     # Measure
     if cfg.backend == "perf":
@@ -106,10 +103,6 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
             cfg.parser, Path(binary), cfg.program_args, run_env, cfg.runs, work, cfg.project)
     else:  # "likwid"
         metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-
-    s = summarize_appdb(appdb)
-    metrics["_appdb_files"] = s["files"]
-    metrics["_appdb_bytes"] = s["bytes"]
 
     metric_name, goal = _choose_objective(cfg)
     if metric_name not in metrics:
@@ -389,35 +382,6 @@ def run_wavefront_study(cfg: Config) -> None:
             print(f"best:     {metric_name}={(-best_global_score if goal=='max' else best_global_score):.6g} "
                   f"flags={base_flags + list(best_global_combo)}")
         print(f"[wavefront] results → {results_path}")
-        # After your summary printout
-        if cfg.jit.mode == "isolate_then_adapt":
-            best_flags = base_flags + list(best_global_combo)
-            print("[jit] Phase B (adaptive convergence) for wavefront winner…")
-            run_dir = workroot / "phaseB_winner"
-            valB, metsB, binB = _compile_and_measure_with_phase(cfg, best_flags, base_env, run_dir, phase="B")
-            print(f"[jit][B] winner: {metric_name}={valB:.6g}  appdb_files={metsB.get('_appdb_files')}")
 
-        # helper (inline or place next to _compile_and_measure)
-        def _compile_and_measure_with_phase(cfg, flags, base_env, work, phase="A"):
-            work.mkdir(parents=True, exist_ok=True)
-            flags_str = " ".join(flags).strip()
-            if cfg.source:
-                binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
-            else:
-                binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
-            if not binary:
-                raise RuntimeError("build failed")
-
-            run_env, appdb = jit_env_for_phase(cfg, "B" if phase == "B" else "A", work, flags, base_env)
-            if cfg.backend == "perf":
-                metrics = measure_perf(cfg.perf, binary, cfg.program_args, run_env, cfg.runs)
-            elif cfg.backend == "parser":
-                metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, run_env, cfg.runs, work, cfg.project)
-            else:
-                metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, run_env, cfg.runs)
-            s = summarize_appdb(Path(run_env["ACPP_APPDB_DIR"]))
-            metrics["_appdb_files"] = s["files"]
-            metrics["_appdb_bytes"] = s["bytes"]
-            metric_name, _ = _choose_objective(cfg)
-            return float(metrics[metric_name]), metrics, str(binary)
+        
 

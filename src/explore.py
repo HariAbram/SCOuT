@@ -39,7 +39,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config
 from src.metrics import measure_likwid, measure_perf, measure_parser_sycl
 from src.build import compile_project, compile_single_source
-from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path, jit_env_for_phase, summarize_appdb, jit_enabled, flags_as_str
+from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 
 ###############################################################################
 # Optuna‑driven exploration                                                   #
@@ -145,14 +145,6 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
             binary_path = compile_project(cfg.project, cfg.compiler, flags, workdir, trial)
         if not binary_path:
             raise optuna.TrialPruned("build failed")
-        
-        # ---- JIT Phase selection for search ----
-        if jit_enabled(cfg):
-            phase = "A" if cfg.jit.mode in ("isolate_then_adapt", "isolate_only") else "B"
-        else:
-            phase = "A" 
-
-        run_env, appdb = jit_env_for_phase(cfg, phase, workdir, flags, env)
 
 
         # --------------------------------------------------------------
@@ -160,11 +152,11 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         # --------------------------------------------------------------
         try:
             if cfg.backend == "perf":
-                metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]
+                metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
             elif cfg.backend == "parser": 
-                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, run_env, cfg.runs, workdir, cfg.project)
+                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, env, cfg.runs, workdir, cfg.project)
             else:
-                metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]        
+                metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]        
         except Exception as exc:
             raise optuna.TrialPruned(f"measurement failed: {exc}")
         
@@ -181,14 +173,9 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         # --------------------------------------------------------------
         # 5) Attach extra info for analysis
         # --------------------------------------------------------------
-        s = summarize_appdb(appdb)
-        metrics["_appdb_files"] = s["files"]
-        metrics["_appdb_bytes"] = s["bytes"]
 
-        trial.set_user_attr("phase", phase)
         trial.set_user_attr("compiler_flags", flag_key)
         trial.set_user_attr("env", env)
-        trial.set_user_attr("appdb_dir", run_env["ACPP_APPDB_DIR"])
         trial.set_user_attr("metrics", metrics)
         trial.set_user_attr("binary", str(binary_path))
 
@@ -196,55 +183,6 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
 
     study.optimize(trial_objective, n_trials=n_trials, show_progress_bar=True,
                    callbacks=([_pareto_cb] if is_multi and pareto_path is not None else None))
-    
-    # Phase B re-evaluation (persistent cache + adaptivity) for top_k
-    if jit_enabled(cfg) and cfg.jit.mode == "isolate_then_adapt" and cfg.jit.top_k > 0:
-        # pick “best” trials; for multi-objective you might pick Pareto front or first objective rank
-        complete = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
-        # Sort by first objective direction
-        first_dir = study.directions[0].name if hasattr(study, "directions") else study.direction.name
-        reverse = (first_dir == "maximize")
-        top = sorted(complete, key=lambda t: t.values[0], reverse=reverse)[: cfg.jit.top_k]
-
-        print(f"[jit] Phase B re-evaluation of top {len(top)} configs…")
-        for t in top:
-            flags = t.user_attrs.get("compiler_flags_str")
-            if not flags:
-                raw = t.user_attrs.get("compiler_flags", "") or t.user_attrs.get("compiler_flags_key", "")
-                parts = []
-                for seg in str(raw).split("|"):
-                    parts.extend(seg.split())
-                flags = " ".join(parts)
-
-            flags_str = flags_as_str(flags)  # normalize to a proper string
-
-            base_env = t.user_attrs["env"]
-            workdir = workdir_root / f"phaseB_trial_{t.number:05d}"
-            workdir.mkdir()
-
-            if cfg.source:
-                binary_path = compile_single_source(cfg.compiler, cfg.source, flags_str, workdir / "a.out", trial=None)
-            else:
-                binary_path = compile_project(cfg.project, cfg.compiler, flags_str, workdir, trial=None)
-
-            if not binary_path:
-                print(f"[jit] skip trial {t.number}: rebuild failed (see {workdir/'logs'})")
-                continue
-
-            run_env, appdb = jit_env_for_phase(cfg, "B", workdir, flags_str, base_env)
-
-            if cfg.backend == "perf":
-                metsB = measure_perf(cfg.perf, binary_path, cfg.program_args, run_env, cfg.runs)
-            elif cfg.backend == "likwid":
-                metsB = measure_likwid(cfg.likwid, binary_path, cfg.program_args, run_env, cfg.runs)
-            else:
-                metsB = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, run_env, cfg.runs, workdir, cfg.project)
-
-            metsB["_appdb_files"] = summarize_appdb(Path(run_env["ACPP_APPDB_DIR"]))["files"]
-            metsB["_appdb_bytes"] = summarize_appdb(Path(run_env["ACPP_APPDB_DIR"]))["bytes"]
-
-            print(f"[jit][B] trial {t.number}: {cfg.objectives[0].metric}={metsB.get(cfg.objectives[0].metric)} appdb={run_env['ACPP_APPDB_DIR']}")
-            # optional: write an extra CSV “phaseB_results.csv” here
 
 
     # ------------------------------------------------------------------

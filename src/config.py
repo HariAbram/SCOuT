@@ -44,35 +44,6 @@ class Objective:
     # Note: better() no longer used because Optuna handles dominance.
 
 @dataclasses.dataclass
-class JITPolicy:
-    # Overall mode:
-    #  - "isolate_then_adapt": Phase A during search; Phase B for top_k finalists
-    #  - "isolate_only":       Always isolate cache + AL0 (compile-time only)
-    #  - "adapt_only":         Always persistent cache + AL>0 (production-like)
-    mode: str = "adapt_only"
-
-    # Phase B settings
-    adaptivity_level: int = 2          # e.g., 1 or 2
-    top_k: int = 1                     # how many finalists to re-evaluate in Phase B
-    cache_root: str = "jit_caches"     # base directory for persistent per-config caches
-    redirect_home: bool = True
-
-    # CUDA-only convenience (ignored on non-CUDA backends)
-    cuda_disable_cache_in_phase_a: bool = True
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "JITPolicy":
-        return cls(
-            mode=d.get("mode", "isolate_then_adapt"),
-            adaptivity_level=int(d.get("adaptivity_level", 1)),
-            top_k=int(d.get("top_k", 5)),
-            cache_root=d.get("cache_root", "jit_caches"),
-            redirect_home=d.get("redirect_home", True),
-            cuda_disable_cache_in_phase_a=bool(d.get("cuda_disable_cache_in_phase_a", True)),
-        )
-
-
-@dataclasses.dataclass
 class PerfConfig:
     events: List[str]
     core_list: Optional[str]
@@ -249,9 +220,6 @@ class Config:
     pareto_log: Optional[str]
     fail_log: Optional[str]
     sqlite_log: Optional[str]
-
-    # JIT policy
-    jit: "JITPolicy | None" = None
      
 
     # ------------------------------------------------------------------
@@ -324,8 +292,6 @@ class Config:
         parser_cfg = ParserConfig.from_dict(raw.get("parser", {})) if backend == "parser" else None
 
         #JIT
-        jit_block = raw.get("jit_policy")
-        jit = JITPolicy.from_dict(jit_block) if isinstance(jit_block, dict) else None
 
         return cls(
             backend=backend,
@@ -339,7 +305,6 @@ class Config:
             compiler_flag_pool  = raw.get("compiler_flag_pool", []),
             program_args=program_args,
             env=env_schema,
-            jit=jit,
             perf=PerfConfig.from_dict(raw.get("perf", {})) if backend == "perf" else None,
             likwid=LikwidConfig.from_dict(raw.get("likwid", {})) if backend == "likwid" else None,
             parser=parser_cfg,
