@@ -47,10 +47,20 @@ class _WFParams:
 def _params_from_cfg(cfg: Config) -> _WFParams:
     wf = getattr(cfg, "wavefront", None)
     p = _WFParams()
-    if wf:
-        for k in _WFParams().__dict__.keys():
-            if hasattr(wf, k):
-                setattr(p, k, getattr(wf, k))
+    if not wf:
+        return p
+
+    # If user hasn’t rebuilt Config yet and wf is still a dict, handle it.
+    if isinstance(wf, dict):
+        for k in p.__dataclass_fields__.keys():
+            if k in wf and wf[k] is not None:
+                setattr(p, k, wf[k])
+        return p
+
+    # Normal path: WavefrontSpec dataclass
+    for k in p.__dataclass_fields__.keys():
+        if hasattr(wf, k):
+            setattr(p, k, getattr(wf, k))
     return p
 
 

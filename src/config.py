@@ -180,6 +180,34 @@ class SearchSpec:
             random_seed=d.get("random_seed"),
         )
 
+@dataclasses.dataclass
+class WavefrontSpec:
+    base_flags: List[str] = dataclasses.field(default_factory=list)
+    flag_atoms: Optional[List[str]] = None
+    max_k: int = 3
+    mode: str = "beam"         # "beam" | "full"
+    beam_width: int = 16
+    per_wave_cap: Optional[int] = None
+    stop_if_no_improve: bool = True
+    improvement_eps: float = 0.0
+    env: Dict[str, str] = dataclasses.field(default_factory=dict)
+    results_csv: str = "wavefront_results.csv"
+
+    @classmethod
+    def from_dict(cls, d: Dict) -> "WavefrontSpec":
+        return cls(
+            base_flags=d.get("base_flags", []),
+            flag_atoms=d.get("flag_atoms"),
+            max_k=int(d.get("max_k", 3)),
+            mode=d.get("mode", "beam"),
+            beam_width=int(d.get("beam_width", 16)),
+            per_wave_cap=d.get("per_wave_cap"),
+            stop_if_no_improve=bool(d.get("stop_if_no_improve", True)),
+            improvement_eps=float(d.get("improvement_eps", 0.0)),
+            env=d.get("env", {}) or {},
+            results_csv=d.get("results_csv", "wavefront_results.csv")
+        )
+
 
 @dataclasses.dataclass
 class Config:
@@ -220,6 +248,9 @@ class Config:
     pareto_log: Optional[str]
     fail_log: Optional[str]
     sqlite_log: Optional[str]
+
+    # Wavefront
+    wavefront: Optional[WavefrontSpec] = None
      
 
     # ------------------------------------------------------------------
@@ -310,6 +341,7 @@ class Config:
             parser=parser_cfg,
             objectives=objectives,
             search=SearchSpec.from_dict(raw.get("search", {})),
+            wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
             runs=raw.get("runs"),
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),
