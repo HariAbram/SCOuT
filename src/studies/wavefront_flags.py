@@ -84,7 +84,7 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
 ) -> Tuple[float, MetricDict, str]:
     work.mkdir(parents=True, exist_ok=True)
     flags_str = " ".join(flags)
-
+    print(f"[wavefront] using flags: {flags_str}")
     # Build
     if cfg.source:
         binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
