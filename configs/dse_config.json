@@ -125,7 +125,8 @@
     "adaptivity_level": 1,
     "top_k": 5,
     "cache_root": "acpp_caches",
-    "cuda_disable_cache_in_phase_a": false
+    "cuda_disable_cache_in_phase_a": false,
+    "cache_home": "/cephyr/users/hariv/Vera/acpp_cache_home"
   },
 
   "likwid": {

@@ -221,10 +221,14 @@ def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Union[str, Sequence
 
     # (A) Optional: redirect HOME so ~/.acpp goes under the trial folder
     if getattr(cfg, "jit", None) and getattr(cfg.jit, "redirect_home", False):
-        # put HOME at <workdir>/home to keep things tidy
-        home_dir = workdir / "home"
+        dest = getattr(cfg.jit, "cache_home", None)
+        if dest:
+            home_dir = Path(dest)
+        else:
+            # fallback: per-trial under workdir if user didn’t specify
+            home_dir = workdir / "home"
         home_dir.mkdir(parents=True, exist_ok=True)
-        env["HOME"] = str(home_dir)  # <-- this makes ~/.acpp resolve inside workdir
+        env["HOME"] = str(home_dir)
 
     # (B) AppDB policy (as before)
     if not jit_enabled(cfg):
