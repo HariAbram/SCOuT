@@ -215,9 +215,9 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
             workdir = workdir_root / f"phaseB_trial_{t.number:05d}"
             workdir.mkdir()
             if cfg.source:
-                binary_path = compile_single_source(cfg.compiler, cfg.source, " ".join(flags), workdir / "a.out")
+                binary_path = compile_single_source(cfg.compiler, cfg.source, " ".join(flags), workdir / "a.out", trial=None)
             else:
-                binary_path = compile_project(cfg.project, cfg.compiler, " ".join(flags), workdir)
+                binary_path = compile_project(cfg.project, cfg.compiler, " ".join(flags), workdir, trial=None)
             if not binary_path:
                 print(f"[jit] skip trial {t.number}: rebuild failed")
                 continue

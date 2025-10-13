@@ -62,7 +62,7 @@ def _save_log(workdir: Path, trial: optuna.Trial,
 # Build logic (identical to original)                                         #
 ###############################################################################
 
-def compile_single_source(compiler: str, src: Path, flags: str, out: Path, trial: optuna.Trial) -> Optional[Path]:
+def compile_single_source(compiler: str, src: Path, flags: str, out: Path, trial: Optional[optuna.Trial] = None) -> Optional[Path]:
     cmd = f"{compiler} {flags} {shlex.quote(str(src))} -o {shlex.quote(str(out))}"
     proc = _run(cmd)
     if proc.returncode:
@@ -82,7 +82,7 @@ def _last_executable(root: Path) -> Optional[Path]:
     return latest
 
 
-def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path, trial: optuna.Trial) -> Optional[Path]:
+def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path, trial: Optional[optuna.Trial] = None) -> Optional[Path]:
     if cfg.build_system == "cmake":
         build_dir = workdir / f"cmake_{uuid.uuid4().hex[:8]}"
         build_dir.mkdir()
