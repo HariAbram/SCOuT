@@ -194,6 +194,15 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
 
 ##### JIT helpers
 
+def flags_as_str(flags: Union[str, Sequence[str]]) -> str:
+    """Return a shell-ready string of flags."""
+    return flags if isinstance(flags, str) else " ".join(flags)
+
+def flags_as_list(flags: Union[str, Sequence[str]]) -> List[str]:
+    """Return a token list of flags."""
+    return shlex.split(flags) if isinstance(flags, str) else list(flags)
+
+
 def _looks_like_acpp(compiler: str) -> bool:
     c = (compiler or "").lower()
     return any(tag in c for tag in ("acpp", "accpp", "acppcc", "adaptivecpp"))
@@ -206,12 +215,15 @@ def _stable_config_id(flags: Sequence[str], env: Dict[str, str]) -> str:
     payload = {"flags": list(flags), "env": {k: env[k] for k in sorted(env)}}
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
 
-def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Sequence[str], base_env: Dict[str, str]) -> Tuple[Dict[str,str], "Path | None"]:
-    """Return (run_env, appdb_dir_or_None). If JIT disabled, returns (base_env, None)."""
-    if not jit_enabled(cfg):
-        return dict(base_env), None
-
+def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Union[str, Sequence[str]], base_env: Dict[str, str],) -> Tuple[Dict[str, str], Optional[Path]]:
     env = dict(base_env)
+
+    # Normalize flags for hashing/stability
+    flag_list = flags_as_list(flags)
+
+    if not jit_enabled(cfg):
+        return env, None
+
     if phase == "A" or cfg.jit.mode == "isolate_only":
         appdb = workdir / "appdb"
         appdb.mkdir(parents=True, exist_ok=True)
@@ -221,8 +233,8 @@ def jit_env_for_phase(cfg, phase: str, workdir: Path, flags: Sequence[str], base
             env["CUDA_CACHE_DISABLE"] = "1"
         return env, appdb
 
-    # Phase B or adapt-only
-    config_id = _stable_config_id(flags, base_env)
+    # Phase B
+    config_id = _stable_config_id(flag_list, base_env)
     appdb = Path(cfg.jit.cache_root) / config_id / "appdb"
     appdb.mkdir(parents=True, exist_ok=True)
     env["ACPP_APPDB_DIR"] = str(appdb)

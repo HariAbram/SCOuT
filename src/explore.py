@@ -39,7 +39,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config
 from src.metrics import measure_likwid, measure_perf, measure_parser_sycl
 from src.build import compile_project, compile_single_source
-from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path, jit_env_for_phase, summarize_appdb, jit_enabled
+from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path, jit_env_for_phase, summarize_appdb, jit_enabled, flags_as_str
 
 ###############################################################################
 # Optuna‑driven exploration                                                   #
@@ -216,6 +216,8 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                 for seg in str(raw).split("|"):
                     parts.extend(seg.split())
                 flags = " ".join(parts)
+            
+            flags = flags_as_str(flags) 
 
             base_env = t.user_attrs["env"]
             # rebuild (optional: reuse existing binary)
