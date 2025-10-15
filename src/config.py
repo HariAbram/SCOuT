@@ -251,6 +251,8 @@ class Config:
 
     # Wavefront
     wavefront: Optional[WavefrontSpec] = None
+
+    tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
      
 
     # ------------------------------------------------------------------
@@ -322,7 +324,7 @@ class Config:
         # Parser
         parser_cfg = ParserConfig.from_dict(raw.get("parser", {})) if backend == "parser" else None
 
-        #JIT
+        tabu = raw.get("tabu", {})
 
         return cls(
             backend=backend,
@@ -342,6 +344,7 @@ class Config:
             objectives=objectives,
             search=SearchSpec.from_dict(raw.get("search", {})),
             wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
+            tabu=tabu,
             runs=raw.get("runs"),
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),

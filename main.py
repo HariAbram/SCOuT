@@ -48,7 +48,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 ###############################################################################
 
 from src.config import Config
-from src.explore import explore_optuna, explore_wavefront, explore_synergy
+from src.explore import explore_optuna, explore_wavefront, explore_tabu
 
 ###############################################################################
 # Type helpers                                                                #
@@ -79,8 +79,8 @@ def main() -> None:
     if study == "wavefront":
         explore_wavefront(cfg)
         return
-    elif study == "synergy":
-        explore_synergy(cfg)
+    if cfg.search.study == "tabu":
+        explore_tabu(cfg)
         return
     else:
         explore_optuna(cfg, args.trials)

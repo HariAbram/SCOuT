@@ -276,3 +276,11 @@ def explore_synergy(cfg: Config) -> None:
 def explore_wavefront(cfg: Config) -> None:
     from src.studies.wavefront_flags import run_wavefront_study
     return run_wavefront_study(cfg)
+
+###############################################################################
+# Tabu search exploration                                                     #
+###############################################################################
+
+def explore_tabu(cfg: Config) -> None:
+    from src.studies.tabu_flags import run_tabu_study
+    return run_tabu_study(cfg)

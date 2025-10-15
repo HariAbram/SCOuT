@@ -121,6 +121,20 @@
       "env_cap": 16
   },
 
+  "tabu": {
+    "max_iters": 150,
+    "max_no_improve": 30,
+    "tabu_tenure": 25,
+    "neighborhood": 24,
+    "allow_variant_moves": true,
+    "allow_param_moves": true,
+    "allow_pool_moves": true,
+    "allow_env_moves": true,
+    "env_mode": "product",
+    "env_cap": 8,
+    "results_csv": null
+  },
+
   "jit_policy": {
     "mode": "isolate_then_adapt",
     "adaptivity_level": 1,
