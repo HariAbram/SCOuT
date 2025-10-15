@@ -116,7 +116,9 @@
       "per_wave_cap": null,
       "stop_if_no_improve": true,
       "improvement_eps": 0.0,
-      "env": { }
+      "env": { },
+      "env_mode": "product",
+      "env_cap": 16
   },
 
   "jit_policy": {

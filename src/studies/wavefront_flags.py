@@ -12,7 +12,7 @@ import re, os
 from dataclasses import dataclass, field
 from itertools import combinations, permutations
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Iterable
+from typing import Dict, List, Optional, Sequence, Tuple, Iterable, Any, Union
 from statistics import mean, variance, median
 
 
@@ -50,8 +50,95 @@ class _WFParams:
     improvement_eps: float = 0.0
     # Environment for all runs in this study (constant)
     env: Dict[str, str] = field(default_factory=dict)
+    env_mode: str = "product"       # "fixed" | "product" | "sample"
+    env_cap: Optional[int] = None   # max env combos per candidate (only for product/sample)
+
     # Output
     results_csv: str = "wavefront_results.csv"
+
+
+def _enumerate_env_schema(schema: Dict[str, Union[List[str], Dict[str, Any]]]) -> List[Dict[str, str]]:
+    """
+    Enumerate all consistent env assignments honoring 'when' predicates.
+    Dict insertion order is preserved (Python 3.7+), so place dependents after the vars they depend on.
+    Example entry formats:
+      VAR: ["a","b"]                                  -> unconditional choices
+      VAR: {"when": {"OTHER":"x"}, "values":[...]}    -> only assign VAR if predicate matches current partial env
+    """
+    keys = list(schema.keys())
+
+    def rec(i: int, partial: Dict[str, str], out: List[Dict[str, str]]):
+        if i == len(keys):
+            out.append(dict(partial))
+            return
+        var = keys[i]
+        spec = schema[var]
+
+        # Unconditional list
+        if isinstance(spec, list):
+            for v in spec:
+                partial[var] = str(v)
+                rec(i + 1, partial, out)
+            partial.pop(var, None)
+            return
+
+        # Conditional object
+        if isinstance(spec, dict) and "values" in spec:
+            pred = spec.get("when", {})
+            # only if all predicates match the *already-assigned* vars
+            if all(partial.get(k) == str(v) for k, v in pred.items()):
+                for v in spec["values"]:
+                    partial[var] = str(v)
+                    rec(i + 1, partial, out)
+                partial.pop(var, None)
+            else:
+                # Predicate not satisfied now → skip assigning this var
+                rec(i + 1, partial, out)
+            return
+
+        # Unknown format → ignore this key (robust)
+        rec(i + 1, partial, out)
+
+    results: List[Dict[str, str]] = []
+    rec(0, {}, results)
+    # Deduplicate just in case
+    uniq = {tuple(sorted(d.items())): d for d in results}
+    return list(uniq.values())
+
+
+def _env_combos_for_wavefront(
+    cfg: "Config",
+    params: "_WFParams",
+    rng: random.Random,
+) -> List[Dict[str, str]]:
+    """
+    Decide which envs to evaluate:
+      - "fixed": use params.env (single combo)
+      - "product": enumerate all consistent combos from cfg.env (honor 'when'); cap via env_cap
+      - "sample": like product but randomly downsample to env_cap
+    """
+    mode = (getattr(params, "env_mode", "product") or "product").lower()
+    if mode == "fixed":
+        return [dict(params.env or {})]
+
+    # Build from the root config's env schema
+    schema = getattr(cfg, "env", {}) or {}
+    combos = _enumerate_env_schema(schema)
+    if not combos:
+        return [{}]
+
+    cap = getattr(params, "env_cap", None)
+    if cap is None or cap <= 0 or len(combos) <= cap:
+        return combos
+
+    # Need to reduce
+    if mode == "product":
+        # deterministic prefix slice after shuffle for diversity across runs
+        rng.shuffle(combos)
+        return combos[:cap]
+    if mode == "sample":
+        return rng.sample(combos, cap)
+    return combos  # fallback
 
 
 def _params_from_cfg(cfg: Config) -> _WFParams:
@@ -313,100 +400,147 @@ def run_wavefront_study(cfg: Config) -> None:
         print(f"[wavefront] per_wave_cap={params.per_wave_cap}")
 
     base_env: Dict[str, str] = dict(getattr(getattr(cfg, "wavefront", object()), "env", {}) or {})
+    env_combos = _env_combos_for_wavefront(cfg, params, rng)
+    print(f"[wavefront] env_mode={params.env_mode} env_combos={len(env_combos)}")
+
     base_flags = list(params.base_flags or [])
 
     # Baseline
     print("[wavefront] evaluating baseline …")
     base_dir = workroot / "k00_baseline"
-    base_val, base_metrics, base_bin = _compile_and_measure(cfg, base_flags, base_env, base_dir)
-    best_global_score = _score(base_val, goal)
+    rows: List[Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    extra_metric_keys: set[str] = set()
+
+    metric_name, goal = _choose_objective(cfg)
+    def _score(v: float) -> float: return v if goal == "min" else -v
+
+    best_base_sc = math.inf
+    best_base = None
+
+    for ei, env in enumerate(env_combos, 1):
+        run_dir = base_dir / f"env{ei:03d}"
+        val, mets, binpath = _compile_and_measure(cfg, params.base_flags or [], env, run_dir)
+        rows.append(([val], "|".join(params.base_flags or []) or "default", dict(env), str(binpath), mets))
+        extra_metric_keys.update(mets.keys())
+        sc = _score(val)
+        if sc < best_base_sc:
+            best_base_sc = sc
+            best_base = (val, mets, binpath, env)
+
+    base_val, base_metrics, base_bin, base_env = best_base
+    best_global_score = best_base_sc
     best_global_combo: Tuple[str, ...] = tuple()
     print(f"[wavefront] baseline {metric_name} = {base_val:.6g}")
 
-    # Prepare CSV
-    if cfg.csv_log:
+
+    # --- Buffer rows to emit an Optuna-like CSV later ---
+    # Each row: (obj_values, compiler_flags_key, env_dict, binary_path, metrics_dict)
+    rows: List[Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    extra_metric_keys: set[str] = set()
+
+    def _flags_key(flags_seq: Sequence[str]) -> str:
+        # match Optuna’s "pretty id" (pipe-joined)
+        return "|".join(flags_seq) if flags_seq else "default"
+
+    # Record baseline in the same schema as Optuna CSV
+    rows.append(([float(base_val)], _flags_key(base_flags), dict(base_env), str(base_bin), base_metrics))
+    extra_metric_keys.update(base_metrics.keys())
+
+    # Wave k >= 1
+    prev_top: List[Tuple[str, ...]] = []
+    improved_any = False
+    for k in range(1, params.max_k + 1):
+        print(f"[wavefront] ===== Wave k={k} =====")
+
+        # Generate candidates
+        if params.mode == "full" or (k == 1 and not prev_top):
+            gen_iter = _generate_full(atoms, k)
+        else:
+            gen_iter = _generate_beam(prev_top, atoms)
+        candidates = list(gen_iter)
+        if params.per_wave_cap and len(candidates) > params.per_wave_cap:
+            rng.shuffle(candidates)
+            candidates = candidates[: params.per_wave_cap]
+            candidates.sort()
+
+        print(f"[wavefront] candidates={len(candidates)}")
+        if not candidates:
+            print("[wavefront] no candidates; stop.")
+            break
+
+        # Evaluate all candidates for this wave
+        scored: List[Tuple[float, float, Tuple[str, ...], MetricDict, str]] = []
+        # tuple: (score_for_beam, best_value_among_envs, combo_flags, best_metrics, best_binary)
+
+        for idx, combo in enumerate(candidates, 1):
+            flags = (params.base_flags or []) + list(combo)
+            # Evaluate ALL env combos (or reduced set) for this flag combo
+            best_sc_c = math.inf
+            best_val_c = math.inf
+            best_mets_c: Dict[str, float] = {}
+            best_bin_c = ""
+
+            for ei, env in enumerate(env_combos, 1):
+                run_dir = workroot / f"k{k:02d}" / f"c{idx:05d}" / f"env{ei:03d}"
+                try:
+                    value, metrics, binary = _compile_and_measure(cfg, flags, env, run_dir)
+                    sc = _score(value)
+                except Exception as exc:
+                    value, sc, metrics, binary = (math.inf, math.inf, {"error": str(exc)}, "")
+
+                # buffer a row for Optuna-like CSV (each env eval is a row)
+                rows.append(([float(value)], "|".join(flags) if flags else "default", dict(env), str(binary), metrics))
+                extra_metric_keys.update(metrics.keys())
+
+                # pick best env outcome for ranking this flag combo
+                if sc < best_sc_c:
+                    best_sc_c, best_val_c, best_mets_c, best_bin_c = sc, value, metrics, binary
+
+            scored.append((best_sc_c, best_val_c, tuple(combo), best_mets_c, best_bin_c))
+
+        # Sort by score (lower better)
+        scored.sort(key=lambda t: t[0])
+        best_sc, best_val, best_combo, best_metrics, best_bin = scored[0]
+        print(f"[wavefront] best@k={k}: {metric_name}={best_val:.6g}  flags={list(best_combo)}")
+
+        # Seeds for next wave (beam)
+        if params.mode == "beam":
+            prev_top = [c for _sc, _val, c, _m, _b in scored[: params.beam_width]]
+        else:
+            prev_top = []
+
+        # Early stop if not improving globally
+        if best_sc + params.improvement_eps < best_global_score:
+            best_global_score = best_sc
+            best_global_combo = best_combo
+        else:
+            if params.stop_if_no_improve:
+                print("[wavefront] no global improvement; stopping early.")
+                break
+
+    # --- Write CSV IDENTICAL to explore_optuna() ---
+    if getattr(cfg, "csv_log", None):
         results_path = unique_csv_path(cfg.csv_log)
         Path(results_path).parent.mkdir(parents=True, exist_ok=True)
     else:
-        results_path = workroot / "wavefront_results.csv"
+        results_path = workroot / (getattr(params, "results_csv", None) or "wavefront_results.csv")
 
     print(f"[wavefront] writing CSV → {results_path}")
+
+    obj_headers = [o.metric for o in cfg.objectives]  # usually 1 metric for wavefront
+    extra_cols = sorted(extra_metric_keys)
+    header = obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
+
     with open(results_path, "w", newline="") as fp:
         w = csv.writer(fp)
-        w.writerow(["k", "value", "flags", "metrics_json", "binary"])
+        w.writerow(header)
+        for obj_vals, flags_key, env_row, binary_path, metrics in rows:
+            # mimic Optuna: skip failed (value==inf)
+            if not obj_vals or math.isinf(obj_vals[0]):
+                continue
+            row = list(obj_vals) + [flags_key, json.dumps(env_row), binary_path]
+            row += [metrics.get(k, "") for k in extra_cols]
+            w.writerow(row)
 
-        # log baseline as k=0
-        w.writerow([0, base_val, json.dumps(base_flags), json.dumps(base_metrics, sort_keys=True), base_bin])
-        fp.flush()
-
-        # Wave k >= 1
-        prev_top: List[Tuple[str, ...]] = []
-        improved_any = False
-        for k in range(1, params.max_k + 1):
-            print(f"[wavefront] ===== Wave k={k} =====")
-
-            # Generate candidates
-            if params.mode == "full" or (k == 1 and not prev_top):
-                gen_iter = _generate_full(atoms, k)
-            else:
-                gen_iter = _generate_beam(prev_top, atoms)
-            candidates = list(gen_iter)
-            if params.per_wave_cap and len(candidates) > params.per_wave_cap:
-                rng.shuffle(candidates)
-                candidates = candidates[: params.per_wave_cap]
-                candidates.sort()  # keep deterministic order for prints
-
-            print(f"[wavefront] candidates={len(candidates)}")
-            if not candidates:
-                print("[wavefront] no candidates; stop.")
-                break
-
-            # Evaluate all candidates for this wave
-            scored: List[Tuple[float, float, Tuple[str, ...], MetricDict, str]] = []
-            # tuple: (score, value, combo, metrics, binary_path)
-
-            for idx, combo in enumerate(candidates, 1):
-                flags = base_flags + list(combo)
-                run_dir = workroot / f"k{k:02d}" / f"c{idx:05d}"
-                try:
-                    value, metrics, binary = _compile_and_measure(cfg, flags, base_env, run_dir)
-                    sc = _score(value, goal)
-                except Exception as exc:
-                    # Mark failed combos with +inf; still log for traceability.
-                    value, sc, metrics, binary = (math.inf, math.inf, {"error": str(exc)}, "")
-                scored.append((sc, value, combo, metrics, binary))
-                # stream log row
-                w.writerow([k, value, json.dumps(flags), json.dumps(metrics, sort_keys=True), binary])
-                if idx % 25 == 0:
-                    fp.flush()
-
-            # Sort by score (lower is better)
-            scored.sort(key=lambda t: t[0])
-            best_sc, best_val, best_combo, best_metrics, best_bin = scored[0]
-            print(f"[wavefront] best@k={k}: {metric_name}={best_val:.6g}  flags={list(best_combo)}")
-
-            # Prepare next-wave seeds (beam)
-            if params.mode == "beam":
-                prev_top = [c for _sc, _val, c, _m, _b in scored[: params.beam_width]]
-            else:
-                prev_top = []  # not used in 'full' mode
-
-            # Early stop if not improving globally
-            if best_sc + params.improvement_eps < best_global_score:
-                best_global_score = best_sc
-                best_global_combo = best_combo
-                improved_any = True
-            else:
-                if params.stop_if_no_improve:
-                    print("[wavefront] no global improvement; stopping early.")
-                    break
-
-        print("\n[wavefront] ===== Summary =====")
-        print(f"baseline: {metric_name}={base_val:.6g} flags={base_flags}")
-        if improved_any:
-            print(f"best:     {metric_name}={(-best_global_score if goal=='max' else best_global_score):.6g} "
-                  f"flags={base_flags + list(best_global_combo)}")
-        print(f"[wavefront] results → {results_path}")
-
-        
+    print(f"[wavefront] results → {results_path}")
 
