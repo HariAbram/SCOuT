@@ -427,10 +427,12 @@ def run_wavefront_study(cfg: Config) -> None:
             best_base_sc = sc
             best_base = (val, mets, binpath, env)
 
+    if best_base is None:
+        raise RuntimeError("wavefront: all baseline environment evaluations failed.")
     base_val, base_metrics, base_bin, base_env = best_base
     best_global_score = best_base_sc
     best_global_combo: Tuple[str, ...] = tuple()
-    print(f"[wavefront] baseline {metric_name} = {base_val:.6g}")
+    print(f"[wavefront] baseline {metric_name} = {base_val:.6g} env={json.dumps(base_env)}")
 
 
     # --- Buffer rows to emit an Optuna-like CSV later ---
