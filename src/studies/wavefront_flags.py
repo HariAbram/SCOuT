@@ -408,7 +408,7 @@ def run_wavefront_study(cfg: Config) -> None:
     # Baseline
     print("[wavefront] evaluating baseline …")
     base_dir = workroot / "k00_baseline"
-    rows: List[Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    rows: List[int, Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
     extra_metric_keys: set[str] = set()
 
     metric_name, goal = _choose_objective(cfg)
@@ -437,7 +437,7 @@ def run_wavefront_study(cfg: Config) -> None:
 
     # --- Buffer rows to emit an Optuna-like CSV later ---
     # Each row: (obj_values, compiler_flags_key, env_dict, binary_path, metrics_dict)
-    rows: List[Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    rows: List[int, Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
     extra_metric_keys: set[str] = set()
 
     def _flags_key(flags_seq: Sequence[str]) -> str:
@@ -445,7 +445,7 @@ def run_wavefront_study(cfg: Config) -> None:
         return "|".join(flags_seq) if flags_seq else "default"
 
     # Record baseline in the same schema as Optuna CSV
-    rows.append(([float(base_val)], _flags_key(base_flags), dict(base_env), str(base_bin), base_metrics))
+    rows.append((0, [float(base_val)], _flags_key(base_flags), dict(base_env), str(base_bin), base_metrics))
     extra_metric_keys.update(base_metrics.keys())
 
     # Wave k >= 1
@@ -491,7 +491,7 @@ def run_wavefront_study(cfg: Config) -> None:
                     value, sc, metrics, binary = (math.inf, math.inf, {"error": str(exc)}, "")
 
                 # buffer a row for Optuna-like CSV (each env eval is a row)
-                rows.append(([float(value)], "|".join(flags) if flags else "default", dict(env), str(binary), metrics))
+                rows.append((k, [float(value)], "|".join(flags) if flags else "default", dict(env), str(binary), metrics))
                 extra_metric_keys.update(metrics.keys())
 
                 # pick best env outcome for ranking this flag combo
@@ -531,16 +531,16 @@ def run_wavefront_study(cfg: Config) -> None:
 
     obj_headers = [o.metric for o in cfg.objectives]  # usually 1 metric for wavefront
     extra_cols = sorted(extra_metric_keys)
-    header = obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
+    header = ["k"] + obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
 
     with open(results_path, "w", newline="") as fp:
         w = csv.writer(fp)
         w.writerow(header)
-        for obj_vals, flags_key, env_row, binary_path, metrics in rows:
+        for k_idx, obj_vals, flags_key, env_row, binary_path, metrics in rows:
             # mimic Optuna: skip failed (value==inf)
             if not obj_vals or math.isinf(obj_vals[0]):
                 continue
-            row = list(obj_vals) + [flags_key, json.dumps(env_row), binary_path]
+            row = [k_idx] + list(obj_vals) + [flags_key, json.dumps(env_row), binary_path]
             row += [metrics.get(k, "") for k in extra_cols]
             w.writerow(row)
 
