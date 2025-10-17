@@ -10,6 +10,7 @@ import hashlib, json, os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
+import shutil
 
 ###############################################################################
 # Type helpers                                                                #
@@ -191,6 +192,30 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
 
     return env
 
+#acpp cache cleaner 
+
+def clear_acpp_runtime_cache() -> None:
+    """
+    Delete AdaptiveCpp (ACPP) per-app JIT cache entries:
+      ~/.acpp/apps/main-*
+    Safe no-op if directory doesn't exist.
+    """
+    apps = Path.home() / ".acpp" / "apps"
+    if not apps.exists():
+        return
+    # Only remove the per-app subdirs/files (main-*)
+    for entry in apps.iterdir():
+        name = entry.name
+        if not name.startswith("main-"):
+            continue
+        try:
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)  # py3.8+: just ignore if gone
+        except Exception:
+            # Best-effort cleanup; ignore permission/transient errors
+            pass
 
 ##### General helpers
 

@@ -28,7 +28,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path
+from src.misc import unique_csv_path, clear_acpp_runtime_cache
 
 @dataclass
 class _WFParams:
@@ -376,8 +376,8 @@ def measure_parser_sycl_wavefront(
     if iterations_seen and all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
         mets["sycl_iters"] = float(iterations_seen[0])
 
+    clear_acpp_runtime_cache()
     return mets
-
 
 def run_wavefront_study(cfg: Config) -> None:
     """

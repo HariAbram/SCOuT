@@ -25,6 +25,7 @@ MetricDict = Dict[str, Number]
 
 from src.config import PerfConfig, MetricSpec, LikwidConfig, ParserConfig, BuildProject
 from src.build import _run
+from src.misc import clear_acpp_runtime_cache
 
 ###############################################################################
 # Measurement helpers (perf & likwid)                                         #
@@ -73,7 +74,8 @@ def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: Env
         for k, v_list in buckets.items():
             if k in data:
                 v_list.append(data[k])
-
+    
+    clear_acpp_runtime_cache()
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
@@ -186,6 +188,8 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
         for k, v in data.items():
             if k in buckets:
                 buckets[k].append(v)
+
+    clear_acpp_runtime_cache()
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
@@ -314,4 +318,5 @@ def measure_parser_sycl(
     if all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
         mets["sycl_iters"] = float(iterations_seen[0])
 
+    clear_acpp_runtime_cache()
     return mets
