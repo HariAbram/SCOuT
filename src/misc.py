@@ -194,27 +194,22 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
 
 #acpp cache cleaner 
 
-def clear_acpp_runtime_cache() -> None:
-    """
-    Delete AdaptiveCpp (ACPP) per-app JIT cache entries:
-      ~/.acpp/apps/main-*
-    Safe no-op if directory doesn't exist.
-    """
-    apps = Path.home() / ".acpp" / "apps"
+def clear_acpp_runtime_cache(root: Path | None = None) -> None:
+    
+    apps = root if root is not None else (Path.home() / ".acpp" / "apps")
     if not apps.exists():
         return
-    # Only remove the per-app subdirs/files (main-*)
+
+    # Only delete contents of 'apps', not the parent ~/.acpp directory.
     for entry in apps.iterdir():
-        name = entry.name
-        if not name.startswith("main-"):
-            continue
         try:
-            if entry.is_dir():
+            if entry.is_dir() and not entry.is_symlink():
                 shutil.rmtree(entry, ignore_errors=True)
             else:
-                entry.unlink(missing_ok=True)  # py3.8+: just ignore if gone
+                # files or symlinks
+                entry.unlink(missing_ok=True)
         except Exception:
-            # Best-effort cleanup; ignore permission/transient errors
+            # Best-effort cleanup; ignore transient/permission errors
             pass
 
 ##### General helpers
