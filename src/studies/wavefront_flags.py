@@ -243,6 +243,42 @@ def _generate_beam(expand_from: List[Tuple[str, ...]], atoms: List[str]) -> Iter
                 seen.add(newc)
                 yield newc
 
+def _generate_beam_boost(
+    expand_from: List[Tuple[str, ...]],
+    atoms: List[str],
+    rng: random.Random,
+    focus_count: int = 1
+) -> Iterable[Tuple[str, ...]]:
+
+    seen: set[Tuple[str, ...]] = set()
+
+    # Make local copies so we don't mutate originals
+    atoms_local = list(atoms)
+    rng.shuffle(atoms_local)
+
+    # 1) Focus parents first (deterministic, already ordered by score)
+    for combo in expand_from[:max(0, focus_count)]:
+        for a in atoms_local:
+            if a in combo:
+                continue
+            newc = _canonical(combo + (a,))
+            if newc not in seen:
+                seen.add(newc)
+                yield newc
+
+    # 2) Then the rest, in random parent order
+    tail = list(expand_from[max(0, focus_count):])
+    rng.shuffle(tail)
+    for combo in tail:
+        for a in atoms_local:
+            if a in combo:
+                continue
+            newc = _canonical(combo + (a,))
+            if newc not in seen:
+                seen.add(newc)
+                yield newc
+
+
 
 _SYCL_RE = re.compile(
     r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
@@ -450,7 +486,8 @@ def run_wavefront_study(cfg: Config) -> None:
         if params.mode == "full" or (k == 1 and not prev_top):
             gen_iter = _generate_full(atoms, k)
         else:
-            gen_iter = _generate_beam(prev_top, atoms)
+            #gen_iter = _generate_beam(prev_top, atoms)
+            gen_iter = _generate_beam_boost(prev_top, atoms, rng, focus_count=1)
         candidates = list(gen_iter)
         if params.per_wave_cap and len(candidates) > params.per_wave_cap:
             rng.shuffle(candidates)
