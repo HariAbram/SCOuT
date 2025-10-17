@@ -251,7 +251,7 @@ class Config:
 
     # Wavefront
     wavefront: Optional[WavefrontSpec] = None
-
+    #tabu
     tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
      
 

@@ -284,3 +284,11 @@ def explore_wavefront(cfg: Config) -> None:
 def explore_tabu(cfg: Config) -> None:
     from src.studies.tabu_flags import run_tabu_study
     return run_tabu_study(cfg)
+
+###############################################################################
+# Beam and Tabu search exploration                                            #
+###############################################################################
+
+def explore_beam_tabu(cfg: Config) -> None:
+    from src.studies.beam_tabu import run_beam_tabu_study
+    return run_beam_tabu_study(cfg)

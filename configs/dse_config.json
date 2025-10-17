@@ -121,6 +121,19 @@
       "env_cap": 16
   },
 
+  "beam_tabu": {
+      "base_flags": ["--acpp-platform=cpu --acpp-targets=generic -O2"],
+      "flag_atoms": ["-funroll-loops", "-ffast-math", "-funsafe-math-optimizations",
+                    "-mllvm -enable-misched", "-mllvm -enable-interleaved-mem-accesses"],
+      "max_k": 3,
+      "beam_width": 16,
+      "per_iter_cap": null,              
+      "env_mode": "product",             
+      "env_cap": 8,                      
+      "stop_if_no_improve": true,
+      "improvement_eps": 0.0
+  },
+
   "tabu": {
     "max_iters": 150,
     "max_no_improve": 30,
