@@ -194,8 +194,8 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
 
 #acpp cache cleaner 
 
-def clear_acpp_runtime_cache(root: Path | None = None) -> None:
-    
+def clear_acpp_runtime_cache(root: Optional[Path] = None) -> None:
+
     apps = root if root is not None else (Path.home() / ".acpp" / "apps")
     if not apps.exists():
         return
