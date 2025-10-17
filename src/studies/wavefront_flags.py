@@ -233,18 +233,10 @@ def _generate_full(atoms: List[str], k: int) -> Iterable[Tuple[str, ...]]:
 
 
 def _generate_beam(expand_from: List[Tuple[str, ...]], atoms: List[str]) -> Iterable[Tuple[str, ...]]:
-    # Expand each previous combo by appending a new atom not already present,
-    # ensuring lexicographic growth to avoid duplicates.
-    index = {a: i for i, a in enumerate(atoms)}
     seen: set[Tuple[str, ...]] = set()
     for combo in expand_from:
-        if not combo:
-            start = 0
-        else:
-            start = index[combo[-1]] + 1
-        for j in range(start, len(atoms)):
-            a = atoms[j]
-            if a in combo:  # should not happen with our start rule
+        for a in atoms:
+            if a in combo:
                 continue
             newc = _canonical(combo + (a,))
             if newc not in seen:
