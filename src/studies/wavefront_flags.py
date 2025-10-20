@@ -28,7 +28,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path, clear_acpp_runtime_cache
+from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain
 
 @dataclass
 class _WFParams:
@@ -440,6 +440,9 @@ def run_wavefront_study(cfg: Config) -> None:
     extra_metric_keys: set[str] = set()
 
     metric_name, goal = _choose_objective(cfg)
+    sig = getattr(cfg, "significance", {}) or {}
+    MIN_REL = float(sig.get("min_rel_gain", 0.15))
+    MIN_ABS = sig.get("min_abs_gain", None)
     def _score(v: float) -> float: return v if goal == "min" else -v
 
     best_base_sc = math.inf
@@ -459,13 +462,14 @@ def run_wavefront_study(cfg: Config) -> None:
         raise RuntimeError("wavefront: all baseline environment evaluations failed.")
     base_val, base_metrics, base_bin, base_env = best_base
     best_global_score = best_base_sc
+    best_val_global = base_val
     best_global_combo: Tuple[str, ...] = tuple()
     print(f"[wavefront] baseline {metric_name} = {base_val:.6g} env={json.dumps(base_env)}")
 
 
     # --- Buffer rows to emit an Optuna-like CSV later ---
     # Each row: (obj_values, compiler_flags_key, env_dict, binary_path, metrics_dict)
-    rows: List[int, Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    rows: List[Tuple[int, List[float], str, Dict[str, str], str, Dict[str, float]]] = []
     extra_metric_keys: set[str] = set()
 
     def _flags_key(flags_seq: Sequence[str]) -> str:
@@ -532,6 +536,7 @@ def run_wavefront_study(cfg: Config) -> None:
         # Sort by score (lower better)
         scored.sort(key=lambda t: t[0])
         best_sc, best_val, best_combo, best_metrics, best_bin = scored[0]
+
         print(f"[wavefront] best@k={k}: {metric_name}={best_val:.6g}  flags={list(best_combo)}")
 
         # Seeds for next wave (beam)
@@ -541,12 +546,18 @@ def run_wavefront_study(cfg: Config) -> None:
             prev_top = []
 
         # Early stop if not improving globally
-        if best_sc + params.improvement_eps < best_global_score:
-            best_global_score = best_sc
+        if is_significant_improvement(old=best_val_global,
+                              new=best_val,
+                              goal=goal,
+                              min_rel_gain=MIN_REL,
+                              min_abs_gain=MIN_ABS):
+            # track the global-best *value* separately
+            best_val_global = best_val
             best_global_combo = best_combo
+            improved_any = True
         else:
             if params.stop_if_no_improve:
-                print("[wavefront] no global improvement; stopping early.")
+                print("[wavefront] no *significant* improvement; stopping early.")
                 break
 
     # --- Write CSV IDENTICAL to explore_optuna() ---

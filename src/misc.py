@@ -192,7 +192,7 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
 
     return env
 
-#acpp cache cleaner 
+##### acpp cache cleaner 
 
 def clear_acpp_runtime_cache(root: Optional[Path] = None) -> None:
 
@@ -211,6 +211,34 @@ def clear_acpp_runtime_cache(root: Optional[Path] = None) -> None:
         except Exception:
             # Best-effort cleanup; ignore transient/permission errors
             pass
+
+##### improvements
+
+
+def rel_gain(old: float, new: float, goal: str) -> float:
+
+    eps = 1e-12
+    denom = max(abs(old), eps)
+    if goal == "min":
+        return (old - new) / denom
+    else:
+        return (new - old) / denom
+
+def is_significant_improvement(old: float,
+                               new: float,
+                               goal: str,
+                               min_rel_gain: float = 0.15,
+                               min_abs_gain: Optional[float] = None) -> bool:
+
+    if min_abs_gain is not None:
+        if goal == "min":
+            if (old - new) >= min_abs_gain:
+                return True
+        else:  # goal == 'max'
+            if (new - old) >= min_abs_gain:
+                return True
+
+    return rel_gain(old, new, goal) >= float(min_rel_gain)
 
 ##### General helpers
 

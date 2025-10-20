@@ -25,7 +25,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path
+from src.misc import unique_csv_path, is_significant_improvement
 
 
 
@@ -187,11 +187,9 @@ def _neighbors(
     tabu: TabuSpec,
     rng: random.Random,
     num: int,
+    PARAM_MIN: int,
+    PARAM_MAX: int,
 ) -> List[Tuple[Optional[str], Dict[str, Any], List[str], Dict[str, str]]]:
-    """
-    state: (variant, params_choice, pool_list, env_dict)
-    Returns a list of neighbor states.
-    """
     variant, params_choice, pool_list, env_dict = state
     pool_all: List[str] = list(cfg.compiler_flag_pool or [])
     variants_all: List[str] = list(cfg.compiler_flags or [])
@@ -202,30 +200,85 @@ def _neighbors(
     def move_variant():
         if not tabu.allow_variant_moves or not variants_all:
             return
-        if not variants_all:
-            return
         choices = [v for v in variants_all if v != variant] or variants_all
         nv = rng.choice(choices)
         out.append((nv, dict(params_choice), list(pool_list), dict(env_dict)))
 
+    def _values_for_param(key: str) -> List[Any]:
+        spec = params_schema[key]
+        return list(spec["values"]) if isinstance(spec, dict) and "values" in spec else list(spec)
+
     def move_param():
         if not tabu.allow_param_moves or not params_schema:
             return
-        key = rng.choice(list(params_schema.keys()))
-        spec = params_schema[key]
-        # get values
-        if isinstance(spec, dict) and "values" in spec:
-            vals = list(spec["values"])
-        else:
-            vals = list(spec)
-        if not vals:
-            return
-        cur = params_choice.get(key, vals[0])
-        choices = [v for v in vals if v != cur] or vals
-        nv = rng.choice(choices)
-        new_params = dict(params_choice)
-        new_params[key] = nv
-        out.append((variant, new_params, list(pool_list), dict(env_dict)))
+
+        active = set(params_choice.keys())
+        all_keys = list(params_schema.keys())
+        rng.shuffle(all_keys)
+
+        # Randomly choose an action class respecting bounds
+        actions = []
+        if len(active) < PARAM_MAX:
+            actions.append("add")
+        if len(active) > PARAM_MIN:
+            actions.append("remove")
+        if len(active) > 0:
+            actions.append("change")
+        if len(active) > 0 and len(active) <= PARAM_MAX and len(active) >= PARAM_MIN and len(active) < len(all_keys):
+            actions.append("swap")  # remove one, add a different one
+
+        if not actions:
+            # If bounds block add/remove, at least try change
+            if len(active) > 0:
+                actions = ["change"]
+            else:
+                return
+
+        act = rng.choice(actions)
+
+        if act == "add":
+            candidates = [k for k in all_keys if k not in active]
+            if not candidates:
+                return
+            k = rng.choice(candidates)
+            vals = _values_for_param(k)
+            if not vals:
+                return
+            new_params = dict(params_choice)
+            new_params[k] = rng.choice(vals)
+            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+
+        elif act == "remove":
+            k = rng.choice(list(active))
+            new_params = dict(params_choice)
+            new_params.pop(k, None)
+            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+
+        elif act == "change":
+            k = rng.choice(list(active))
+            vals = _values_for_param(k)
+            if not vals:
+                return
+            cur = params_choice.get(k)
+            choices = [v for v in vals if v != cur] or vals
+            new_params = dict(params_choice)
+            new_params[k] = rng.choice(choices)
+            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+
+        elif act == "swap":
+            # remove one active, add a different inactive
+            rem_k = rng.choice(list(active))
+            add_candidates = [k for k in all_keys if k not in active]
+            if not add_candidates:
+                return
+            add_k = rng.choice(add_candidates)
+            vals = _values_for_param(add_k)
+            if not vals:
+                return
+            new_params = dict(params_choice)
+            new_params.pop(rem_k, None)
+            new_params[add_k] = rng.choice(vals)
+            out.append((variant, new_params, list(pool_list), dict(env_dict)))
 
     def move_pool():
         if not tabu.allow_pool_moves or not pool_all:
@@ -236,34 +289,34 @@ def _neighbors(
             rem = rng.choice(list(new_pool))
             new_pool.remove(rem)
         else:
-            # add one
+            # add one or toggle
             cand = rng.choice(pool_all)
             if cand in new_pool:
-                # toggle off instead
                 new_pool.remove(cand)
             else:
                 new_pool.add(cand)
         out.append((variant, dict(params_choice), sorted(new_pool), dict(env_dict)))
 
-    def move_env():
-        if not tabu.allow_env_moves:
-            return
-        # env neighbors will be picked outside using precomputed env list
-        # We'll signal with a sentinel — handled in caller.
-        pass  # handled by the main loop
+    # Compose move bag
+    moves = []
+    if tabu.allow_variant_moves and (cfg.compiler_flags or []):
+        moves.append(move_variant)
+    if tabu.allow_param_moves and (cfg.compiler_params or {}):
+        # Important: capture bounds via closure
+        def bounded_move_param():
+            move_param()
+        moves.append(bounded_move_param)
+    if tabu.allow_pool_moves and (cfg.compiler_flag_pool or []):
+        moves.append(move_pool)
 
-    # Generate a mixed bag
+    if not moves:
+        return out
+
     for _ in range(num):
-        op = rng.choice(
-            [m for m, use in [
-                (move_variant, tabu.allow_variant_moves),
-                (move_param, tabu.allow_param_moves),
-                (move_pool, tabu.allow_pool_moves),
-            ] if use]
-        )
-        op()
+        rng.choice(moves)()
 
     return out
+
 
 
 # -----------------------------
@@ -330,10 +383,39 @@ def run_tabu_study(cfg: Config) -> None:
     pool_list: List[str] = []
     env0 = env_list[0] if env_list else {}
 
+    sel = getattr(cfg, "compiler_params_select", {}) or {}
+    PARAM_MIN = int(sel.get("min", 0))
+    # if max omitted, allow all params
+    PARAM_MAX = int(sel.get("max", len((cfg.compiler_params or {}))))
+    if PARAM_MAX < PARAM_MIN:
+        PARAM_MAX = PARAM_MIN
+
+    params_schema = cfg.compiler_params or {}
+    if PARAM_MIN > 0 and params_schema:
+        keys = list(params_schema.keys())
+        rng.shuffle(keys)
+        need = min(PARAM_MIN, len(keys))
+        for k in keys[:need]:
+            spec = params_schema[k]
+            if isinstance(spec, dict) and "values" in spec:
+                vals = list(spec["values"])
+            else:
+                vals = list(spec)
+            if not vals:
+                continue
+            params_choice[k] = rng.choice(vals)
+
+
     # Evaluate baseline across all envs and pick the best as the starting point
     best_start = None
     best_start_sc = math.inf
     goal_min = (cfg.objectives[0].goal == "min")
+
+    sig = getattr(cfg, "significance", {}) or {}
+    MIN_REL = float(sig.get("min_rel_gain", 0.15))
+    MIN_ABS = sig.get("min_abs_gain", None)
+
+    no_improve = 0
 
     def score(v: float) -> float:
         return v if goal_min else -v
@@ -403,7 +485,8 @@ def run_tabu_study(cfg: Config) -> None:
             iters += 1
 
             # Generate neighbors for the current state (flag-side)
-            neigh = _neighbors(cfg, (variant, params_choice, pool_list, env), tabu, rng, tabu.neighborhood)
+            neigh = _neighbors(cfg, (variant, params_choice, pool_list, env), tabu, rng, tabu.neighborhood, PARAM_MIN, PARAM_MAX,)
+
 
             # Add environment neighbors if allowed
             if tabu.allow_env_moves and len(env_list) > 1:
@@ -484,9 +567,29 @@ def run_tabu_study(cfg: Config) -> None:
             variant, params_choice, pool_list, env = cand_best
             v, mets, binp, k, fstr, e = cand_best_pkg  # type: ignore[misc]
             tabu_q.append(k + "|" + json.dumps(e, sort_keys=True))
-
+            '''
             # Improvement?
             if score(v) < score(best_val):
+                best_val = v
+                best_key = k
+                best_flags = fstr
+                best_env = dict(e)
+                best_metrics = dict(mets)
+                best_binary = binp
+                no_improve = 0
+                print(f"[tabu] iter {iters}: IMPROVED → {cfg.objectives[0].metric}={best_val:.6g}")
+            else:
+                no_improve += 1
+                print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
+            '''
+            sig = getattr(cfg, "significance", {}) or {}
+            MIN_REL = float(sig.get("min_rel_gain", 0.15))
+            MIN_ABS = sig.get("min_abs_gain", None)
+
+            # Did we significantly improve the global best?
+            if is_significant_improvement(old=best_val, new=v,
+                                        goal=("min" if cfg.objectives[0].goal == "min" else "max"),
+                                        min_rel_gain=MIN_REL, min_abs_gain=MIN_ABS):
                 best_val = v
                 best_key = k
                 best_flags = fstr

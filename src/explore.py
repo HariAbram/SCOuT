@@ -292,3 +292,11 @@ def explore_tabu(cfg: Config) -> None:
 def explore_beam_tabu(cfg: Config) -> None:
     from src.studies.beam_tabu import run_beam_tabu_study
     return run_beam_tabu_study(cfg)
+
+###############################################################################
+# Simulated Annealing                                                         #
+###############################################################################
+
+def explore_anneal(cfg: Config) -> None:
+    from src.studies.anneal_flags import run_anneal_study
+    return run_anneal_study(cfg)

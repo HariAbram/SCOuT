@@ -19,7 +19,7 @@ import tempfile
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path
+from src.misc import unique_csv_path, is_significant_improvement, rel_gain, clear_acpp_runtime_cache
 
 ###############################################################################
 # Type helpers                                                                #
@@ -207,6 +207,10 @@ def run_beam_tabu_study(cfg: Config) -> None:
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_beamtabu_"))
     atoms = _collect_atoms(cfg, bt)
     metric_name, goal = _choose_objective(cfg)
+    sig = getattr(cfg, "significance", {}) or {}
+    MIN_REL = float(sig.get("min_rel_gain", 0.15))
+    MIN_ABS = sig.get("min_abs_gain", None)
+
     def score(v: float) -> float: return v if goal == "min" else -v
 
     # env combos
@@ -291,6 +295,24 @@ def run_beam_tabu_study(cfg: Config) -> None:
         # Sort and select beam
         next_candidates.sort(key=lambda t: t[0])
         selected = next_candidates[: bt.beam_width]
+
+        # Generation best (by objective value)
+        gen_best_score, gen_best_val, gen_best_atoms, gen_best_mets, gen_best_bin, gen_best_env = selected[0]
+
+        # Only accept as “meaningful” if it clears significance thresholds
+        if is_significant_improvement(
+            old=best_global_val, new=gen_best_val, goal=goal,
+            min_rel_gain=MIN_REL, min_abs_gain=MIN_ABS
+        ):
+            best_global_val = gen_best_val
+            best_global_combo = gen_best_atoms
+        else:
+            # Optional: a helpful log to make noise visible
+            print(f"[beam-tabu] gen best not significant "
+                f"(Δrel={rel_gain(best_global_val, gen_best_val, goal):.3f})")
+
+        # Build next beam frontier (just the atom-sets)
+        beam = [atoms_c for (_sc, _v, atoms_c, _m, _b, _e) in selected]
 
         # Update global best and tabu list
         improved = False
