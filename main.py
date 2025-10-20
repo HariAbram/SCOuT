@@ -81,24 +81,20 @@ def main() -> None:
     study = (study or "optuna").lower()
 
     t0 = time.perf_counter()
-
-    if study == "wavefront":
-        explore_wavefront(cfg)
-        return
-    if study == "tabu":
-        explore_tabu(cfg)
-        return
-    elif study == "beam_tabu":
-        explore_beam_tabu(cfg)
-        return
-    elif study == "anneal":
-        explore_anneal(cfg)
-        return
-    else:
-        explore_optuna(cfg, args.trials)
-
-    dt = time.perf_counter() - t0
-    print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
+    try:
+        if study == "wavefront":
+            explore_wavefront(cfg)
+        elif study == "tabu":
+            explore_tabu(cfg)
+        elif study == "beam_tabu":
+            explore_beam_tabu(cfg)
+        elif study == "anneal":
+            explore_anneal(cfg)
+        else:
+            explore_optuna(cfg, args.trials)
+    finally:
+        dt = time.perf_counter() - t0
+        print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
 
     #explore_optuna(cfg, args.trials)
 
