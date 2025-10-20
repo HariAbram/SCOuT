@@ -42,7 +42,8 @@ import sys
 from pathlib import Path
 from statistics import mean, variance
 from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
-
+import time
+from datetime import timedelta
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
@@ -62,6 +63,9 @@ MetricDict = Dict[str, Number]
 # Entry point                                                                 #
 ###############################################################################
 
+def _fmt_dur(sec: float) -> str:
+    # nice H:MM:SS.sss
+    return str(timedelta(seconds=sec))
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="AdaptiveCpp/SYCL multi‑objective explorer with Optuna")
@@ -75,6 +79,8 @@ def main() -> None:
 
     study = getattr(cfg, "search", None).study if getattr(cfg, "search", None) else "optuna"
     study = (study or "optuna").lower()
+
+    t0 = time.perf_counter()
 
     if study == "wavefront":
         explore_wavefront(cfg)
@@ -90,6 +96,9 @@ def main() -> None:
         return
     else:
         explore_optuna(cfg, args.trials)
+
+    dt = time.perf_counter() - t0
+    print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
 
     #explore_optuna(cfg, args.trials)
 
