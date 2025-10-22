@@ -253,7 +253,8 @@ class Config:
     wavefront: Optional[WavefrontSpec] = None
     #tabu
     tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
-     
+    #anneal 
+    anneal: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Factory
@@ -326,6 +327,8 @@ class Config:
 
         tabu = raw.get("tabu", {})
 
+        anneal = raw.get("anneal", {})
+
         return cls(
             backend=backend,
             source=Path(source) if source else None,
@@ -345,6 +348,7 @@ class Config:
             search=SearchSpec.from_dict(raw.get("search", {})),
             wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
             tabu=tabu,
+            anneal=anneal,
             runs=raw.get("runs"),
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),
