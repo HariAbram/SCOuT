@@ -468,7 +468,7 @@ def run_tabu_study(cfg: Config) -> None:
     print(f"[tabu] writing CSV → {out_csv}")
 
     extra_keys: set[str] = set(best_metrics.keys())
-    hdr = [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"]
+    hdr = ["k"] + [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"]
     # rows are streamed; we’ll write header now and append
     with open(out_csv, "w", newline="") as fp:
         w = csv.writer(fp)
@@ -477,7 +477,7 @@ def run_tabu_study(cfg: Config) -> None:
         extra_cols = sorted(extra_keys)
         w.writerow(hdr + extra_cols)
         # baseline row
-        w.writerow([best_val, best_key, json.dumps(best_env), best_binary] + [best_metrics.get(k, "") for k in extra_cols])
+        w.writerow([0, best_val, best_key, json.dumps(best_env), best_binary] + [best_metrics.get(k, "") for k in extra_cols])
         fp.flush()
 
         # Main loop
@@ -543,8 +543,8 @@ def run_tabu_study(cfg: Config) -> None:
                         if len(rows) > 1:
                             # rewrite previous rows with new extra columns
                             for r in rows[1:]:
-                                # r = [val, flags, env, bin, ... old extras]
-                                base_len = 4
+                                # r = [k, val, flags, env, bin, ... old extras]
+                                base_len = 5
                                 # rebuild into dict for old extras
                                 old_extra_vals = r[base_len:]
                                 old_keys = sorted(set(extra_keys))
@@ -556,7 +556,7 @@ def run_tabu_study(cfg: Config) -> None:
                     fp = open(out_csv, "a", newline="")
                     w = csv.writer(fp)
 
-                w.writerow([v, nkey, json.dumps(nenv), binp] + [mets.get(k, "") for k in extra_cols])
+                w.writerow([iters, v, nkey, json.dumps(nenv), binp] + [mets.get(k, "") for k in extra_cols])
                 fp.flush()
 
             if cand_best is None:
@@ -567,7 +567,7 @@ def run_tabu_study(cfg: Config) -> None:
             variant, params_choice, pool_list, env = cand_best
             v, mets, binp, k, fstr, e = cand_best_pkg  # type: ignore[misc]
             tabu_q.append(k + "|" + json.dumps(e, sort_keys=True))
-            '''
+            
             # Improvement?
             if score(v) < score(best_val):
                 best_val = v
@@ -581,6 +581,7 @@ def run_tabu_study(cfg: Config) -> None:
             else:
                 no_improve += 1
                 print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
+                
             '''
             sig = getattr(cfg, "significance", {}) or {}
             MIN_REL = float(sig.get("min_rel_gain", 0.15))
@@ -601,6 +602,7 @@ def run_tabu_study(cfg: Config) -> None:
             else:
                 no_improve += 1
                 print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
+            '''
 
     print("\n[tabu] ===== Summary =====")
     print(f"best: {cfg.objectives[0].metric}={best_val:.6g}")
