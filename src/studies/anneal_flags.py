@@ -354,6 +354,7 @@ def run_anneal_study(cfg: Config) -> None:
         if accept:
             cur_flags, cur_val, cur_mets, cur_bin, cur_env = cand_flags, cand_val, cand_mets, cand_bin, cand_env
 
+        '''
         if is_significant_improvement(best_val, cur_val, goal, MIN_REL, MIN_ABS):
             best_val, best_flags, best_env, best_mets, best_bin = cur_val, cur_flags, cur_env, cur_mets, cur_bin
             no_improve = 0
@@ -361,14 +362,14 @@ def run_anneal_study(cfg: Config) -> None:
             no_improve += 1
 
         '''
+
         # Track best
         if _score(cur_val, goal) < _score(best_val, goal):
             best_val, best_mets, best_bin, best_flags, best_env = cur_val, cur_mets, cur_bin, cur_flags, cur_env
             no_improve = 0
         else:
             no_improve += 1
-        '''
-        
+
         # Cool
         T *= float(params.alpha)
 
