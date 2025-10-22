@@ -411,10 +411,6 @@ def run_tabu_study(cfg: Config) -> None:
     best_start_sc = math.inf
     goal_min = (cfg.objectives[0].goal == "min")
 
-    sig = getattr(cfg, "significance", {}) or {}
-    MIN_REL = float(sig.get("min_rel_gain", 0.15))
-    MIN_ABS = sig.get("min_abs_gain", None)
-
     no_improve = 0
 
     def score(v: float) -> float:
@@ -581,7 +577,7 @@ def run_tabu_study(cfg: Config) -> None:
             else:
                 no_improve += 1
                 print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
-                
+
             '''
             sig = getattr(cfg, "significance", {}) or {}
             MIN_REL = float(sig.get("min_rel_gain", 0.15))
