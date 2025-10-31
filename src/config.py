@@ -266,7 +266,7 @@ class Config:
 
         backend = raw.get("backend", "likwid").lower()
         if backend not in {"perf", "likwid", "parser"}:
-            raise ValueError("backend must be 'perf' or 'likwid'")
+            raise ValueError("backend must be 'perf' or 'likwid' or 'parser'")
 
         # Build description
         source = raw.get("source")
@@ -294,8 +294,8 @@ class Config:
 
         # Environment space
         env_schema = raw.get("env")
-        if not isinstance(env_schema, dict) or not env_schema:
-            raise ValueError("Config must contain a non-empty 'env' object.")
+        if not isinstance(env_schema, dict):
+            env_schema = {}
         
         for var, spec in env_schema.items():
             if isinstance(spec, list):
@@ -349,7 +349,7 @@ class Config:
             wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
             tabu=tabu,
             anneal=anneal,
-            runs=raw.get("runs"),
+            runs=int(raw.get("runs", 1)),
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),
             fail_log=raw.get("failed_builds"),

@@ -65,6 +65,8 @@ def _enumerate_env_schema(schema: Dict[str, Union[List[str], Dict[str, Any]]]) -
     """
     Turn an 'env' schema with optional 'when' predicates into a list of concrete env dicts.
     """
+    if not isinstance(schema, dict) or not schema:
+        return [{}]
     keys = list(schema.keys())
 
     def rec(i: int, partial: Dict[str, str], out: List[Dict[str, str]]):
@@ -106,26 +108,29 @@ def _enumerate_env_schema(schema: Dict[str, Union[List[str], Dict[str, Any]]]) -
 
 
 def _env_combos(cfg: Config, tabu: TabuSpec, rng: random.Random) -> List[Dict[str, str]]:
+    """Return a non-empty list of env dicts; fall back to [{}] if cfg.env is empty/missing."""
     mode = (tabu.env_mode or "product").lower()
     if mode == "fixed":
-        # If fixed, we’ll use an empty env unless cfg.wavefront/env exists; you can add a separate “tabu.env” later if needed
-        return [dict(getattr(getattr(cfg, "wavefront", object()), "env", {}) or {})]
+        # Use wavefront.env if present; otherwise a single empty env
+        wf_env = getattr(getattr(cfg, "wavefront", object()), "env", None)
+        return [dict(wf_env)] if isinstance(wf_env, dict) and wf_env else [{}]
 
-    schema = getattr(cfg, "env", {}) or {}
-    combos = _enumerate_env_schema(schema)
+    # Normal (product/sample) modes
+    schema = getattr(cfg, "env", None)
+    combos = _enumerate_env_schema(schema if isinstance(schema, dict) else {})
     if not combos:
-        return [{}]
+        combos = [{}]
 
     cap = tabu.env_cap or 0
     if cap <= 0 or len(combos) <= cap:
         return combos
 
-    if mode == "sample":
+    if mode == "sample" and len(combos) > 0:
         return rng.sample(combos, cap)
 
     # default/product: deterministic slice after shuffle for diversity
     rng.shuffle(combos)
-    return combos[:cap]
+    return combos[:cap] if cap > 0 else combos
 
 
 # -----------------------------
@@ -369,6 +374,8 @@ def run_tabu_study(cfg: Config) -> None:
     tabu = TabuSpec(**{k: v for k, v in raw.items() if k in TabuSpec.__annotations__})
 
     env_list = _env_combos(cfg, tabu, rng)
+    if not env_list:
+        env_list = [{}]
     print(f"[tabu] env_mode={tabu.env_mode} env_combos={len(env_list)}")
 
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_tabu_"))
