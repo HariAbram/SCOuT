@@ -185,7 +185,6 @@ def _render_flags(
 
 # -----------------------------
 # Neighborhood moves
-# -----------------------------
 def _neighbors(
     cfg: Config,
     state: Tuple[Optional[str], Dict[str, Any], List[str], Dict[str, str]],
@@ -200,127 +199,119 @@ def _neighbors(
     variants_all: List[str] = list(cfg.compiler_flags or [])
     params_schema = cfg.compiler_params or {}
 
-    out: List[Tuple[Optional[str], Dict[str, Any], List[str], Dict[str, str]]] = []
-
-    def move_variant():
-        if not tabu.allow_variant_moves or not variants_all:
-            return
-        choices = [v for v in variants_all if v != variant] or variants_all
-        nv = rng.choice(choices)
-        out.append((nv, dict(params_choice), list(pool_list), dict(env_dict)))
-
+    # Helper to get domain of a param
     def _values_for_param(key: str) -> List[Any]:
         spec = params_schema[key]
         return list(spec["values"]) if isinstance(spec, dict) and "values" in spec else list(spec)
 
-    def move_param():
-        if not tabu.allow_param_moves or not params_schema:
-            return
+    neigh: List[Tuple[Optional[str], Dict[str, Any], List[str], Dict[str, str]]] = []
 
+    # ---- VARIANT NEIGHBORS (change variant) ----
+    if tabu.allow_variant_moves and variants_all:
+        cand_variants = [v for v in variants_all if v != variant]
+        rng.shuffle(cand_variants)
+        for nv in cand_variants:
+            neigh.append((nv, dict(params_choice), list(pool_list), dict(env_dict)))
+
+    # ---- PARAM NEIGHBORS (add/remove/change/swap) ----
+    if tabu.allow_param_moves and params_schema:
         active = set(params_choice.keys())
         all_keys = list(params_schema.keys())
-        rng.shuffle(all_keys)
+        inactive = [k for k in all_keys if k not in active]
 
-        # Randomly choose an action class respecting bounds
-        actions = []
-        if len(active) < PARAM_MAX:
-            actions.append("add")
-        if len(active) > PARAM_MIN:
-            actions.append("remove")
-        if len(active) > 0:
-            actions.append("change")
-        if len(active) > 0 and len(active) <= PARAM_MAX and len(active) >= PARAM_MIN and len(active) < len(all_keys):
-            actions.append("swap")  # remove one, add a different one
+        # ADD (respect max)
+        if len(active) < PARAM_MAX and inactive:
+            rng.shuffle(inactive)
+            for k in inactive:
+                vals = _values_for_param(k)
+                if not vals: continue
+                new_params = dict(params_choice)
+                new_params[k] = rng.choice(vals)
+                neigh.append((variant, new_params, list(pool_list), dict(env_dict)))
 
-        if not actions:
-            # If bounds block add/remove, at least try change
-            if len(active) > 0:
-                actions = ["change"]
-            else:
-                return
+        # REMOVE (respect min)
+        if len(active) > PARAM_MIN and active:
+            rem_keys = list(active)
+            rng.shuffle(rem_keys)
+            for k in rem_keys:
+                new_params = dict(params_choice)
+                new_params.pop(k, None)
+                neigh.append((variant, new_params, list(pool_list), dict(env_dict)))
 
-        act = rng.choice(actions)
+        # CHANGE (pick different value)
+        if active:
+            chg_keys = list(active)
+            rng.shuffle(chg_keys)
+            for k in chg_keys:
+                vals = _values_for_param(k)
+                if not vals: continue
+                cur = params_choice.get(k)
+                choices = [v for v in vals if v != cur] or vals
+                if len(choices) == 1 and choices[0] == cur:
+                    continue  # no real change available
+                new_params = dict(params_choice)
+                new_params[k] = rng.choice(choices)
+                if new_params[k] == cur:
+                    continue
+                neigh.append((variant, new_params, list(pool_list), dict(env_dict)))
 
-        if act == "add":
-            candidates = [k for k in all_keys if k not in active]
-            if not candidates:
-                return
-            k = rng.choice(candidates)
-            vals = _values_for_param(k)
-            if not vals:
-                return
-            new_params = dict(params_choice)
-            new_params[k] = rng.choice(vals)
-            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+        # SWAP (remove one, add a different one)
+        if active and inactive and (len(active) >= PARAM_MIN) and (len(active) <= PARAM_MAX):
+            rem_keys = list(active); rng.shuffle(rem_keys)
+            add_keys = list(inactive); rng.shuffle(add_keys)
+            for rk in rem_keys:
+                for ak in add_keys:
+                    vals = _values_for_param(ak)
+                    if not vals: continue
+                    new_params = dict(params_choice)
+                    new_params.pop(rk, None)
+                    new_params[ak] = rng.choice(vals)
+                    neigh.append((variant, new_params, list(pool_list), dict(env_dict)))
 
-        elif act == "remove":
-            k = rng.choice(list(active))
-            new_params = dict(params_choice)
-            new_params.pop(k, None)
-            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+    # ---- POOL NEIGHBORS (add/remove single flag) ----
+    if tabu.allow_pool_moves and pool_all:
+        s = set(pool_list)
+        # ADD flags not present
+        addables = [f for f in pool_all if f not in s]
+        rng.shuffle(addables)
+        for f in addables:
+            new_pool = sorted(s | {f})
+            neigh.append((variant, dict(params_choice), new_pool, dict(env_dict)))
+        # REMOVE flags present
+        removables = list(s)
+        rng.shuffle(removables)
+        for f in removables:
+            new_pool = sorted(s - {f})
+            neigh.append((variant, dict(params_choice), new_pool, dict(env_dict)))
 
-        elif act == "change":
-            k = rng.choice(list(active))
-            vals = _values_for_param(k)
-            if not vals:
-                return
-            cur = params_choice.get(k)
-            choices = [v for v in vals if v != cur] or vals
-            new_params = dict(params_choice)
-            new_params[k] = rng.choice(choices)
-            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+    # ---- DEDUP + NO-OP FILTER + CAP ----
+    uniq: List[Tuple[Optional[str], Dict[str, Any], List[str], Dict[str, str]]] = []
+    seen = set()
+    cur_key = (
+        variant,
+        tuple(sorted(params_choice.items())),
+        tuple(pool_list),
+        tuple(sorted(env_dict.items())),
+    )
+    rng.shuffle(neigh)  # randomize before slicing
 
-        elif act == "swap":
-            # remove one active, add a different inactive
-            rem_k = rng.choice(list(active))
-            add_candidates = [k for k in all_keys if k not in active]
-            if not add_candidates:
-                return
-            add_k = rng.choice(add_candidates)
-            vals = _values_for_param(add_k)
-            if not vals:
-                return
-            new_params = dict(params_choice)
-            new_params.pop(rem_k, None)
-            new_params[add_k] = rng.choice(vals)
-            out.append((variant, new_params, list(pool_list), dict(env_dict)))
+    for nv, nparams, npool, nenv in neigh:
+        key = (
+            nv,
+            tuple(sorted(nparams.items())),
+            tuple(npool),
+            tuple(sorted(nenv.items())),
+        )
+        if key == cur_key:  # no-op, skip
+            continue
+        if key in seen:     # duplicate, skip
+            continue
+        seen.add(key)
+        uniq.append((nv, nparams, npool, nenv))
+        if len(uniq) >= max(1, num):   # respect requested neighborhood size
+            break
 
-    def move_pool():
-        if not tabu.allow_pool_moves or not pool_all:
-            return
-        new_pool = set(pool_list)
-        if rng.random() < 0.5 and new_pool:
-            # remove one
-            rem = rng.choice(list(new_pool))
-            new_pool.remove(rem)
-        else:
-            # add one or toggle
-            cand = rng.choice(pool_all)
-            if cand in new_pool:
-                new_pool.remove(cand)
-            else:
-                new_pool.add(cand)
-        out.append((variant, dict(params_choice), sorted(new_pool), dict(env_dict)))
-
-    # Compose move bag
-    moves = []
-    if tabu.allow_variant_moves and (cfg.compiler_flags or []):
-        moves.append(move_variant)
-    if tabu.allow_param_moves and (cfg.compiler_params or {}):
-        # Important: capture bounds via closure
-        def bounded_move_param():
-            move_param()
-        moves.append(bounded_move_param)
-    if tabu.allow_pool_moves and (cfg.compiler_flag_pool or []):
-        moves.append(move_pool)
-
-    if not moves:
-        return out
-
-    for _ in range(num):
-        rng.choice(moves)()
-
-    return out
+    return uniq
 
 
 
@@ -493,10 +484,21 @@ def run_tabu_study(cfg: Config) -> None:
 
             # Add environment neighbors if allowed
             if tabu.allow_env_moves and len(env_list) > 1:
-                # a few random env flips
-                for _ in range(min(8, len(env_list))):
-                    e = rng.choice(env_list)
-                    neigh.append((variant, dict(params_choice), list(pool_list), dict(e)))
+                cur_env_key = tuple(sorted(env.items()))
+                env_unique = [e for e in env_list if tuple(sorted(e.items())) != cur_env_key]
+                k = min(8, len(env_unique))
+                env_additions = [(variant, dict(params_choice), list(pool_list), dict(e))
+                                 for e in (rng.sample(env_unique, k) if k > 0 else [])]
+                # dedup against already-built neighbors
+                seen_keys = {
+                    (nv, tuple(sorted(np.items())), tuple(npl), tuple(sorted(ne.items())))
+                    for nv, np, npl, ne in neigh
+                }
+                for cand in env_additions:
+                    key = (cand[0], tuple(sorted(cand[1].items())), tuple(cand[2]), tuple(sorted(cand[3].items())))
+                    if key not in seen_keys:
+                        neigh.append(cand)
+                        seen_keys.add(key)
 
             # Evaluate neighbors, pick the best admissible (or aspirated)
             cand_best = None
@@ -538,7 +540,8 @@ def run_tabu_study(cfg: Config) -> None:
                     # expand header once: rewrite file from scratch with new header
                     extra_cols = sorted(set(extra_cols) | new_keys)
                     fp.seek(0)
-                    rows = list(csv.reader(open(out_csv)))
+                    with open(out_csv, "r", newline="") as _r:
+                        rows = list(csv.reader(_r))
                     # rows[0] was old header — rewrite
                     with open(out_csv, "w", newline="") as fp2:
                         w2 = csv.writer(fp2)
@@ -547,7 +550,8 @@ def run_tabu_study(cfg: Config) -> None:
                             # rewrite previous rows with new extra columns
                             for r in rows[1:]:
                                 # r = [k, val, flags, env, bin, ... old extras]
-                                base_len = 5
+                                #base_len = 5
+                                base_len = 1 + len([o.metric for o in cfg.objectives]) + 3
                                 # rebuild into dict for old extras
                                 old_extra_vals = r[base_len:]
                                 old_keys = sorted(set(extra_keys))
