@@ -48,6 +48,7 @@ from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 def explore_optuna(cfg: Config, n_trials: int) -> None:
     workdir_root = Path(tempfile.mkdtemp(prefix="SCOuT_"))
     print(f"[info] working directory root: {workdir_root}\n")
+    eval_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Dict[str, Any]] = {}
 
     # Sampler choice
     is_multi = len(cfg.objectives) > 1
@@ -133,6 +134,21 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         trial.set_user_attr("compiler_flags_str", flags)  
 
         env = suggest_env(trial, cfg.env)
+
+        # -------- cache lookup (skip build+measure on duplicates) -------
+        # normalize env to a stable, hashable key
+        env_key: Tuple[Tuple[str, str], ...] = tuple(sorted((k, str(v)) for k, v in env.items()))
+        cache_key = (flag_key, env_key)
+        cached = eval_cache.get(cache_key)
+        if cached is not None:
+            # mirror user_attrs so CSV/pareto export can pick them up
+            trial.set_user_attr("compiler_flags", flag_key)
+            trial.set_user_attr("env", dict(env))
+            trial.set_user_attr("metrics", cached["metrics"])
+            trial.set_user_attr("binary", cached["binary"])
+            trial.set_user_attr("duplicate_of", cached["trial"])
+            # return the already-evaluated objective values
+            return list(cached["values"])
         
         # --------------------------------------------------------------
         # 2) Build
@@ -178,6 +194,14 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         trial.set_user_attr("env", env)
         trial.set_user_attr("metrics", metrics)
         trial.set_user_attr("binary", str(binary_path))
+
+        # ------------- put fresh evaluation into the cache -------------
+        eval_cache[cache_key] = {
+            "values": list(obj_values),
+            "metrics": dict(metrics),
+            "binary": str(binary_path),
+            "trial": trial.number,
+        }
 
         return obj_values
 
