@@ -339,7 +339,7 @@ def _compile_and_measure(
         metrics = measure_perf(cfg.perf, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
     elif cfg.backend == "parser":
         # re-use the wavefront SYCL parser if you placed it there; if not, fallback to perf/likwid only
-        from src.studies.wavefront_flags import measure_parser_sycl_wavefront  # local import to avoid cycle
+        from src.searchMethods.wavefront_flags import measure_parser_sycl_wavefront  # local import to avoid cycle
         metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, env, cfg.runs, work, cfg.project)
     else:
         metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]

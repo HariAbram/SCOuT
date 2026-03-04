@@ -148,7 +148,7 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
         metrics = measure_perf(cfg.perf, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
     elif cfg.backend == "parser":
         # import locally to avoid circular import; reuse your wavefront parser
-        from src.studies.wavefront_flags import measure_parser_sycl_wavefront
+        from src.searchMethods.wavefront_flags import measure_parser_sycl_wavefront
         metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, env, cfg.runs, work, cfg.project)
     else:
         metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
