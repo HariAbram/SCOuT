@@ -289,7 +289,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
 
 def explore_synergy(cfg: Config) -> None:
     # lightweight adapter – calls the new study module
-    from src.studies.synergy_flags import run_synergy_study
+    from src.searchMethods.synergy_flags import run_synergy_study
     return run_synergy_study(cfg)
 
 
@@ -298,7 +298,7 @@ def explore_synergy(cfg: Config) -> None:
 ###############################################################################
 
 def explore_wavefront(cfg: Config) -> None:
-    from src.studies.wavefront_flags import run_wavefront_study
+    from src.searchMethods.wavefront_flags import run_wavefront_study
     return run_wavefront_study(cfg)
 
 ###############################################################################
@@ -306,7 +306,7 @@ def explore_wavefront(cfg: Config) -> None:
 ###############################################################################
 
 def explore_tabu(cfg: Config) -> None:
-    from src.studies.tabu_flags import run_tabu_study
+    from src.searchMethods.tabu_flags import run_tabu_study
     return run_tabu_study(cfg)
 
 ###############################################################################
@@ -314,7 +314,7 @@ def explore_tabu(cfg: Config) -> None:
 ###############################################################################
 
 def explore_beam_tabu(cfg: Config) -> None:
-    from src.studies.beam_tabu import run_beam_tabu_study
+    from src.searchMethods.beam_tabu import run_beam_tabu_study
     return run_beam_tabu_study(cfg)
 
 ###############################################################################
@@ -322,5 +322,5 @@ def explore_beam_tabu(cfg: Config) -> None:
 ###############################################################################
 
 def explore_anneal(cfg: Config) -> None:
-    from src.studies.anneal_flags import run_anneal_study
+    from src.searchMethods.anneal_flags import run_anneal_study
     return run_anneal_study(cfg)

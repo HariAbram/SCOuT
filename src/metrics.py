@@ -53,7 +53,6 @@ def perf_parse(stderr: str, events: Sequence[str]) -> MetricDict:
         accum["CPI"] = accum["cycles"] / accum["instructions"]
     return accum
 
-
 def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: EnvMap, runs: int = 1) -> MetricDict:
     meas_runs = max(1, runs)
     total_runs = cfg.warmup_runs + meas_runs
@@ -79,7 +78,6 @@ def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: Env
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
-
 _ROW_RE   = re.compile(r"^\|\s*([^|]+?)\s*\|(.+)$")
 _SEP_RE   = re.compile(r"(?<=\d)[.'\u202F](?=\d{3}\b)")  # 1.234.567 or 1'234'567
 _DEC_COMMA = re.compile(r"^(\d+),(\d+)$")  
@@ -96,7 +94,6 @@ def _parse_num(text: str) -> float | None:
         return float(t)
     except ValueError:
         return None
-
 
 def likwid_parse(out: str, specs: Sequence[MetricSpec]) -> MetricDict:
     wanted = {s.name: s for s in specs}
@@ -154,7 +151,6 @@ def likwid_parse(out: str, specs: Sequence[MetricSpec]) -> MetricDict:
             result[f"{spec.name}_var"] = variance(values)
 
     return result
-
 
 def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env: EnvMap, runs: int = 1) -> MetricDict:
     specs   = cfg.metrics

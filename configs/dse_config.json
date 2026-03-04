@@ -94,12 +94,13 @@
     },
   
   "significance": {
-    "min_rel_gain": 0.15,     
-    "min_abs_gain": null      
+      "min_rel_gain": 0.15,     
+      "min_abs_gain": null      
   },
 
   "wavefront": {
-      "flag_atoms": ["-funroll-loops", "-ffast-math", "-funsafe-math-optimizations", "-mllvm -enable-misched", "-mllvm -enable-interleaved-mem-accesses"],
+      "flag_atoms": ["-funroll-loops", "-ffast-math", "-funsafe-math-optimizations", 
+                      "-mllvm -enable-misched", "-mllvm -enable-interleaved-mem-accesses"],
       "base_flags": ["-O2"],
       "max_k": 3,
       "mode": "beam",
@@ -126,27 +127,27 @@
   },
 
   "tabu": {
-    "max_iters": 150,
-    "max_no_improve": 30,
-    "tabu_tenure": 25,
-    "neighborhood": 24,
-    "allow_variant_moves": true,
-    "allow_param_moves": true,
-    "allow_pool_moves": true,
-    "allow_env_moves": true,
-    "env_mode": "product",
-    "env_cap": 8,
-    "results_csv": null
+      "max_iters": 150,
+      "max_no_improve": 30,
+      "tabu_tenure": 25,
+      "neighborhood": 24,
+      "allow_variant_moves": true,
+      "allow_param_moves": true,
+      "allow_pool_moves": true,
+      "allow_env_moves": true,
+      "env_mode": "product",
+      "env_cap": 8,
+      "results_csv": null
   },
 
   "anneal": {
-    "T0": 1.0,                 
-    "alpha": 0.90,             
-    "max_iters": 200,          
-    "max_no_improve": 20,      
-    "neighbor_mode": "mix",    
-    "env_mode": "product",     
-    "env_cap": 8           
+      "T0": 1.0,                 
+      "alpha": 0.90,             
+      "max_iters": 200,          
+      "max_no_improve": 20,      
+      "neighbor_mode": "mix",    
+      "env_mode": "product",     
+      "env_cap": 8           
   },
 
   "likwid": {
@@ -166,11 +167,11 @@
     },
 
   "parser": {
-    "label": "avg",               
-    "aggregate": "sum",            
-    "core_list": "0-15",
-    "run_cwd": "project_dir",
-    "warmup_runs": 1 
+      "label": "avg",               
+      "aggregate": "sum",            
+      "core_list": "0-15",
+      "run_cwd": "project_dir",
+      "warmup_runs": 1 
   },
 
   "runs": 5,                                 
