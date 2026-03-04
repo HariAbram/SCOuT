@@ -1,22 +1,7 @@
 #!/usr/bin/env python3
 """
 ============================================================
-Multi‑objective, Optuna‑driven design‑space exploration tool
-for AdaptiveCpp / SYCL workloads.
-
-Highlights
-----------
-* **Any SYCL build target** – same as the original script (single file or
-  full CMake/Make project).
-* **Search space = Cartesian product** of compiler‑flag variants and
-  environment sets – represented as discrete indices for Optuna.
-* **Multi‑objective optimisation** – optimise an arbitrary list of
-  metrics, each with its own *min/max* goal.
-* **Bayesian / evolutionary samplers** – choose between Optunaʼs
-  `TPESampler` (Bayesian) or `NSGAIIISampler` (evolutionary) from the
-  JSON.
-* **Pareto front report** – prints the non‑dominated set at the end and
-  writes the full trial table to CSV/SQLite.
+Multi‑objective design‑space exploration tool for AdaptiveCpp / SYCL workloads.
 
 Requirements
 ~~~~~~~~~~~~
