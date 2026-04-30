@@ -12,10 +12,13 @@ python3 main.py --mode parameter_tuning configs/dse_config.json --trials 100
 
 SCOuT reads a JSON config, builds the target, runs the selected measurement backend, and logs the results.
 
+An optional `polymorph` mode is also available for Tadashi-based SYCL transformation search through `polyMorph` configs.
+
 ## Project layout
 
 - `main.py`: CLI entry point
 - `src/`: core logic for config loading, building, measuring, and search
+- `src/polyMorph/`: Tadashi-based transformation discovery and search
 - `configs/dse_config.json`: example configuration
 - `test-benchmarks/`: benchmark projects and datasets
 

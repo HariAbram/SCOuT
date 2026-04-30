@@ -210,6 +210,109 @@ class WavefrontSpec:
 
 
 @dataclasses.dataclass
+class PolyMorphSearchSpec:
+    n_trials: int = 20
+    repeat: int = 3
+    generated_infix: str = "optuna"
+    seed: int = 0
+    timeout: int | None = None
+    enumerate_only: bool = False
+    baseline_exec_name: str | None = None
+    max_transforms_per_trial: int = 1
+    tile_sizes: List[int] = dataclasses.field(default_factory=lambda: [8, 16, 32, 64])
+    scale_factors: List[int] = dataclasses.field(default_factory=lambda: [2])
+    shift_values: List[int] = dataclasses.field(default_factory=lambda: [-2, -1, 1, 2])
+    allow_transforms: List[str] | None = None
+    block_transforms: List[str] = dataclasses.field(default_factory=list)
+    explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
+    result_json: str | None = None
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
+        data = raw or {}
+        allow = data.get("allow_transforms")
+        return cls(
+            n_trials=int(data.get("n_trials", 20)),
+            repeat=int(data.get("repeat", 3)),
+            generated_infix=str(data.get("generated_infix", "optuna")),
+            seed=int(data.get("seed", 0)),
+            timeout=int(data["timeout"]) if data.get("timeout") is not None else None,
+            enumerate_only=bool(data.get("enumerate_only", False)),
+            baseline_exec_name=data.get("baseline_exec_name"),
+            max_transforms_per_trial=int(data.get("max_transforms_per_trial", 1)),
+            tile_sizes=[int(x) for x in data.get("tile_sizes", [8, 16, 32, 64])],
+            scale_factors=[int(x) for x in data.get("scale_factors", [2])],
+            shift_values=[int(x) for x in data.get("shift_values", [-2, -1, 1, 2])],
+            allow_transforms=[str(x) for x in allow] if allow is not None else None,
+            block_transforms=[str(x) for x in data.get("block_transforms", [])],
+            explicit_args=dict(data.get("explicit_args", {})),
+            result_json=data.get("result_json"),
+        )
+
+
+@dataclasses.dataclass
+class PolyMorphSpec:
+    project_root: Path
+    source: Optional[Path] = None
+    compiler: str = "acpp"
+    flags: List[str] = dataclasses.field(default_factory=list)
+    transforms: List[Dict[str, Any]] = dataclasses.field(default_factory=list)
+    allow_illegal: bool = False
+    print_available_transformations: bool = False
+    list_only: bool = False
+    save_jscops: Optional[Path] = None
+    discover: bool = False
+    optuna_search: bool = False
+    build_system: str = "make"
+    build_target: Optional[str] = None
+    build_dir: Optional[Path] = None
+    exec_name: Optional[str] = None
+    runtime_args: List[str] = dataclasses.field(default_factory=list)
+    measure: bool = False
+    generated_infix: str = "pass1"
+    search: PolyMorphSearchSpec = dataclasses.field(default_factory=PolyMorphSearchSpec)
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "PolyMorphSpec":
+        source_raw = raw.get("source")
+        save_jscops_raw = raw.get("save_jscops")
+        build_dir_raw = raw.get("build_dir")
+        transforms = raw.get("transforms", []) or []
+        flags = raw.get("flags", []) or []
+        build_system = str(raw.get("build_system", "make"))
+        if build_system not in {"make", "cmake"}:
+            raise ValueError("polyMorph.build_system must be 'make' or 'cmake'")
+        if not raw.get("project_root"):
+            raise ValueError("polyMorph.project_root is required")
+        if not isinstance(transforms, list):
+            raise ValueError("polyMorph.transforms must be a list")
+        if not isinstance(flags, list):
+            raise ValueError("polyMorph.flags must be a list")
+
+        return cls(
+            project_root=Path(raw["project_root"]).expanduser().resolve(),
+            source=Path(source_raw).expanduser().resolve() if source_raw else None,
+            compiler=str(raw.get("compiler", "acpp")),
+            flags=[str(flag) for flag in flags if str(flag).strip()],
+            transforms=[dict(item) for item in transforms],
+            allow_illegal=bool(raw.get("allow_illegal", False)),
+            print_available_transformations=bool(raw.get("print_available_transformations", False)),
+            list_only=bool(raw.get("list_only", False)),
+            save_jscops=Path(save_jscops_raw).expanduser().resolve() if save_jscops_raw else None,
+            discover=bool(raw.get("discover", False)),
+            optuna_search=bool(raw.get("optuna_search", False)),
+            build_system=build_system,
+            build_target=raw.get("build_target"),
+            build_dir=Path(build_dir_raw).expanduser().resolve() if build_dir_raw else None,
+            exec_name=raw.get("exec_name"),
+            runtime_args=_normalize_args(raw.get("runtime_args")),
+            measure=bool(raw.get("measure", False)),
+            generated_infix=str(raw.get("generated_infix", "pass1")),
+            search=PolyMorphSearchSpec.from_dict(raw.get("search")),
+        )
+
+
+@dataclasses.dataclass
 class Config:
     backend: str  # "perf" | "likwid"
 
@@ -255,6 +358,8 @@ class Config:
     tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
     #anneal 
     anneal: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    # polyMorph
+    poly_morph: Optional[PolyMorphSpec] = None
 
     # ------------------------------------------------------------------
     # Factory
@@ -264,6 +369,9 @@ class Config:
         with open(path, "r", encoding="utf-8") as fp:
             raw = json.load(fp)
 
+        poly_morph_raw = raw.get("polyMorph")
+        poly_morph = PolyMorphSpec.from_dict(poly_morph_raw) if isinstance(poly_morph_raw, dict) else None
+
         backend = raw.get("backend", "likwid").lower()
         if backend not in {"perf", "likwid", "parser"}:
             raise ValueError("backend must be 'perf' or 'likwid' or 'parser'")
@@ -271,8 +379,8 @@ class Config:
         # Build description
         source = raw.get("source")
         project = raw.get("project")
-        if bool(source) == bool(project):
-            raise ValueError("Provide exactly one of 'source' or 'project'.")
+        if bool(source) == bool(project) and poly_morph is None:
+            raise ValueError("Provide exactly one of 'source' or 'project', or define 'polyMorph'.")
         
         # Compiler flags
         def _validate_params_select(sel: Dict[str, Any], available: List[str]) -> Dict[str, Any]:
@@ -349,6 +457,7 @@ class Config:
             wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
             tabu=tabu,
             anneal=anneal,
+            poly_morph=poly_morph,
             runs=int(raw.get("runs", 1)),
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),

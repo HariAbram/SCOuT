@@ -40,6 +40,7 @@ from src.explore import (
     explore_beam_tabu,
     explore_anneal,
 )
+from src.polyMorph import run_poly_morph
 
 ###############################################################################
 # Type helpers                                                                #
@@ -112,7 +113,7 @@ def main() -> None:
     # Add new modes here later (e.g., runtime_env_tuning, replay, analyze, etc.).
     parser.add_argument(
         "--mode",
-        choices=["parameter_tuning"],
+        choices=["parameter_tuning", "polymorph"],
         default=None,
         help="Select what SCOuT should do (required unless using interactive prompts).",
     )
@@ -132,8 +133,9 @@ def main() -> None:
         if args.interactive or sys.stdin.isatty():
             print("Select mode:")
             print("  1) parameter_tuning")
+            print("  2) polymorph")
             choice = input("Enter choice [1]: ").strip() or "1"
-            mode = "parameter_tuning" if choice == "1" else "parameter_tuning"
+            mode = "polymorph" if choice == "2" else "parameter_tuning"
         else:
             parser.error("--mode is required in non-interactive contexts.")
 
@@ -161,6 +163,23 @@ def main() -> None:
         finally:
             dt = time.perf_counter() - t0
             print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
+    elif mode == "polymorph":
+        config_path = args.config
+        if config_path is None:
+            if args.interactive or sys.stdin.isatty():
+                config_path = _prompt_path("Config path: ")
+            else:
+                parser.error("config is required (or use --interactive)")
+
+        cfg = Config.load(config_path)
+        t0 = time.perf_counter()
+        try:
+            rc = run_poly_morph(cfg, args.trials)
+            if rc:
+                raise SystemExit(rc)
+        finally:
+            dt = time.perf_counter() - t0
+            print(f"[polyMorph] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
     else:
         parser.error(f"Unknown mode: {mode}")
 

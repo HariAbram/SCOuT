@@ -19,6 +19,7 @@ SCOuT explores compiler and runtime configurations for a target program. Each ru
 - `src/metrics.py`: `perf`, `likwid`, and `parser` backends
 - `src/misc.py`: shared sampling and utility helpers
 - `src/searchMethods/`: heuristic search implementations
+- `src/polyMorph/`: Tadashi-based SYCL transformation workflow
 
 ## Search dispatch
 
@@ -30,6 +31,8 @@ SCOuT explores compiler and runtime configurations for a target program. Each ru
 - `anneal`
 
 Any other `search.study` value falls back to Optuna.
+
+`main.py` also exposes a separate `polymorph` mode for Tadashi-based transformation search. That path is configured through a top-level `polyMorph` block rather than the regular SCOuT build/search fields.
 
 ## Config shape
 
@@ -77,4 +80,3 @@ SCOuT can produce:
 - Pareto CSVs for multi-objective Optuna runs
 - failed-build logs
 - temporary work directories under `/tmp`
-
