@@ -283,15 +283,6 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                 print("[info] Study already uses persistent storage – no copy needed")
 
 
-###############################################################################
-# Synergy exploration                                                         #
-###############################################################################
-
-def explore_synergy(cfg: Config) -> None:
-    # lightweight adapter – calls the new study module
-    from src.searchMethods.synergy_flags import run_synergy_study
-    return run_synergy_study(cfg)
-
 
 ###############################################################################
 # Wavefront exploration                                                       #

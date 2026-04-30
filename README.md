@@ -143,13 +143,6 @@ Custom search methods usually create a temporary work root under `/tmp` with nam
 - `SCOuT_beamtabu_*`
 - `SCOuT_anneal_*`
 
-## Current caveats
-
-- `requirments.txt` is misspelled and currently contains shell text as well as a package pin; it is not a standard pip requirements file.
-- The example config includes fields for multiple search methods at once; only the selected study is used during a run.
-- `beam_tabu` is implemented in `src/searchMethods/beam_tabu.py`, but `Config` does not currently expose a typed `beam_tabu` field, so that module falls back to defaults unless the config object is extended.
-- `explore_synergy()` exists in `src/explore.py`, but the referenced module is absent.
-
 ## Detailed docs
 
 For a deeper walkthrough of the code, configuration schema, execution flow, and implementation caveats, see [docs/architecture.md](/home/hari/git/SCOuT/docs/architecture.md).
