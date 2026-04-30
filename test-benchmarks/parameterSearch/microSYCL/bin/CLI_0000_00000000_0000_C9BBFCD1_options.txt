@@ -1,0 +1,1 @@
+-cl-uniform-work-group-size -cl-fast-relaxed-math -cl-denorms-are-zero

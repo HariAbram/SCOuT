@@ -1,0 +1,55 @@
+{
+  "backend": "parser",
+  "project": {
+    "dir": "test-benchmarks/microSYCL",
+    "build_system": "make",
+    "target": "all",
+    "make_flags_var": "EXTRA_CFLAGS",
+    "make_vars": {
+      "BACKEND": "generic",
+      "DEBUG": "no",
+      "OPTIMIZE": "yes"
+    }
+  },
+  "compiler": "acpp",
+  "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
+  "program_args": ["-s", "256", "--gemm", "-i", "1"],
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-fvectorize",
+    "-ffast-math"
+  ],
+  "compiler_params": {
+    "-march": ["native", "znver4"],
+    "-mprefer-vector-width": [128, 256]
+  },
+  "compiler_params_select": {
+    "k": 1
+  },
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["generic"]
+  },
+  "objectives": [
+    { "metric": "sycl_avg_sum_s", "goal": "min" }
+  ],
+  "search": {
+    "study": "optuna",
+    "sampler": "cmaes",
+    "n_startup_trials": 5,
+    "population_size": 16,
+    "random_seed": 11
+  },
+  "parser": {
+    "label": "avg",
+    "aggregate": "sum",
+    "core_list": "",
+    "run_cwd": "project_dir",
+    "warmup_runs": 1
+  },
+  "runs": 2,
+  "csv_log": "/tmp/scout-flag-env/optuna_cmaes_parser.csv",
+  "failed_builds": "/tmp/scout-flag-env/optuna_cmaes_parser_failed.csv"
+}

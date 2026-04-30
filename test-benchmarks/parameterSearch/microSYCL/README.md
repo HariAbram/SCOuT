@@ -1,0 +1,52 @@
+# microSYCL
+
+This is a micro-benchmark for testing the overhead of SYCL features, the following features are tested in this benchmark 
+
+* memory allocation
+* parallelization 
+* atomics 
+* barriers
+* vectorization
+* memory access patterns
+
+# Building 
+
+Make is used to build this benchmark. 
+
+```
+cd microSYCL
+mkdir -p bin
+make SYCL_IMPL=oneapi|intel-llvm|<empty=acpp> BACKEND=omp|<empty=ocl> ARCH=x86|a64fx|graviton3
+```
+Depending on the Implementation choosen, paths to all the the binaries and libraries should be added to the standard environment variables, such as $PATH and $LD_LIBRARY_PATH
+
+For optimal performance `OMP_PROC_BIND` environment variable is set to true. This is applicable only when using OpenMP backend.
+
+### Example
+
+```
+./binary [-s size |-b blocksize <optional> |-I No. iterations | --print-system
+			--gemm 	: to run matrix matrix multiplication 
+			--gemm-opt : to optimized matrix matrix multiplication 
+			--gemv 	: to run matrix vector multiplication 
+			-i: for different routines in vectorization benchmark
+		    	  1 - range with USM
+		    	  2 - range with Buffer and Accessors
+		    	  3 - nd_range with USM
+		    	  4 - nd_range with Buffer and Accessor
+			--triad	: to run a triad benchmark 
+			--outer-product	: to run an outer product benchmark
+			--cross-product	: to run an cross product benchmark
+			--spmv : execute spmv kernel
+ 			--map  : test for different memory access patterns 
+					--transpose : with transpose 
+					--mat-add   : with matrix addition
+			--mem-alloc	: to alloc memory using SYCL and standard malloc 
+			--reduction	: to test reduction using atomics and sycl reduction construct
+			--range	: to test sycl range construct
+			--ndrange : to test sycl nd_range construct
+			--barrier : to test sycl barrier construct
+			
+   
+```
+

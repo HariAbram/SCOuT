@@ -1,0 +1,81 @@
+{
+  "backend": "perf",
+  "project": {
+    "dir": "test-benchmarks/microSYCL",
+    "build_system": "make",
+    "target": "all",
+    "make_flags_var": "EXTRA_CFLAGS",
+    "make_vars": {
+      "BACKEND": "generic",
+      "DEBUG": "no",
+      "OPTIMIZE": "yes"
+    }
+  },
+  "compiler": "acpp",
+  "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
+  "program_args": ["-s", "512", "--gemm", "-i", "2"],
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-fvectorize",
+    "-ffast-math",
+    "-funsafe-math-optimizations",
+    "-mllvm -enable-misched"
+  ],
+  "compiler_params": {
+    "-march": ["native", "znver4"],
+    "-mprefer-vector-width": [128, 256],
+    "-mllvm -prefetch-distance": [8, 16, 32]
+  },
+  "compiler_params_select": {
+    "min": 0,
+    "max": 2,
+    "always": ["-march"]
+  },
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["omp", "generic"],
+    "OMP_PLACES": {
+      "when": { "ACPP_VISIBILITY_MASK": "omp" },
+      "values": ["cores", "threads"]
+    },
+    "OMP_SCHEDULE": {
+      "when": { "ACPP_VISIBILITY_MASK": "omp" },
+      "values": ["static", "dynamic"]
+    }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" }
+  ],
+  "search": {
+    "study": "tabu",
+    "random_seed": 13
+  },
+  "significance": {
+    "min_rel_gain": 0.10,
+    "min_abs_gain": null
+  },
+  "tabu": {
+    "max_iters": 40,
+    "max_no_improve": 10,
+    "tabu_tenure": 12,
+    "neighborhood": 16,
+    "allow_variant_moves": true,
+    "allow_param_moves": true,
+    "allow_pool_moves": true,
+    "allow_env_moves": true,
+    "env_mode": "sample",
+    "env_cap": 3,
+    "results_csv": "/tmp/scout-flag-env/tabu_sample_env.csv"
+  },
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "warmup_runs": 1,
+    "objective": { "metric": "CPI", "goal": "min" }
+  },
+  "runs": 2,
+  "csv_log": "/tmp/scout-flag-env/tabu_unused.csv",
+  "failed_builds": "/tmp/scout-flag-env/tabu_failed.csv"
+}

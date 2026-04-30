@@ -1,0 +1,26 @@
+{
+  "backend": "perf",
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "objective": { "metric": "CPI", "goal": "min" }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" }
+  ],
+  "runs": 1,
+  "polyMorph": {
+    "project_root": "test-benchmarks/microSYCL",
+    "source": "test-benchmarks/microSYCL/src/main.cpp",
+    "compiler": "acpp",
+    "flags": [
+      "--acpp-platform=cpu",
+      "--acpp-targets=generic",
+      "-O3"
+    ],
+    "print_available_transformations": true,
+    "build_system": "make",
+    "exec_name": "bin/main-acpp-generic",
+    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"]
+  }
+}

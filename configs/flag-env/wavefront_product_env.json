@@ -1,0 +1,74 @@
+{
+  "backend": "perf",
+  "project": {
+    "dir": "test-benchmarks/microSYCL",
+    "build_system": "make",
+    "target": "all",
+    "make_flags_var": "EXTRA_CFLAGS",
+    "make_vars": {
+      "BACKEND": "generic",
+      "DEBUG": "no",
+      "OPTIMIZE": "yes"
+    }
+  },
+  "compiler": "acpp",
+  "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
+  "program_args": ["-s", "512", "--gemm", "-i", "2"],
+  "compiler_flags": [
+    "-O2"
+  ],
+  "compiler_flag_pool": [
+    "-fvectorize",
+    "-ffast-math",
+    "-funsafe-math-optimizations",
+    "-mllvm -enable-interleaved-mem-accesses"
+  ],
+  "compiler_params": {},
+  "compiler_params_select": {},
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["omp", "generic"],
+    "OMP_PLACES": {
+      "when": { "ACPP_VISIBILITY_MASK": "omp" },
+      "values": ["cores", "threads"]
+    }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" }
+  ],
+  "search": {
+    "study": "wavefront",
+    "random_seed": 9
+  },
+  "significance": {
+    "min_rel_gain": 0.10,
+    "min_abs_gain": null
+  },
+  "wavefront": {
+    "base_flags": ["-O2"],
+    "flag_atoms": [
+      "-fvectorize",
+      "-ffast-math",
+      "-funsafe-math-optimizations",
+      "-mllvm -enable-interleaved-mem-accesses"
+    ],
+    "max_k": 3,
+    "mode": "beam",
+    "beam_width": 8,
+    "per_wave_cap": 12,
+    "stop_if_no_improve": true,
+    "improvement_eps": 0.0,
+    "env": {},
+    "env_mode": "product",
+    "env_cap": 4,
+    "results_csv": "/tmp/scout-flag-env/wavefront_product_env.csv"
+  },
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "warmup_runs": 1,
+    "objective": { "metric": "CPI", "goal": "min" }
+  },
+  "runs": 2,
+  "csv_log": "/tmp/scout-flag-env/wavefront_unused.csv",
+  "failed_builds": "/tmp/scout-flag-env/wavefront_failed.csv"
+}

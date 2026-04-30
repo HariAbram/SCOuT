@@ -1,0 +1,18 @@
+{
+  "baseline_runtime": 1.967162775,
+  "best_runtime": 1.740287962,
+  "best_speedup": 1.1303662485484687,
+  "best_transforms": [
+    {
+      "scop": 0,
+      "node": 1,
+      "tr": "PARTIAL_SHIFT_PARAM",
+      "args": [
+        0,
+        0,
+        -1
+      ]
+    }
+  ],
+  "best_trial_number": 2
+}

@@ -1,0 +1,32 @@
+{
+  "backend": "perf",
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "objective": { "metric": "CPI", "goal": "min" }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" }
+  ],
+  "runs": 1,
+  "polyMorph": {
+    "project_root": "test-benchmarks/polyMorph/O1/matrixT-sycl",
+    "source": "test-benchmarks/polyMorph/O1/matrixT-sycl/main.cpp",
+    "compiler": "acpp",
+    "flags": [
+      "-O1"
+    ],
+    "transforms": [
+      { "scop": 9, "node": 1, "tr": "SET_PARALLEL", "args": [4] }
+    ],
+    "allow_illegal": true,
+    "build_system": "make",
+    "exec_name": "build/matrixT-single-transform",
+    "generated_infix": "matrixT-manual",
+    "runtime_args": ["1024", "1024", "50"],
+    "measure": false,
+    "search": {
+      "repeat": 1
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "backend": "likwid",
+  "project": {
+    "dir": "test-benchmarks/microSYCL",
+    "build_system": "make",
+    "target": "all",
+    "make_flags_var": "EXTRA_CFLAGS",
+    "make_vars": {
+      "BACKEND": "generic",
+      "LIKWID": "yes",
+      "DEBUG": "no",
+      "OPTIMIZE": "yes"
+    }
+  },
+  "compiler": "acpp",
+  "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
+  "program_args": "-s 1024 --gemm -i 3",
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-fvectorize",
+    "-ffast-math",
+    "-mllvm -enable-misched",
+    "-mllvm -enable-loopinterchange"
+  ],
+  "compiler_params": {
+    "-march": ["native", "znver4", "icelake-server"],
+    "-mprefer-vector-width": [128, 256, 512],
+    "-mllvm -prefetch-distance": [8, 16, 32]
+  },
+  "compiler_params_select": {
+    "k": 2,
+    "always": ["-march"]
+  },
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["omp", "generic"],
+    "OMP_PLACES": {
+      "when": { "ACPP_VISIBILITY_MASK": "omp" },
+      "values": ["cores", "threads", "sockets"]
+    }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" },
+    { "metric": "Runtime (RDTSC) [s]", "goal": "min" }
+  ],
+  "search": {
+    "study": "optuna",
+    "sampler": "nsga3",
+    "n_startup_trials": 8,
+    "population_size": 24,
+    "random_seed": 7
+  },
+  "likwid": {
+    "group": "SCOuT",
+    "events": [],
+    "metrics": [
+      { "name": "CPI", "agg": "avg", "var": false },
+      { "name": "Runtime (RDTSC) [s]", "agg": "avg", "var": false }
+    ],
+    "core_list": "",
+    "warmup_runs": 1
+  },
+  "runs": 2,
+  "csv_log": "/tmp/scout-flag-env/optuna_nsga3_likwid.csv",
+  "pareto_log": "/tmp/scout-flag-env/optuna_nsga3_likwid_pareto.csv",
+  "failed_builds": "/tmp/scout-flag-env/optuna_nsga3_likwid_failed.csv"
+}

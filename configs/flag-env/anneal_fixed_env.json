@@ -1,0 +1,77 @@
+{
+  "backend": "perf",
+  "project": {
+    "dir": "test-benchmarks/microSYCL",
+    "build_system": "make",
+    "target": "all",
+    "make_flags_var": "EXTRA_CFLAGS",
+    "make_vars": {
+      "BACKEND": "generic",
+      "DEBUG": "no",
+      "OPTIMIZE": "yes"
+    }
+  },
+  "compiler": "acpp",
+  "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
+  "program_args": ["-s", "512", "--gemm", "-i", "2"],
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-fvectorize",
+    "-ffast-math",
+    "-mllvm -enable-interleaved-mem-accesses"
+  ],
+  "compiler_params": {
+    "-march": ["native", "znver4"],
+    "-mprefer-vector-width": [128, 256]
+  },
+  "compiler_params_select": {
+    "min": 0,
+    "max": 2
+  },
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["omp", "generic"],
+    "OMP_PLACES": {
+      "when": { "ACPP_VISIBILITY_MASK": "omp" },
+      "values": ["cores", "threads"]
+    }
+  },
+  "objectives": [
+    { "metric": "CPI", "goal": "min" }
+  ],
+  "search": {
+    "study": "anneal",
+    "random_seed": 21
+  },
+  "significance": {
+    "min_rel_gain": 0.05,
+    "min_abs_gain": null
+  },
+  "wavefront": {
+    "env": {
+      "ACPP_VISIBILITY_MASK": "omp",
+      "OMP_PLACES": "cores"
+    }
+  },
+  "anneal": {
+    "T0": 1.0,
+    "alpha": 0.90,
+    "max_iters": 50,
+    "max_no_improve": 12,
+    "neighbor_mode": "mix",
+    "env_mode": "fixed",
+    "env_cap": null,
+    "results_csv": "/tmp/scout-flag-env/anneal_fixed_env.csv"
+  },
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "warmup_runs": 1,
+    "objective": { "metric": "CPI", "goal": "min" }
+  },
+  "runs": 2,
+  "csv_log": "/tmp/scout-flag-env/anneal_unused.csv",
+  "failed_builds": "/tmp/scout-flag-env/anneal_failed.csv"
+}
