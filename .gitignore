@@ -38,6 +38,7 @@ __pycache__
 *.sql
 *.sqlite
 *.codex
+*.csv
 
 # OS generated files #
 ######################

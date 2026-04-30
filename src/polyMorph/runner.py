@@ -11,6 +11,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 import optuna
 
 from src.config import Config, PolyMorphSpec
+from src.metrics import measure_parser_sycl
 
 try:
     from tadashi import TrEnum
@@ -308,9 +309,36 @@ def build_app_or_raise(app: SyclProjectApp) -> None:
     )
 
 
-def measure_app_or_raise(app: SyclProjectApp, repeat: int) -> float:
+def _parser_metric_name(cfg: Config) -> str:
+    if cfg.objectives:
+        return cfg.objectives[0].metric
+    if cfg.parser is None:
+        raise RuntimeError("Parser backend selected, but parser config is missing.")
+    return f"sycl_{cfg.parser.label}_{cfg.parser.aggregate}_s"
+
+
+def measure_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> float:
     if not app.output_binary.exists():
         build_app_or_raise(app)
+
+    if cfg is not None and cfg.backend == "parser":
+        if cfg.parser is None:
+            raise RuntimeError("Parser backend selected, but parser config is missing.")
+        metrics = measure_parser_sycl(
+            cfg.parser,
+            app.output_binary,
+            app.runtime_args,
+            {},
+            repeat,
+            workdir=app.project_root,
+            project=None,
+        )
+        metric_name = _parser_metric_name(cfg)
+        if metric_name not in metrics:
+            raise RuntimeError(
+                f"Parser metric '{metric_name}' missing; got metrics: {sorted(metrics.keys())}"
+            )
+        return float(metrics[metric_name])
 
     values: List[float] = []
     cmd = app.run_cmd()
@@ -480,7 +508,7 @@ def infer_source(poly: PolyMorphSpec) -> Path:
     )
 
 
-def run_project_mode(poly: PolyMorphSpec, source: Path) -> int:
+def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     ensure_tadashi_available()
     require_executable(poly.compiler)
     if not poly.exec_name:
@@ -545,7 +573,7 @@ def run_project_mode(poly: PolyMorphSpec, source: Path) -> int:
     print(f"Built binary: {transformed_app.output_binary}")
     if poly.measure:
         try:
-            runtime = measure_app_or_raise(transformed_app, poly.search.repeat)
+            runtime = measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
             print(f"Measured runtime: {runtime}")
         except Exception as exc:
             print(f"Measurement failed: {exc}")
@@ -556,7 +584,7 @@ def run_project_mode(poly: PolyMorphSpec, source: Path) -> int:
     return 0
 
 
-def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
+def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     require_executable(poly.compiler)
     if not poly.exec_name:
         raise ValueError("polyMorph.exec_name is required for search mode.")
@@ -571,8 +599,8 @@ def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
         populate_scops=False,
     )
     build_app_or_raise(baseline_app)
-    baseline_runtime = measure_app_or_raise(baseline_app, poly.search.repeat)
-    print(f"Baseline runtime: {baseline_runtime}")
+    baseline_value = measure_app_or_raise(baseline_app, poly.search.repeat, cfg)
+    print(f"Baseline objective: {baseline_value}")
 
     enum_app = make_project_app(
         poly=poly,
@@ -626,13 +654,13 @@ def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
             )
 
             build_app_or_raise(transformed_app)
-            runtime = measure_app_or_raise(transformed_app, poly.search.repeat)
-            speedup = baseline_runtime / runtime
+            value = measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
+            speedup = baseline_value / value if value > 0 else 0.0
 
-            trial.set_user_attr("runtime", runtime)
+            trial.set_user_attr("runtime", value)
             trial.set_user_attr("speedup", speedup)
-            print(f"Trial {trial.number}: runtime={runtime}, speedup={speedup}, transforms={specs}")
-            return runtime
+            print(f"Trial {trial.number}: objective={value}, speedup={speedup}, transforms={specs}")
+            return value
         except optuna.TrialPruned:
             raise
         except Exception as exc:
@@ -640,8 +668,11 @@ def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
             raise optuna.TrialPruned(str(exc))
 
     sampler = optuna.samplers.TPESampler(seed=poly.search.seed)
-    study = optuna.create_study(direction="minimize", sampler=sampler)
-    study.set_user_attr("baseline_runtime", baseline_runtime)
+    direction = "minimize"
+    if cfg.objectives:
+        direction = "minimize" if cfg.objectives[0].goal == "min" else "maximize"
+    study = optuna.create_study(direction=direction, sampler=sampler)
+    study.set_user_attr("baseline_runtime", baseline_value)
     study.optimize(
         objective,
         n_trials=poly.search.n_trials,
@@ -659,18 +690,18 @@ def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
 
     best_runtime = study.best_value
     best_specs = study.best_trial.user_attrs.get("transforms", [])
-    best_speedup = baseline_runtime / best_runtime if best_runtime > 0 else 0.0
+    best_speedup = baseline_value / best_runtime if best_runtime > 0 else 0.0
 
     print("\n=== polyMorph search result ===")
-    print(f"Baseline runtime: {baseline_runtime}")
-    print(f"Best runtime: {best_runtime}")
+    print(f"Baseline objective: {baseline_value}")
+    print(f"Best objective: {best_runtime}")
     print(f"Best speedup: {best_speedup}")
     print("Best transforms:")
     print(json.dumps(best_specs, indent=2))
 
     if poly.search.result_json:
         result = {
-            "baseline_runtime": baseline_runtime,
+            "baseline_runtime": baseline_value,
             "best_runtime": best_runtime,
             "best_speedup": best_speedup,
             "best_transforms": best_specs,
@@ -681,7 +712,7 @@ def explore_optuna(poly: PolyMorphSpec, source: Path) -> int:
 
     print(
         "Found a transformation combination better than baseline."
-        if best_runtime < baseline_runtime
+        if best_runtime < baseline_value
         else "No transformation combination beat the baseline."
     )
     return 0
@@ -707,5 +738,5 @@ def run_poly_morph(cfg: Config, trials_override: int | None = None) -> int:
 
     source = infer_source(poly)
     if poly.optuna_search:
-        return explore_optuna(poly, source)
-    return run_project_mode(poly, source)
+        return explore_optuna(cfg, poly, source)
+    return run_project_mode(cfg, poly, source)
