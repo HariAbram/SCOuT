@@ -16,6 +16,7 @@
 *.old
 main
 __pycache__
+build/
 
 # Packages #
 ############

@@ -1,12 +1,12 @@
 {
-  "backend": "perf",
-  "perf": {
-    "events": ["cycles", "instructions"],
-    "core_list": "",
-    "objective": { "metric": "CPI", "goal": "min" }
+  "backend": "parser",
+  "parser": {
+    "label": "avg",
+    "aggregate": "sum",
+    "run_cwd": "binary_dir"
   },
   "objectives": [
-    { "metric": "CPI", "goal": "min" }
+    { "metric": "sycl_avg_sum_s", "goal": "min" }
   ],
   "runs": 1,
   "polyMorph": {

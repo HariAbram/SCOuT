@@ -226,6 +226,7 @@ class PolyMorphSearchSpec:
     block_transforms: List[str] = dataclasses.field(default_factory=list)
     explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
     result_json: str | None = None
+    trial_csv: str | None = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
@@ -247,6 +248,7 @@ class PolyMorphSearchSpec:
             block_transforms=[str(x) for x in data.get("block_transforms", [])],
             explicit_args=dict(data.get("explicit_args", {})),
             result_json=data.get("result_json"),
+            trial_csv=data.get("trial_csv"),
         )
 
 

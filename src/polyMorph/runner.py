@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 import shutil
@@ -371,6 +372,51 @@ def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProj
     return dst
 
 
+def _trial_csv_path(poly: PolyMorphSpec) -> Path:
+    if poly.search.trial_csv:
+        return Path(poly.search.trial_csv)
+    if poly.search.result_json:
+        result_path = Path(poly.search.result_json)
+        return result_path.with_name(f"{result_path.stem}_trials.csv")
+    return Path("polymorph_trials.csv")
+
+
+def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
+    out_csv = _trial_csv_path(poly)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    header = [
+        "trial",
+        "state",
+        "objective",
+        "speedup",
+        "transforms",
+        "failure",
+        "params",
+    ]
+    with open(out_csv, "w", newline="", encoding="utf-8") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(header)
+        for t in study.trials:
+            objective = t.value if t.value is not None else ""
+            speedup = t.user_attrs.get("speedup", "")
+            transforms = json.dumps(t.user_attrs.get("transforms", []))
+            failure = t.user_attrs.get("failure", "")
+            params = json.dumps(t.params, sort_keys=True)
+            writer.writerow(
+                [
+                    t.number,
+                    str(t.state.name),
+                    objective,
+                    speedup,
+                    transforms,
+                    failure,
+                    params,
+                ]
+            )
+    return out_csv
+
+
 def transform_allowed(name: str, poly: PolyMorphSpec) -> bool:
     allow = poly.search.allow_transforms
     if allow is not None and name not in allow:
@@ -461,6 +507,40 @@ def sample_transform_combination(
             continue
         used_indices.add(idx)
         chosen.append(candidates[idx])
+    return chosen
+
+
+def sample_transform_sequence(
+    trial: optuna.Trial,
+    app: SyclProjectApp,
+    poly: PolyMorphSpec,
+) -> List[JsonDict]:
+    initial_candidates = enumerate_transform_candidates(app, poly)
+    if not initial_candidates:
+        return []
+
+    max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(initial_candidates)))
+    n_transforms = trial.suggest_int("n_transforms", 1, max_transforms)
+
+    chosen: List[JsonDict] = []
+    for pos in range(n_transforms):
+        current_candidates = enumerate_transform_candidates(app, poly)
+        if not current_candidates:
+            break
+
+        idx = trial.suggest_int(f"candidate_{pos}", 0, len(current_candidates) - 1)
+        spec = current_candidates[idx]
+        chosen.append(spec)
+
+        apply_transforms_to_scops(
+            app.scops,
+            [spec],
+            legality_cb=lambda: app.legal,
+        )
+
+        if not poly.allow_illegal and not app.legal:
+            raise optuna.TrialPruned("Illegal transformed schedule")
+
     return chosen
 
 
@@ -619,9 +699,6 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         return 0
 
     def objective(trial: optuna.Trial) -> float:
-        specs = sample_transform_combination(trial, candidates, poly)
-        trial.set_user_attr("transforms", specs)
-
         trial_exec = f"{poly.exec_name}-trial-{trial.number}"
         trial_app = make_project_app(
             poly=poly,
@@ -631,14 +708,10 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            apply_transforms_to_scops(
-                trial_app.scops,
-                specs,
-                legality_cb=lambda: trial_app.legal,
-            )
-
-            if not poly.allow_illegal and not trial_app.legal:
-                raise optuna.TrialPruned("Illegal transformed schedule")
+            specs = sample_transform_sequence(trial, trial_app, poly)
+            if not specs:
+                raise optuna.TrialPruned("No candidate transformations available for this trial.")
+            trial.set_user_attr("transforms", specs)
 
             transformed_app = trial_app.generate_code(
                 alt_infix=f"{poly.search.generated_infix}-{trial.number}",
@@ -684,6 +757,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         for trial in study.trials
         if trial.state == optuna.trial.TrialState.COMPLETE
     ]
+    trial_csv = write_trial_csv(study, poly)
+    print(f"Wrote trial CSV: {trial_csv}")
+
     if not completed_trials:
         print("No successful trials.")
         return 1
