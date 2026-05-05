@@ -1,18 +1,34 @@
 {
-  "baseline_runtime": 0.404063,
-  "best_runtime": 0.394819,
-  "best_speedup": 1.0234132602534327,
+  "baseline_runtime": 0.311914,
+  "best_runtime": 0.30862500000000004,
+  "best_speedup": 1.0106569461320372,
   "best_transforms": [
     {
-      "scop": 9,
-      "node": 2,
-      "tr": "PARTIAL_SHIFT_VAR",
+      "scop": 1,
+      "node": 3,
+      "tr": "FULL_SHIFT_VAL",
+      "args": [
+        1
+      ]
+    },
+    {
+      "scop": 1,
+      "node": 3,
+      "tr": "FULL_SHIFT_VAL",
+      "args": [
+        1
+      ]
+    },
+    {
+      "scop": 0,
+      "node": 1,
+      "tr": "PARTIAL_SHIFT_PARAM",
       "args": [
         0,
         0,
-        1
+        -1
       ]
     }
   ],
-  "best_trial_number": 3
+  "best_trial_number": 1
 }
