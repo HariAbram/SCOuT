@@ -6,7 +6,10 @@
     "run_cwd": "binary_dir"
   },
   "objectives": [
-    { "metric": "sycl_avg_sum_s", "goal": "min" }
+    {
+      "metric": "sycl_avg_sum_s",
+      "goal": "min"
+    }
   ],
   "runs": 1,
   "polyMorph": {
@@ -19,11 +22,15 @@
     "optuna_search": true,
     "build_system": "make",
     "exec_name": "build/matrixT-search",
-    "runtime_args": ["8192", "8192", "50"],
+    "runtime_args": [
+      "8192",
+      "8192",
+      "50"
+    ],
     "search": {
       "n_trials": 5,
       "repeat": 2,
-      "generated_infix": "matrixT-enhanced",
+      "generated_infix": "matrixT",
       "seed": 42,
       "timeout": 600,
       "baseline_exec_name": "build/matrixT-baseline",
@@ -44,7 +51,9 @@
         "-Rpass=loop-vectorize",
         "-Rpass-missed=loop-vectorize"
       ],
-      "runtime_feedback_masks": ["omp"],
+      "runtime_feedback_masks": [
+        "omp"
+      ],
       "runtime_feedback_debug_level": 4,
       "runtime_feedback_repeat": 1,
       "constraints": {
@@ -70,8 +79,8 @@
         "PARTIAL_SHIFT_PARAM": [[0, 0, -1], [0, 0, 1], [0, 1, -1], [0, 1, 1]],
         "SET_PARALLEL": [[2], [4], [8]]
       },
-      "result_json": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-enhanced-result.json",
-      "trial_csv": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-enhanced-trials.csv"
+      "result_json": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-result.json",
+      "trial_csv": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-trials.csv"
     }
   }
 }

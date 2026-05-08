@@ -30,7 +30,6 @@ class DummyNode:
 class PolyMorphOptimizerTests(unittest.TestCase):
     def test_config_defaults_keep_new_features_disabled(self) -> None:
         spec = PolyMorphSearchSpec.from_dict({})
-        self.assertFalse(spec.legacy)
         self.assertFalse(spec.static_pruning)
         self.assertFalse(spec.analytical_model)
         self.assertFalse(spec.constraint_aware)
@@ -40,7 +39,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
     def test_config_parses_new_options(self) -> None:
         spec = PolyMorphSearchSpec.from_dict(
             {
-                "legacy": True,
                 "static_pruning": True,
                 "analytical_model": True,
                 "constraint_aware": True,
@@ -59,7 +57,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "runtime_feedback_env": {"XDG_CACHE_HOME": "/tmp/acpp-cache"},
             }
         )
-        self.assertTrue(spec.legacy)
         self.assertTrue(spec.static_pruning)
         self.assertTrue(spec.analytical_model)
         self.assertTrue(spec.constraint_aware)

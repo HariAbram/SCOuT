@@ -485,51 +485,8 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
     return {"runtime": min(values)}
 
 
-def measure_legacy_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> float:
-    if not app.output_binary.exists():
-        build_app_or_raise(app)
-
-    if cfg is not None and cfg.backend == "parser":
-        if cfg.parser is None:
-            raise RuntimeError("Parser backend selected, but parser config is missing.")
-        metrics = measure_parser_sycl(
-            cfg.parser,
-            app.output_binary,
-            app.runtime_args,
-            {},
-            repeat,
-            workdir=app.project_root,
-            project=None,
-        )
-        metric_name = _parser_metric_name(cfg)
-        if metric_name not in metrics:
-            raise RuntimeError(
-                f"Parser metric '{metric_name}' missing; got metrics: {sorted(metrics.keys())}"
-            )
-        return float(metrics[metric_name])
-
-    values: List[float] = []
-    cmd = app.run_cmd()
-    for _ in range(repeat):
-        proc = _run(cmd)
-        if proc.returncode != 0:
-            raise RuntimeError(
-                "Run failed\n"
-                f"stdout:\n{proc.stdout}\n"
-                f"stderr:\n{proc.stderr}\n"
-            )
-        value = app.extract_runtime(proc)
-        if value <= 0.0:
-            raise RuntimeError(
-                "Could not extract runtime. Expected output like 'WALLTIME: <number>'.\n"
-                f"stdout:\n{proc.stdout}"
-            )
-        values.append(value)
-    return min(values)
-
-
 def collect_runtime_feedback(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[str, JsonDict]:
-    if poly.search.legacy or not poly.search.runtime_feedback:
+    if not poly.search.runtime_feedback:
         return {}
 
     masks = poly.search.runtime_feedback_masks or [""]
@@ -835,7 +792,7 @@ def make_project_app(
 ) -> SyclProjectApp:
     ensure_tadashi_available()
     compiler_options = list(poly.flags)
-    if not poly.search.legacy and poly.search.compiler_feedback:
+    if poly.search.compiler_feedback:
         compiler_options.extend(poly.search.compiler_feedback_flags)
     return SyclProjectApp(
         project_root=poly.project_root,
@@ -934,29 +891,7 @@ def _write_pareto_csv(study: optuna.study.Study, poly: PolyMorphSpec, cfg: Confi
     print(f"Wrote Pareto CSV: {out_csv}")
 
 
-def _enhanced_search_enabled(poly: PolyMorphSpec, cfg: Config) -> bool:
-    if poly.search.legacy:
-        return False
-    return any(
-        [
-            _candidate_pipeline_enabled(poly),
-            poly.search.static_pruning,
-            poly.search.analytical_model,
-            poly.search.constraint_aware,
-            poly.search.compiler_feedback,
-            poly.search.runtime_feedback,
-            poly.search.case_retrieval,
-            poly.search.top_k is not None,
-            bool(poly.search.history_jsonl),
-            bool(poly.search.pareto_csv),
-            len(cfg.objectives) > 1,
-        ]
-    )
-
-
 def _candidate_pipeline_enabled(poly: PolyMorphSpec) -> bool:
-    if poly.search.legacy:
-        return False
     return any(
         [
             poly.search.static_pruning,
@@ -1102,12 +1037,7 @@ def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     print(f"Built binary: {transformed_app.output_binary}")
     if poly.measure:
         try:
-            enhanced = _enhanced_search_enabled(poly, cfg)
-            runtime = (
-                measure_legacy_app_or_raise(transformed_app, poly.search.repeat, cfg)
-                if not enhanced
-                else measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
-            )
+            runtime = measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
             print(f"Measured runtime: {runtime}")
         except Exception as exc:
             print(f"Measurement failed: {exc}")
@@ -1122,7 +1052,6 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     require_executable(poly.compiler)
     if not poly.exec_name:
         raise ValueError("polyMorph.exec_name is required for search mode.")
-    enhanced = _enhanced_search_enabled(poly, cfg)
 
     baseline_exec = poly.search.baseline_exec_name or f"{poly.exec_name}-baseline"
 
@@ -1134,12 +1063,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         populate_scops=False,
     )
     build_app_or_raise(baseline_app)
-    if not enhanced:
-        baseline_value = measure_legacy_app_or_raise(baseline_app, poly.search.repeat, cfg)
-        baseline_metrics = {_primary_metric_name(cfg): baseline_value}
-    else:
-        baseline_metrics = measure_metrics_or_raise(baseline_app, poly.search.repeat, cfg)
-        baseline_value = _objective_values_from_metrics(cfg, baseline_metrics)[0]
+    baseline_metrics = measure_metrics_or_raise(baseline_app, poly.search.repeat, cfg)
+    baseline_value = _objective_values_from_metrics(cfg, baseline_metrics)[0]
     print(f"Baseline objective: {baseline_value}")
 
     enum_app = make_project_app(
@@ -1160,7 +1085,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
 
     baseline_runtime_feedback: Dict[str, JsonDict] = {}
     baseline_runtime_analysis: JsonDict = {}
-    if enhanced and poly.search.runtime_feedback:
+    if poly.search.runtime_feedback:
         baseline_runtime_feedback = collect_runtime_feedback(baseline_app, poly)
         baseline_runtime_analysis = analyze_runtime_feedback(
             baseline_runtime_feedback,
@@ -1176,7 +1101,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     source_hash = file_hash(source)
     runtime_bias: Dict[str, JsonDict] = {}
     seeded_sequences: List[List[JsonDict]] = []
-    if enhanced and poly.search.case_retrieval:
+    if poly.search.case_retrieval:
         records = load_history(poly.search.history_jsonl)
         seeded_sequences = retrieve_sequences(
             history=records,
@@ -1187,7 +1112,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         if seeded_sequences:
             print(f"Retrieved {len(seeded_sequences)} previous transform sequence(s).")
 
-    is_multi = enhanced and len(cfg.objectives) > 1
+    is_multi = len(cfg.objectives) > 1
 
     def objective(trial: optuna.Trial) -> float | List[float]:
         trial_exec = f"{poly.exec_name}-trial-{trial.number}"
@@ -1228,14 +1153,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     getattr(transformed_app, "last_build_stderr", ""),
                 )
 
-            if not enhanced:
-                value = measure_legacy_app_or_raise(transformed_app, poly.search.repeat, cfg)
-                metrics = {_primary_metric_name(cfg): value}
-                obj_values = [value]
-            else:
-                metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
-                obj_values = _objective_values_from_metrics(cfg, metrics)
-                value = obj_values[0]
+            metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
+            obj_values = _objective_values_from_metrics(cfg, metrics)
+            value = obj_values[0]
 
             runtime_feedback = collect_runtime_feedback(transformed_app, poly)
             runtime_feedback_analysis = analyze_runtime_feedback(
@@ -1258,51 +1178,48 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             trial.set_user_attr("metrics", metrics)
             trial.set_user_attr("speedup", speedup)
             print(f"Trial {trial.number}: objective={value}, speedup={speedup}, transforms={specs}")
-            if enhanced:
-                append_history(
-                    poly.search.history_jsonl,
-                    {
-                        "status": "complete",
-                        "trial": trial.number,
-                        "source": str(source),
-                        "source_hash": source_hash,
-                        "transforms": specs,
-                        "metrics": metrics,
-                        "objectives": obj_values,
-                        "speedup": speedup,
-                        "compiler_feedback": feedback,
-                        "runtime_feedback_analysis": runtime_feedback_analysis,
-                    },
-                )
+            append_history(
+                poly.search.history_jsonl,
+                {
+                    "status": "complete",
+                    "trial": trial.number,
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "transforms": specs,
+                    "metrics": metrics,
+                    "objectives": obj_values,
+                    "speedup": speedup,
+                    "compiler_feedback": feedback,
+                    "runtime_feedback_analysis": runtime_feedback_analysis,
+                },
+            )
             return obj_values if is_multi else value
         except optuna.TrialPruned as exc:
-            if enhanced:
-                append_history(
-                    poly.search.history_jsonl,
-                    {
-                        "status": "pruned",
-                        "trial": trial.number,
-                        "source": str(source),
-                        "source_hash": source_hash,
-                        "transforms": trial.user_attrs.get("transforms", []),
-                        "failure": str(exc),
-                    },
-                )
+            append_history(
+                poly.search.history_jsonl,
+                {
+                    "status": "pruned",
+                    "trial": trial.number,
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "transforms": trial.user_attrs.get("transforms", []),
+                    "failure": str(exc),
+                },
+            )
             raise
         except Exception as exc:
             trial.set_user_attr("failure", str(exc))
-            if enhanced:
-                append_history(
-                    poly.search.history_jsonl,
-                    {
-                        "status": "failed",
-                        "trial": trial.number,
-                        "source": str(source),
-                        "source_hash": source_hash,
-                        "transforms": trial.user_attrs.get("transforms", []),
-                        "failure": str(exc),
-                    },
-                )
+            append_history(
+                poly.search.history_jsonl,
+                {
+                    "status": "failed",
+                    "trial": trial.number,
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "transforms": trial.user_attrs.get("transforms", []),
+                    "failure": str(exc),
+                },
+            )
             raise optuna.TrialPruned(str(exc))
         finally:
             if transformed_app is not None:

@@ -227,7 +227,6 @@ class PolyMorphSearchSpec:
     explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
     result_json: str | None = None
     trial_csv: str | None = None
-    legacy: bool = False
     static_pruning: bool = False
     analytical_model: bool = False
     constraint_aware: bool = False
@@ -266,7 +265,6 @@ class PolyMorphSearchSpec:
             explicit_args=dict(data.get("explicit_args", {})),
             result_json=data.get("result_json"),
             trial_csv=data.get("trial_csv"),
-            legacy=bool(data.get("legacy", False)),
             static_pruning=bool(data.get("static_pruning", False)),
             analytical_model=bool(data.get("analytical_model", False)),
             constraint_aware=bool(data.get("constraint_aware", False)),

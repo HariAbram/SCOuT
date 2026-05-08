@@ -1,13 +1,25 @@
 {
   "backend": "perf",
   "perf": {
-    "events": ["cycles", "instructions"],
+    "events": [
+      "cycles",
+      "instructions"
+    ],
     "core_list": "",
-    "objective": { "metric": "CPI", "goal": "min" }
+    "objective": {
+      "metric": "CPI",
+      "goal": "min"
+    }
   },
   "objectives": [
-    { "metric": "CPI", "goal": "min" },
-    { "metric": "instructions", "goal": "min" }
+    {
+      "metric": "CPI",
+      "goal": "min"
+    },
+    {
+      "metric": "instructions",
+      "goal": "min"
+    }
   ],
   "runs": 1,
   "polyMorph": {
@@ -22,11 +34,17 @@
     "optuna_search": true,
     "build_system": "make",
     "exec_name": "bin/main-acpp-generic",
-    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],
+    "runtime_args": [
+      "-s",
+      "1024",
+      "--gemm",
+      "-i",
+      "3"
+    ],
     "search": {
       "n_trials": 8,
       "repeat": 2,
-      "generated_infix": "enhanced",
+      "generated_infix": "search",
       "seed": 42,
       "timeout": 600,
       "baseline_exec_name": "bin/main-acpp-generic-baseline",
@@ -44,13 +62,15 @@
       "retrieval_top_k": 3,
       "history_jsonl": "/tmp/scout-polymorph/history.jsonl",
       "pareto_csv": "/tmp/scout-polymorph/pareto.csv",
-      "result_json": "/tmp/scout-polymorph/enhanced_result.json",
-      "trial_csv": "/tmp/scout-polymorph/enhanced_trials.csv",
+      "result_json": "/tmp/scout-polymorph/result.json",
+      "trial_csv": "/tmp/scout-polymorph/trials.csv",
       "compiler_feedback_flags": [
         "-Rpass=loop-vectorize",
         "-Rpass-missed=loop-vectorize"
       ],
-      "runtime_feedback_masks": ["omp"],
+      "runtime_feedback_masks": [
+        "omp"
+      ],
       "runtime_feedback_debug_level": 4,
       "runtime_feedback_repeat": 1,
       "constraints": {
