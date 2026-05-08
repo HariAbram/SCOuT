@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 LAUNCHER=
 
 OPTIMIZE  = yes
@@ -20,11 +21,17 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = main
+SOURCE ?= bfs.cpp
+REPLACE_SOURCE ?= bfs.cpp
+EXEC ?= main
 
-source = bfs.cpp
+program = $(EXEC)
 
-obj = $(source:.cpp=.o)
+project_source = bfs.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
+
+obj = $(patsubst %.cpp,%.o,$(filter %.cpp,$(source)))
 
 #===============================================================================
 # Sets Flags
@@ -64,11 +71,12 @@ endif
 # Targets to Build
 #===============================================================================
 
-$(program): $(obj)
-	$(CC) $(CFLAGS) $(obj) -o $@ $(LDFLAGS)
+$(program): $(source)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) $(source) -o $@ $(LDFLAGS)
 
 bfs.o: bfs.cpp util.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

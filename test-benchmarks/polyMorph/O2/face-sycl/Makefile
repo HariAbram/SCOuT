@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 OPTIMIZE  = yes
 DEBUG     = no
 LAUNCHER  =
@@ -19,11 +20,29 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = vj-cpu vj-gpu
+SOURCE ?= main.cpp
+REPLACE_SOURCE ?= main.cpp
+EXEC ?= vj-gpu
 
-source = main.cpp
+program = $(EXEC)
 
-obj = $(source:.cpp=.o)
+project_source = main.cpp haar.cpp image.cpp stdio-wrapper.cpp \
+         rectangles.cpp
+
+main_source = $(if $(filter main.cpp,$(REPLACE_SOURCE)),$(SOURCE),main.cpp)
+haar_source = $(if $(filter haar.cpp,$(REPLACE_SOURCE)),$(SOURCE),haar.cpp)
+image_source = $(if $(filter image.cpp,$(REPLACE_SOURCE)),$(SOURCE),image.cpp)
+stdio_source = $(if $(filter stdio-wrapper.cpp,$(REPLACE_SOURCE)),$(SOURCE),stdio-wrapper.cpp)
+rectangles_source = $(if $(filter rectangles.cpp,$(REPLACE_SOURCE)),$(SOURCE),rectangles.cpp)
+
+source = $(main_source) $(haar_source) $(image_source) $(stdio_source) $(rectangles_source)
+
+main_obj = build/$(notdir $(program))-main.o
+haar_obj = build/$(notdir $(program))-haar-gpu.o
+image_obj = build/$(notdir $(program))-image.o
+stdio_obj = build/$(notdir $(program))-stdio-wrapper.o
+rectangles_obj = build/$(notdir $(program))-rectangles.o
+obj = $(main_obj) $(haar_obj) $(image_obj) $(stdio_obj) $(rectangles_obj)
 
 #===============================================================================
 # Sets Flags
@@ -63,38 +82,37 @@ endif
 # Targets to Build
 #===============================================================================
 
-HEADERS := image.h haar.h stdio-wrapper.h
-
 all: build
 
 build: $(program)
 
-image.o: image.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+HEADERS := image.h haar.h stdio-wrapper.h
 
-stdio-wrapper.o: stdio-wrapper.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+$(main_obj): $(main_source) $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -x c++ -o $@ -c $<
 
-main.o: main.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+$(image_obj): $(image_source) $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -x c++ -o $@ -c $<
 
-haar-gpu.o: haar.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -DSYCL -o $@ -c $<
+$(stdio_obj): $(stdio_source) $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -x c++ -o $@ -c $<
 
-haar-cpu.o: haar.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+$(haar_obj): $(haar_source) $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -DSYCL -x c++ -o $@ -c $<
 
-rectangles.o: rectangles.cpp $(HEADERS)
-	$(CC) $(CFLAGS) -o $@ -c $<
+$(rectangles_obj): $(rectangles_source) $(HEADERS)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -x c++ -o $@ -c $<
 
-vj-cpu: main.o haar-cpu.o image.o stdio-wrapper.o rectangles.o
-	$(CC) $(CFLAGS) -o $@ $+ $(LDFLAGS)
-
-vj-gpu: main.o haar-gpu.o image.o stdio-wrapper.o rectangles.o
-	$(CC) $(CFLAGS) -o $@ $+ $(LDFLAGS)
-
+$(program): $(obj)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) -o $@ $+ $(LDFLAGS)
 clean:
-	rm -f $(program) *.o Output-cpu.pgm Output-gpu.pgm
+	rm -rf $(program) $(obj) *.o Output-cpu.pgm Output-gpu.pgm
 
 run: build
 	$(LAUNCHER) ./vj-cpu ../face-cuda/Face.pgm ../face-cuda/info.txt ../face-cuda/class.txt Output-cpu.pgm

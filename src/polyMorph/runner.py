@@ -2,17 +2,34 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import shutil
 import shlex
 import subprocess
+import stat
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import optuna
 
 from src.config import Config, PolyMorphSpec
-from src.metrics import measure_parser_sycl
+from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
+from src.polyMorph.features import candidate_key, enrich_candidate, file_hash, sequence_signature
+from src.polyMorph.feedback import (
+    analyze_runtime_feedback,
+    merge_feedback,
+    parse_adaptivecpp_runtime_feedback,
+    parse_compiler_feedback,
+)
+from src.polyMorph.history import append_history, load_history, retrieve_sequences
+from src.polyMorph.pruning import (
+    analytical_score,
+    static_prune_candidate,
+    static_prune_sequence,
+    violates_constraints,
+)
 
 try:
     from tadashi import TrEnum
@@ -27,6 +44,24 @@ except Exception as exc:
 
 
 JsonDict = Dict[str, Any]
+
+
+@contextmanager
+def suppress_external_viewers() -> Iterator[None]:
+    """Prevent native analysis libraries from opening graph viewer windows."""
+    shim_dir = Path("/tmp/scout-noop-viewers")
+    shim_dir.mkdir(parents=True, exist_ok=True)
+    dotty = shim_dir / "dotty"
+    if not dotty.exists():
+        dotty.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        dotty.chmod(dotty.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = f"{shim_dir}{os.pathsep}{old_path}" if old_path else str(shim_dir)
+    try:
+        yield
+    finally:
+        os.environ["PATH"] = old_path
 
 
 def _run(
@@ -109,6 +144,7 @@ class SyclProjectApp(App):
         compiler_executable: str | None = None,
         translator: Any | None = None,
         compiler_options: Sequence[str] | None = None,
+        original_source: str | Path | None = None,
         ephemeral: bool = False,
         populate_scops: bool = True,
     ) -> None:
@@ -120,6 +156,9 @@ class SyclProjectApp(App):
         self.runtime_args = list(runtime_args or [])
         self.compiler_options = list(compiler_options or [])
         self.compiler_executable = compiler_executable
+        self.original_source = (
+            Path(original_source).resolve() if original_source is not None else Path(source).resolve()
+        )
 
         if self.compiler_executable is None and translator is not None:
             compiler_candidate = getattr(translator, "compiler", None)
@@ -142,6 +181,7 @@ class SyclProjectApp(App):
             "build_target": self.build_target,
             "build_dir": self.build_dir,
             "runtime_args": self.runtime_args,
+            "original_source": self.original_source,
         }
 
     @property
@@ -152,6 +192,10 @@ class SyclProjectApp(App):
         del suffix
         src = str(self.source)
         exe = str(self.output_binary)
+        try:
+            replace_src = str(self.original_source.relative_to(self.project_root))
+        except ValueError:
+            replace_src = str(self.original_source)
 
         if self.build_system == "make":
             extra_cflags = " ".join(self.compiler_options)
@@ -160,6 +204,7 @@ class SyclProjectApp(App):
                 "-C",
                 str(self.project_root),
                 f"SOURCE={src}",
+                f"REPLACE_SOURCE={replace_src}",
                 f"EXEC={exe}",
             ]
             if self.compiler_executable:
@@ -175,7 +220,7 @@ class SyclProjectApp(App):
             cmd = ["cmake", "--build", str(self.build_dir)]
             if self.build_target:
                 cmd += ["--target", self.build_target]
-            cmd += ["--", f"SOURCE={src}", f"EXEC={exe}"]
+            cmd += ["--", f"SOURCE={src}", f"REPLACE_SOURCE={replace_src}", f"EXEC={exe}"]
             return cmd
 
         raise ValueError(f"Unsupported build_system: {self.build_system}")
@@ -296,11 +341,67 @@ def remove_stale_build_output(app: SyclProjectApp) -> None:
         output.unlink()
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def cleanup_trial_artifacts(
+    app: SyclProjectApp,
+    *,
+    generated_infix: str | None = None,
+) -> List[Path]:
+    """Remove per-trial generated sources, objects, and binaries."""
+    removed: List[Path] = []
+    candidates: set[Path] = set()
+
+    output = app.output_binary
+    candidates.add(output)
+
+    source = Path(app.source)
+    original_source = Path(getattr(app, "original_source", source))
+    if source.resolve() != original_source.resolve() and _is_relative_to(source, app.project_root):
+        candidates.add(source)
+
+    if generated_infix:
+        for artifact in app.project_root.glob(f"*{generated_infix}*"):
+            if artifact.is_file() or artifact.is_symlink():
+                candidates.add(artifact)
+
+    output_stem = output.name
+    search_dirs = {app.project_root, app.build_dir, output.parent}
+    for directory in search_dirs:
+        if not directory.exists() or not _is_relative_to(directory, app.project_root):
+            continue
+        candidates.update(
+            artifact
+            for artifact in directory.glob(f"{output_stem}*.o")
+            if artifact.is_file() or artifact.is_symlink()
+        )
+
+    for artifact in sorted(candidates):
+        try:
+            if artifact.is_file() or artifact.is_symlink():
+                artifact.unlink()
+                removed.append(artifact)
+        except FileNotFoundError:
+            continue
+
+    if removed:
+        print(f"[cleanup] removed {len(removed)} trial artifact(s)")
+    return removed
+
+
 def build_app_or_raise(app: SyclProjectApp) -> None:
     print(f"[build] source={app.source}")
     print(f"[build] output={app.output_binary}")
     remove_stale_build_output(app)
     proc = _run(app.compile_cmd(""))
+    setattr(app, "last_build_stdout", proc.stdout)
+    setattr(app, "last_build_stderr", proc.stderr)
     if proc.returncode == 0:
         return
     raise RuntimeError(
@@ -319,6 +420,72 @@ def _parser_metric_name(cfg: Config) -> str:
 
 
 def measure_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> float:
+    metrics = measure_metrics_or_raise(app, repeat, cfg)
+    metric_name = _primary_metric_name(cfg)
+    if metric_name not in metrics:
+        raise RuntimeError(f"Primary metric '{metric_name}' missing; got metrics: {sorted(metrics)}")
+    return float(metrics[metric_name])
+
+
+def _primary_metric_name(cfg: Config | None) -> str:
+    if cfg is not None and cfg.objectives:
+        return cfg.objectives[0].metric
+    if cfg is not None and cfg.backend == "parser":
+        return _parser_metric_name(cfg)
+    return "runtime"
+
+
+def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> Dict[str, float]:
+    if not app.output_binary.exists():
+        build_app_or_raise(app)
+
+    if cfg is not None and cfg.backend == "parser":
+        if cfg.parser is None:
+            raise RuntimeError("Parser backend selected, but parser config is missing.")
+        metrics = measure_parser_sycl(
+            cfg.parser,
+            app.output_binary,
+            app.runtime_args,
+            {},
+            repeat,
+            workdir=app.project_root,
+            project=None,
+        )
+        return {str(k): float(v) for k, v in metrics.items()}
+
+    if cfg is not None and cfg.backend == "perf":
+        if cfg.perf is None:
+            raise RuntimeError("Perf backend selected, but perf config is missing.")
+        metrics = measure_perf(cfg.perf, app.output_binary, app.runtime_args, {}, repeat)
+        return {str(k): float(v) for k, v in metrics.items()}
+
+    if cfg is not None and cfg.backend == "likwid":
+        if cfg.likwid is None:
+            raise RuntimeError("LIKWID backend selected, but likwid config is missing.")
+        metrics = measure_likwid(cfg.likwid, app.output_binary, app.runtime_args, {}, repeat)
+        return {str(k): float(v) for k, v in metrics.items()}
+
+    values: List[float] = []
+    cmd = app.run_cmd()
+    for _ in range(repeat):
+        proc = _run(cmd)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                "Run failed\n"
+                f"stdout:\n{proc.stdout}\n"
+                f"stderr:\n{proc.stderr}\n"
+            )
+        value = app.extract_runtime(proc)
+        if value <= 0.0:
+            raise RuntimeError(
+                "Could not extract runtime. Expected output like 'WALLTIME: <number>'.\n"
+                f"stdout:\n{proc.stdout}"
+            )
+        values.append(value)
+    return {"runtime": min(values)}
+
+
+def measure_legacy_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> float:
     if not app.output_binary.exists():
         build_app_or_raise(app)
 
@@ -361,6 +528,41 @@ def measure_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = 
     return min(values)
 
 
+def collect_runtime_feedback(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[str, JsonDict]:
+    if poly.search.legacy or not poly.search.runtime_feedback:
+        return {}
+
+    masks = poly.search.runtime_feedback_masks or [""]
+    repeat = max(1, poly.search.runtime_feedback_repeat)
+    results: Dict[str, JsonDict] = {}
+    for raw_mask in masks:
+        mask = str(raw_mask)
+        stdout_parts: List[str] = []
+        stderr_parts: List[str] = []
+        last_returncode = 0
+        for _ in range(repeat):
+            env = {
+                **os.environ,
+                **poly.search.runtime_feedback_env,
+                "ACPP_DEBUG_LEVEL": str(poly.search.runtime_feedback_debug_level),
+            }
+            if mask:
+                env["ACPP_VISIBILITY_MASK"] = mask
+            proc = _run(app.run_cmd(), cwd=app.output_binary.parent, env=env)
+            stdout_parts.append(proc.stdout or "")
+            stderr_parts.append(proc.stderr or "")
+            last_returncode = proc.returncode
+
+        parsed = parse_adaptivecpp_runtime_feedback(
+            "\n".join(stdout_parts),
+            "\n".join(stderr_parts),
+            mask=mask or "<default>",
+        )
+        parsed["returncode"] = last_returncode
+        results[mask or "default"] = parsed
+    return results
+
+
 def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProjectApp:
     dst.compiler_executable = src.compiler_executable
     dst.compiler_options = list(src.compiler_options)
@@ -369,6 +571,7 @@ def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProj
     dst.build_target = src.build_target
     dst.build_dir = src.build_dir
     dst.runtime_args = list(src.runtime_args)
+    dst.original_source = src.original_source
     return dst
 
 
@@ -389,28 +592,43 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
         "trial",
         "state",
         "objective",
+        "objectives",
         "speedup",
         "transforms",
         "failure",
+        "metrics",
+        "compiler_feedback",
+        "runtime_feedback_analysis",
         "params",
     ]
     with open(out_csv, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
         writer.writerow(header)
         for t in study.trials:
-            objective = t.value if t.value is not None else ""
+            objective = t.values[0] if t.values is not None and len(t.values) == 1 else ""
+            objectives = json.dumps(t.values) if t.values is not None else ""
             speedup = t.user_attrs.get("speedup", "")
             transforms = json.dumps(t.user_attrs.get("transforms", []))
             failure = t.user_attrs.get("failure", "")
+            metrics = json.dumps(t.user_attrs.get("metrics", {}), sort_keys=True)
+            feedback = json.dumps(t.user_attrs.get("compiler_feedback", {}), sort_keys=True)
+            runtime_feedback_analysis = json.dumps(
+                t.user_attrs.get("runtime_feedback_analysis", {}),
+                sort_keys=True,
+            )
             params = json.dumps(t.params, sort_keys=True)
             writer.writerow(
                 [
                     t.number,
                     str(t.state.name),
                     objective,
+                    objectives,
                     speedup,
                     transforms,
                     failure,
+                    metrics,
+                    feedback,
+                    runtime_feedback_analysis,
                     params,
                 ]
             )
@@ -461,8 +679,14 @@ def candidate_args_for_transform(name: str, poly: PolyMorphSpec) -> List[List[An
     return [[]]
 
 
-def enumerate_transform_candidates(app: SyclProjectApp, poly: PolyMorphSpec) -> List[JsonDict]:
+def enumerate_transform_candidates(
+    app: SyclProjectApp,
+    poly: PolyMorphSpec,
+    runtime_bias: Dict[str, JsonDict] | None = None,
+) -> List[JsonDict]:
     candidates: List[JsonDict] = []
+    candidate_pipeline = _candidate_pipeline_enabled(poly)
+    runtime_bias = runtime_bias or {}
     for scop_idx, scop in enumerate(app.scops):
         for node_idx, node in enumerate(scop.schedule_tree):
             available = getattr(node, "available_transformations", [])
@@ -471,23 +695,57 @@ def enumerate_transform_candidates(app: SyclProjectApp, poly: PolyMorphSpec) -> 
                 if not transform_allowed(name, poly):
                     continue
                 for args in candidate_args_for_transform(name, poly):
-                    candidates.append(
-                        {
-                            "scop": scop_idx,
-                            "node": node_idx,
-                            "tr": name,
-                            "args": list(args),
-                        }
-                    )
+                    candidate = {
+                        "scop": scop_idx,
+                        "node": node_idx,
+                        "tr": name,
+                        "args": list(args),
+                    }
+                    if candidate_pipeline:
+                        candidate = enrich_candidate(candidate, node)
+                        if poly.search.analytical_model:
+                            prediction = analytical_score(candidate, poly.search.constraints)
+                            candidate["predictions"].update(prediction)
+                        key = candidate_key(candidate)
+                        bias = runtime_bias.get(key)
+                        if bias:
+                            _apply_runtime_bias(candidate, bias, poly.search.constraints)
+                        if poly.search.static_pruning:
+                            reasons = static_prune_candidate(candidate, poly.search.constraints)
+                            candidate["prune_reasons"].extend(reasons)
+                        if poly.search.constraint_aware:
+                            reasons = violates_constraints(candidate, poly.search.constraints)
+                            candidate["prune_reasons"].extend(reasons)
+                            reasons = _runtime_bias_prune_reasons(candidate, poly.search.constraints)
+                            candidate["prune_reasons"].extend(reasons)
+                        if candidate["prune_reasons"]:
+                            continue
+                    candidates.append(candidate)
+    if candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
+        candidates.sort(
+            key=lambda item: (
+                float((item.get("predictions") or {}).get("score", 0.0)),
+                -float((item.get("predictions") or {}).get("risk", 1.0)),
+            ),
+            reverse=True,
+        )
+        candidates = candidates[: poly.search.top_k]
     return candidates
 
 
-def print_candidates(candidates: List[JsonDict]) -> None:
+def print_candidates(candidates: List[JsonDict], *, verbose: bool = False) -> None:
     print(f"Enumerated {len(candidates)} candidate transform(s)")
+    if not verbose:
+        print("Candidate details suppressed during search. Use enumerate_only/list mode to print them.")
+        return
     for idx, candidate in enumerate(candidates):
+        pred = candidate.get("predictions") or {}
+        suffix = ""
+        if pred:
+            suffix = f" score={pred.get('score', '')} risk={pred.get('risk', '')}"
         print(
             f"{idx}: scop={candidate['scop']} node={candidate['node']} "
-            f"tr={candidate['tr']} args={candidate.get('args', [])}"
+            f"tr={candidate['tr']} args={candidate.get('args', [])}{suffix}"
         )
 
 
@@ -514,17 +772,36 @@ def sample_transform_sequence(
     trial: optuna.Trial,
     app: SyclProjectApp,
     poly: PolyMorphSpec,
+    seeded_sequences: List[List[JsonDict]] | None = None,
+    runtime_bias: Dict[str, JsonDict] | None = None,
 ) -> List[JsonDict]:
-    initial_candidates = enumerate_transform_candidates(app, poly)
+    initial_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
     if not initial_candidates:
         return []
+
+    if seeded_sequences and trial.number < len(seeded_sequences):
+        specs = seeded_sequences[trial.number]
+        reasons = static_prune_sequence(specs, poly.search.constraints)
+        if poly.search.constraint_aware and reasons:
+            raise optuna.TrialPruned("; ".join(reasons))
+        chosen: List[JsonDict] = []
+        for spec in specs:
+            apply_transforms_to_scops(
+                app.scops,
+                [spec],
+                legality_cb=lambda: app.legal,
+            )
+            if not poly.allow_illegal and not app.legal:
+                raise optuna.TrialPruned("Illegal transformed schedule")
+            chosen.append(spec)
+        return chosen
 
     max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(initial_candidates)))
     n_transforms = trial.suggest_int("n_transforms", 1, max_transforms)
 
     chosen: List[JsonDict] = []
     for pos in range(n_transforms):
-        current_candidates = enumerate_transform_candidates(app, poly)
+        current_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
         if not current_candidates:
             break
 
@@ -541,6 +818,11 @@ def sample_transform_sequence(
         if not poly.allow_illegal and not app.legal:
             raise optuna.TrialPruned("Illegal transformed schedule")
 
+        if poly.search.constraint_aware:
+            reasons = static_prune_sequence(chosen, poly.search.constraints)
+            if reasons:
+                raise optuna.TrialPruned("; ".join(reasons))
+
     return chosen
 
 
@@ -552,6 +834,9 @@ def make_project_app(
     populate_scops: bool,
 ) -> SyclProjectApp:
     ensure_tadashi_available()
+    compiler_options = list(poly.flags)
+    if not poly.search.legacy and poly.search.compiler_feedback:
+        compiler_options.extend(poly.search.compiler_feedback_flags)
     return SyclProjectApp(
         project_root=poly.project_root,
         source=source,
@@ -562,7 +847,7 @@ def make_project_app(
         runtime_args=poly.runtime_args,
         compiler_executable=poly.compiler,
         translator=Polly(poly.compiler) if populate_scops else None,
-        compiler_options=poly.flags,
+        compiler_options=compiler_options,
         ephemeral=False,
         populate_scops=populate_scops,
     )
@@ -586,6 +871,170 @@ def infer_source(poly: PolyMorphSpec) -> Path:
         "Multiple SYCL-looking source files found. Please specify polyMorph.source in config.\n"
         f"{joined}"
     )
+
+
+def _objective_values_from_metrics(cfg: Config, metrics: Dict[str, float]) -> List[float]:
+    if cfg.objectives:
+        values = []
+        for obj in cfg.objectives:
+            if obj.metric not in metrics:
+                raise RuntimeError(f"Metric '{obj.metric}' missing; got metrics: {sorted(metrics.keys())}")
+            values.append(float(metrics[obj.metric]))
+        return values
+    metric_name = _primary_metric_name(cfg)
+    if metric_name not in metrics:
+        raise RuntimeError(f"Metric '{metric_name}' missing; got metrics: {sorted(metrics.keys())}")
+    return [float(metrics[metric_name])]
+
+
+def _speedup_for_primary(cfg: Config, baseline_value: float, value: float) -> float:
+    if value <= 0.0 or baseline_value <= 0.0:
+        return 0.0
+    goal = cfg.objectives[0].goal if cfg.objectives else "min"
+    if goal == "max":
+        return value / baseline_value
+    return baseline_value / value
+
+
+def _pick_representative_trial(trials: Sequence[Any], cfg: Config) -> Any:
+    if not trials:
+        raise RuntimeError("No Pareto trials available.")
+    first_goal = cfg.objectives[0].goal if cfg.objectives else "min"
+    if first_goal == "max":
+        return max(trials, key=lambda trial: trial.values[0] if trial.values else float("-inf"))
+    return min(trials, key=lambda trial: trial.values[0] if trial.values else float("inf"))
+
+
+def _write_pareto_csv(study: optuna.study.Study, poly: PolyMorphSpec, cfg: Config) -> None:
+    if not poly.search.pareto_csv:
+        return
+    out_csv = Path(poly.search.pareto_csv)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    metric_names = [obj.metric for obj in cfg.objectives]
+    extra_metrics: set[str] = set()
+    for trial in study.best_trials:
+        extra_metrics.update((trial.user_attrs.get("metrics") or {}).keys())
+    extra_metrics.difference_update(metric_names)
+    with open(out_csv, "w", newline="", encoding="utf-8") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(["trial", *metric_names, "speedup", "transforms", *sorted(extra_metrics)])
+        for trial in study.best_trials:
+            if trial.values is None:
+                continue
+            metrics = trial.user_attrs.get("metrics", {}) or {}
+            writer.writerow(
+                [
+                    trial.number,
+                    *trial.values,
+                    trial.user_attrs.get("speedup", ""),
+                    json.dumps(trial.user_attrs.get("transforms", [])),
+                    *[metrics.get(name, "") for name in sorted(extra_metrics)],
+                ]
+            )
+    print(f"Wrote Pareto CSV: {out_csv}")
+
+
+def _enhanced_search_enabled(poly: PolyMorphSpec, cfg: Config) -> bool:
+    if poly.search.legacy:
+        return False
+    return any(
+        [
+            _candidate_pipeline_enabled(poly),
+            poly.search.static_pruning,
+            poly.search.analytical_model,
+            poly.search.constraint_aware,
+            poly.search.compiler_feedback,
+            poly.search.runtime_feedback,
+            poly.search.case_retrieval,
+            poly.search.top_k is not None,
+            bool(poly.search.history_jsonl),
+            bool(poly.search.pareto_csv),
+            len(cfg.objectives) > 1,
+        ]
+    )
+
+
+def _candidate_pipeline_enabled(poly: PolyMorphSpec) -> bool:
+    if poly.search.legacy:
+        return False
+    return any(
+        [
+            poly.search.static_pruning,
+            poly.search.analytical_model,
+            poly.search.constraint_aware,
+            poly.search.top_k is not None,
+        ]
+    )
+
+
+def _apply_runtime_bias(candidate: JsonDict, bias: JsonDict, constraints: JsonDict) -> None:
+    predictions = candidate.setdefault("predictions", {})
+    base_score = float(predictions.get("score", 0.5) or 0.5)
+    base_risk = float(predictions.get("risk", 0.1) or 0.1)
+    penalty = float(bias.get("penalty", 0.0) or 0.0)
+    bonus = float(bias.get("bonus", 0.0) or 0.0)
+    weight = float(constraints.get("runtime_feedback_bias_weight", 0.35))
+
+    predictions["runtime_penalty"] = penalty
+    predictions["runtime_bonus"] = bonus
+    predictions["runtime_observations"] = int(bias.get("observations", 0) or 0)
+    predictions["runtime_backend_sensitive"] = bool(bias.get("backend_sensitive"))
+    predictions["score"] = max(0.0, min(1.0, base_score - weight * penalty + 0.5 * weight * bonus))
+    predictions["risk"] = max(0.0, min(1.0, base_risk + weight * penalty))
+    reasons = predictions.setdefault("reasons", [])
+    if isinstance(reasons, list):
+        reasons.extend(str(reason) for reason in bias.get("reasons", [])[:5])
+
+
+def _runtime_bias_prune_reasons(candidate: JsonDict, constraints: JsonDict) -> List[str]:
+    predictions = candidate.get("predictions", {}) or {}
+    observations = int(predictions.get("runtime_observations", 0) or 0)
+    if observations < int(constraints.get("runtime_feedback_min_observations_for_prune", 1)):
+        return []
+
+    reasons: List[str] = []
+    max_penalty = constraints.get("max_runtime_feedback_penalty")
+    penalty = float(predictions.get("runtime_penalty", 0.0) or 0.0)
+    if max_penalty is not None and penalty > float(max_penalty):
+        reasons.append(f"runtime feedback penalty {penalty:.3f} exceeds max_runtime_feedback_penalty={max_penalty}")
+
+    if bool(predictions.get("runtime_backend_sensitive")) and constraints.get("prune_backend_sensitive"):
+        reasons.append("runtime feedback marks transform as backend-sensitive")
+
+    return reasons
+
+
+def _update_runtime_bias(
+    runtime_bias: Dict[str, JsonDict],
+    specs: List[JsonDict],
+    analysis: JsonDict,
+) -> None:
+    if not specs or not analysis:
+        return
+    penalty = float(analysis.get("penalty", 0.0) or 0.0)
+    bonus = float(analysis.get("bonus", 0.0) or 0.0)
+    backend_sensitive = bool(analysis.get("backend_sensitive"))
+    reasons = list(analysis.get("reasons", []) or [])
+    for spec in specs:
+        key = candidate_key(spec)
+        current = runtime_bias.setdefault(
+            key,
+            {
+                "observations": 0,
+                "penalty": 0.0,
+                "bonus": 0.0,
+                "backend_sensitive": False,
+                "reasons": [],
+            },
+        )
+        n = int(current.get("observations", 0) or 0)
+        current["observations"] = n + 1
+        current["penalty"] = ((float(current.get("penalty", 0.0) or 0.0) * n) + penalty) / (n + 1)
+        current["bonus"] = ((float(current.get("bonus", 0.0) or 0.0) * n) + bonus) / (n + 1)
+        current["backend_sensitive"] = bool(current.get("backend_sensitive")) or backend_sensitive
+        merged_reasons = list(current.get("reasons", []) or [])
+        merged_reasons.extend(reasons[:5])
+        current["reasons"] = merged_reasons[-10:]
 
 
 def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
@@ -653,7 +1102,12 @@ def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     print(f"Built binary: {transformed_app.output_binary}")
     if poly.measure:
         try:
-            runtime = measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
+            enhanced = _enhanced_search_enabled(poly, cfg)
+            runtime = (
+                measure_legacy_app_or_raise(transformed_app, poly.search.repeat, cfg)
+                if not enhanced
+                else measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
+            )
             print(f"Measured runtime: {runtime}")
         except Exception as exc:
             print(f"Measurement failed: {exc}")
@@ -668,6 +1122,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     require_executable(poly.compiler)
     if not poly.exec_name:
         raise ValueError("polyMorph.exec_name is required for search mode.")
+    enhanced = _enhanced_search_enabled(poly, cfg)
 
     baseline_exec = poly.search.baseline_exec_name or f"{poly.exec_name}-baseline"
 
@@ -679,7 +1134,12 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         populate_scops=False,
     )
     build_app_or_raise(baseline_app)
-    baseline_value = measure_app_or_raise(baseline_app, poly.search.repeat, cfg)
+    if not enhanced:
+        baseline_value = measure_legacy_app_or_raise(baseline_app, poly.search.repeat, cfg)
+        baseline_metrics = {_primary_metric_name(cfg): baseline_value}
+    else:
+        baseline_metrics = measure_metrics_or_raise(baseline_app, poly.search.repeat, cfg)
+        baseline_value = _objective_values_from_metrics(cfg, baseline_metrics)[0]
     print(f"Baseline objective: {baseline_value}")
 
     enum_app = make_project_app(
@@ -689,7 +1149,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         populate_scops=True,
     )
     candidates = enumerate_transform_candidates(enum_app, poly)
-    print_candidates(candidates)
+    print_candidates(candidates, verbose=poly.search.enumerate_only)
 
     if not candidates:
         print("No candidate transformations found.")
@@ -698,8 +1158,41 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     if poly.search.enumerate_only:
         return 0
 
-    def objective(trial: optuna.Trial) -> float:
+    baseline_runtime_feedback: Dict[str, JsonDict] = {}
+    baseline_runtime_analysis: JsonDict = {}
+    if enhanced and poly.search.runtime_feedback:
+        baseline_runtime_feedback = collect_runtime_feedback(baseline_app, poly)
+        baseline_runtime_analysis = analyze_runtime_feedback(
+            baseline_runtime_feedback,
+            constraints=poly.search.constraints,
+        )
+        print(
+            "Baseline runtime feedback: "
+            f"score={baseline_runtime_analysis.get('score', '')}, "
+            f"penalty={baseline_runtime_analysis.get('penalty', '')}, "
+            f"backend_sensitive={baseline_runtime_analysis.get('backend_sensitive', False)}"
+        )
+
+    source_hash = file_hash(source)
+    runtime_bias: Dict[str, JsonDict] = {}
+    seeded_sequences: List[List[JsonDict]] = []
+    if enhanced and poly.search.case_retrieval:
+        records = load_history(poly.search.history_jsonl)
+        seeded_sequences = retrieve_sequences(
+            history=records,
+            source_hash=source_hash,
+            candidates=candidates,
+            limit=poly.search.retrieval_top_k,
+        )
+        if seeded_sequences:
+            print(f"Retrieved {len(seeded_sequences)} previous transform sequence(s).")
+
+    is_multi = enhanced and len(cfg.objectives) > 1
+
+    def objective(trial: optuna.Trial) -> float | List[float]:
         trial_exec = f"{poly.exec_name}-trial-{trial.number}"
+        generated_infix = f"{poly.search.generated_infix}-{trial.number}"
+        transformed_app: SyclProjectApp | None = None
         trial_app = make_project_app(
             poly=poly,
             source=source,
@@ -708,13 +1201,14 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial, trial_app, poly)
+            specs = sample_transform_sequence(trial, trial_app, poly, seeded_sequences, runtime_bias)
             if not specs:
                 raise optuna.TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
+            trial.set_user_attr("transform_signature", sequence_signature(specs))
 
             transformed_app = trial_app.generate_code(
-                alt_infix=f"{poly.search.generated_infix}-{trial.number}",
+                alt_infix=generated_infix,
                 ephemeral=False,
                 populate_scops=False,
                 ensure_legality=not poly.allow_illegal,
@@ -727,25 +1221,103 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             )
 
             build_app_or_raise(transformed_app)
-            value = measure_app_or_raise(transformed_app, poly.search.repeat, cfg)
-            speedup = baseline_value / value if value > 0 else 0.0
+            compile_feedback = {}
+            if poly.search.compiler_feedback:
+                compile_feedback = parse_compiler_feedback(
+                    getattr(transformed_app, "last_build_stdout", ""),
+                    getattr(transformed_app, "last_build_stderr", ""),
+                )
+
+            if not enhanced:
+                value = measure_legacy_app_or_raise(transformed_app, poly.search.repeat, cfg)
+                metrics = {_primary_metric_name(cfg): value}
+                obj_values = [value]
+            else:
+                metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
+                obj_values = _objective_values_from_metrics(cfg, metrics)
+                value = obj_values[0]
+
+            runtime_feedback = collect_runtime_feedback(transformed_app, poly)
+            runtime_feedback_analysis = analyze_runtime_feedback(
+                runtime_feedback,
+                baseline=baseline_runtime_feedback,
+                constraints=poly.search.constraints,
+            ) if runtime_feedback else {}
+            if runtime_feedback_analysis:
+                trial.set_user_attr("runtime_feedback_analysis", runtime_feedback_analysis)
+                _update_runtime_bias(runtime_bias, specs, runtime_feedback_analysis)
+            feedback = merge_feedback(compile_feedback, runtime_feedback)
+            if feedback:
+                trial.set_user_attr("compiler_feedback", feedback)
+            if runtime_feedback:
+                trial.set_user_attr("runtime_feedback", runtime_feedback)
+
+            speedup = _speedup_for_primary(cfg, baseline_value, value)
 
             trial.set_user_attr("runtime", value)
+            trial.set_user_attr("metrics", metrics)
             trial.set_user_attr("speedup", speedup)
             print(f"Trial {trial.number}: objective={value}, speedup={speedup}, transforms={specs}")
-            return value
-        except optuna.TrialPruned:
+            if enhanced:
+                append_history(
+                    poly.search.history_jsonl,
+                    {
+                        "status": "complete",
+                        "trial": trial.number,
+                        "source": str(source),
+                        "source_hash": source_hash,
+                        "transforms": specs,
+                        "metrics": metrics,
+                        "objectives": obj_values,
+                        "speedup": speedup,
+                        "compiler_feedback": feedback,
+                        "runtime_feedback_analysis": runtime_feedback_analysis,
+                    },
+                )
+            return obj_values if is_multi else value
+        except optuna.TrialPruned as exc:
+            if enhanced:
+                append_history(
+                    poly.search.history_jsonl,
+                    {
+                        "status": "pruned",
+                        "trial": trial.number,
+                        "source": str(source),
+                        "source_hash": source_hash,
+                        "transforms": trial.user_attrs.get("transforms", []),
+                        "failure": str(exc),
+                    },
+                )
             raise
         except Exception as exc:
             trial.set_user_attr("failure", str(exc))
+            if enhanced:
+                append_history(
+                    poly.search.history_jsonl,
+                    {
+                        "status": "failed",
+                        "trial": trial.number,
+                        "source": str(source),
+                        "source_hash": source_hash,
+                        "transforms": trial.user_attrs.get("transforms", []),
+                        "failure": str(exc),
+                    },
+                )
             raise optuna.TrialPruned(str(exc))
+        finally:
+            if transformed_app is not None:
+                cleanup_trial_artifacts(transformed_app, generated_infix=generated_infix)
 
     sampler = optuna.samplers.TPESampler(seed=poly.search.seed)
-    direction = "minimize"
-    if cfg.objectives:
-        direction = "minimize" if cfg.objectives[0].goal == "min" else "maximize"
-    study = optuna.create_study(direction=direction, sampler=sampler)
+    directions = ["minimize" if obj.goal == "min" else "maximize" for obj in cfg.objectives]
+    if not directions:
+        directions = ["minimize"]
+    if is_multi:
+        study = optuna.create_study(directions=directions, sampler=sampler)
+    else:
+        study = optuna.create_study(direction=directions[0], sampler=sampler)
     study.set_user_attr("baseline_runtime", baseline_value)
+    study.set_user_attr("baseline_metrics", baseline_metrics)
     study.optimize(
         objective,
         n_trials=poly.search.n_trials,
@@ -764,9 +1336,17 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         print("No successful trials.")
         return 1
 
-    best_runtime = study.best_value
-    best_specs = study.best_trial.user_attrs.get("transforms", [])
-    best_speedup = baseline_value / best_runtime if best_runtime > 0 else 0.0
+    if is_multi:
+        _write_pareto_csv(study, poly, cfg)
+        best_trial = _pick_representative_trial(study.best_trials, cfg)
+        best_runtime = best_trial.values[0] if best_trial.values else float("inf")
+        best_specs = best_trial.user_attrs.get("transforms", [])
+        best_speedup = best_trial.user_attrs.get("speedup", 0.0)
+    else:
+        best_trial = study.best_trial
+        best_runtime = study.best_value
+        best_specs = best_trial.user_attrs.get("transforms", [])
+        best_speedup = _speedup_for_primary(cfg, baseline_value, best_runtime)
 
     print("\n=== polyMorph search result ===")
     print(f"Baseline objective: {baseline_value}")
@@ -778,17 +1358,29 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     if poly.search.result_json:
         result = {
             "baseline_runtime": baseline_value,
+            "baseline_metrics": baseline_metrics,
+            "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
             "best_runtime": best_runtime,
             "best_speedup": best_speedup,
             "best_transforms": best_specs,
-            "best_trial_number": study.best_trial.number,
+            "best_trial_number": best_trial.number,
         }
+        if is_multi:
+            result["pareto_trials"] = [
+                {
+                    "trial": trial.number,
+                    "objectives": trial.values,
+                    "transforms": trial.user_attrs.get("transforms", []),
+                    "metrics": trial.user_attrs.get("metrics", {}),
+                }
+                for trial in study.best_trials
+            ]
         Path(poly.search.result_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"Wrote result JSON: {poly.search.result_json}")
 
     print(
         "Found a transformation combination better than baseline."
-        if best_runtime < baseline_value
+        if best_speedup > 1.0
         else "No transformation combination beat the baseline."
     )
     return 0
@@ -813,6 +1405,7 @@ def run_poly_morph(cfg: Config, trials_override: int | None = None) -> int:
         return 0
 
     source = infer_source(poly)
-    if poly.optuna_search:
-        return explore_optuna(cfg, poly, source)
-    return run_project_mode(cfg, poly, source)
+    with suppress_external_viewers():
+        if poly.optuna_search:
+            return explore_optuna(cfg, poly, source)
+        return run_project_mode(cfg, poly, source)

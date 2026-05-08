@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 OPTIMIZE  = yes
 DEBUG     = no
 LAUNCHER  =
@@ -19,15 +20,18 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = main
+SOURCE ?= main.cpp
+REPLACE_SOURCE ?= main.cpp
+EXEC ?= main
 
-source = main.cpp util.cpp \
-         Kernel256_winograd.cpp \
-         Kernel128_winograd.cpp \
-         Kernel256_one.cpp \
-         Kernel128_one.cpp
+program = $(EXEC)
 
-obj = $(source:.cpp=.o)
+project_source = main.cpp util.cpp Kernel256_winograd.cpp Kernel128_winograd.cpp \
+         Kernel256_one.cpp Kernel128_one.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
+
+obj = $(patsubst %.cpp,%.o,$(filter %.cpp,$(source)))
 
 
 #===============================================================================
@@ -68,11 +72,12 @@ endif
 # Targets to Build
 #===============================================================================
 
-$(program): $(obj)
-	$(CC) $(CFLAGS) $(obj) -o $@ $(LDFLAGS)
+$(program): $(source)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) $(source) -o $@ $(LDFLAGS)
 
 %.o: %.cpp
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

@@ -21,10 +21,13 @@ HIP_ARCH  = gfx908
 #===============================================================================
 
 SOURCE   ?= main.cpp
+REPLACE_SOURCE ?= main.cpp
 EXEC     ?= main
 
 program = $(EXEC)
-source = $(SOURCE)
+project_source = main.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
 
 #===============================================================================
 # Sets Flags

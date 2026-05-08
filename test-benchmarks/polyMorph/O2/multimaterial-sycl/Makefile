@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 OPTIMIZE  = yes
 DEBUG     = no
 LAUNCHER  =
@@ -19,9 +20,17 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = multimat multimat_FL multimat_F
+SOURCE ?= multimat.cpp
+REPLACE_SOURCE ?= multimat.cpp
+EXEC ?= multimat
 
-source=compact.cpp full_matrix.cpp multimat.cpp
+program = $(EXEC)
+
+project_source = multimat.cpp compact.cpp full_matrix.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
+
+obj = $(patsubst %.cpp,%.o,$(filter %.cpp,$(source)))
 
 #===============================================================================
 # Sets Flags
@@ -61,15 +70,9 @@ endif
 # Targets to Build
 #===============================================================================
 
-multimat: $(source)
-	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
-
-multimat_F: $(source)
-	$(CC) $(CFLAGS) -DFUSED $^ -o $@ $(LDFLAGS)
-
-multimat_FL: $(source)
-	$(CC) $(CFLAGS) -DFUSED -DLINKED $^ -o $@ $(LDFLAGS)
-
+$(program): $(source)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) $(source) -o $@ $(LDFLAGS)
 clean:
 	rm -rf $(program)
 

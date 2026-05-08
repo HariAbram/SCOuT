@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 OPTIMIZE  = yes
 DEBUG     = no
 LAUNCHER  =
@@ -19,11 +20,17 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = main
+SOURCE ?= main.cpp
+REPLACE_SOURCE ?= main.cpp
+EXEC ?= main
 
-source = main.cpp
+program = $(EXEC)
 
-obj = $(source:.cpp=.o)
+project_source = main.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
+
+obj = $(patsubst %.cpp,%.o,$(filter %.cpp,$(source)))
 
 #===============================================================================
 # Sets Flags
@@ -63,11 +70,12 @@ endif
 # Targets to Build
 #===============================================================================
 
-$(program): $(obj)
-	$(CC) $(CFLAGS) $(obj) -o $@ $(LDFLAGS)
+$(program): $(source)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) $(source) -o $@ $(LDFLAGS)
 
 %.o: %.cpp kernels.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj)

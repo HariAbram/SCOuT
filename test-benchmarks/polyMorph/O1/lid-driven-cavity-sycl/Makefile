@@ -3,7 +3,8 @@
 #===============================================================================
 
 # Compiler can be set below, or via environment variable
-CC        = acpp
+CC        ?= acpp
+CXX       ?= $(CC)
 OPTIMIZE  = yes
 DEBUG     = no
 LAUNCHER  =
@@ -19,11 +20,17 @@ HIP_ARCH  = gfx908
 # Program name & source code list
 #===============================================================================
 
-program = main
+SOURCE ?= main.cpp
+REPLACE_SOURCE ?= main.cpp
+EXEC ?= main
 
-source = main.cpp set.cpp
+program = $(EXEC)
 
-obj = $(source:.cpp=.o)
+project_source = main.cpp set.cpp
+
+source = $(SOURCE) $(filter-out $(REPLACE_SOURCE),$(project_source))
+
+obj = $(patsubst %.cpp,%.o,$(filter %.cpp,$(source)))
 
 #===============================================================================
 # Sets Flags
@@ -63,16 +70,17 @@ endif
 # Targets to Build
 #===============================================================================
 
-$(program): $(obj)
-	$(CC) $(CFLAGS) $(obj) -o $@ $(LDFLAGS)
+$(program): $(source)
+	mkdir -p $(dir $@)
+	$(CXX) $(CFLAGS) $(source) -o $@ $(LDFLAGS)
 
 main.o: main.cpp black_kernel.sycl calculate_F.sycl calculate_u.sycl set_BCs.sycl \
  	set_vert_pres_BCs.sycl calc_residual.sycl calculate_G.sycl calculate_v.sycl  \
 	red_kernel.sycl set_horz_pres_BCs.sycl sum_pressure.sycl constants.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 set.o: set.cpp constants.h
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CXX) $(CFLAGS) -c $< -o $@
 
 clean:
 	rm -rf $(program) $(obj) *.dat

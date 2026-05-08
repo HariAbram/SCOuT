@@ -227,6 +227,23 @@ class PolyMorphSearchSpec:
     explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
     result_json: str | None = None
     trial_csv: str | None = None
+    legacy: bool = False
+    static_pruning: bool = False
+    analytical_model: bool = False
+    constraint_aware: bool = False
+    compiler_feedback: bool = False
+    runtime_feedback: bool = False
+    case_retrieval: bool = False
+    top_k: int | None = None
+    retrieval_top_k: int = 3
+    history_jsonl: str | None = None
+    pareto_csv: str | None = None
+    constraints: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    compiler_feedback_flags: List[str] = dataclasses.field(default_factory=list)
+    runtime_feedback_masks: List[str] = dataclasses.field(default_factory=list)
+    runtime_feedback_debug_level: int = 4
+    runtime_feedback_repeat: int = 1
+    runtime_feedback_env: Dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
@@ -249,6 +266,32 @@ class PolyMorphSearchSpec:
             explicit_args=dict(data.get("explicit_args", {})),
             result_json=data.get("result_json"),
             trial_csv=data.get("trial_csv"),
+            legacy=bool(data.get("legacy", False)),
+            static_pruning=bool(data.get("static_pruning", False)),
+            analytical_model=bool(data.get("analytical_model", False)),
+            constraint_aware=bool(data.get("constraint_aware", False)),
+            compiler_feedback=bool(data.get("compiler_feedback", False)),
+            runtime_feedback=bool(data.get("runtime_feedback", False)),
+            case_retrieval=bool(data.get("case_retrieval", False)),
+            top_k=int(data["top_k"]) if data.get("top_k") is not None else None,
+            retrieval_top_k=int(data.get("retrieval_top_k", 3)),
+            history_jsonl=data.get("history_jsonl"),
+            pareto_csv=data.get("pareto_csv"),
+            constraints=dict(data.get("constraints", {}) or {}),
+            compiler_feedback_flags=[
+                str(flag) for flag in data.get("compiler_feedback_flags", [])
+                if str(flag).strip()
+            ],
+            runtime_feedback_masks=[
+                str(mask) for mask in data.get("runtime_feedback_masks", [])
+                if str(mask).strip()
+            ],
+            runtime_feedback_debug_level=int(data.get("runtime_feedback_debug_level", 4)),
+            runtime_feedback_repeat=int(data.get("runtime_feedback_repeat", 1)),
+            runtime_feedback_env={
+                str(k): str(v)
+                for k, v in dict(data.get("runtime_feedback_env", {}) or {}).items()
+            },
         )
 
 
