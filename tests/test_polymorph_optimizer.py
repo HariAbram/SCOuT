@@ -17,7 +17,7 @@ from src.polyMorph.feedback import (
     parse_compiler_feedback,
 )
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
-from src.polyMorph.pruning import analytical_score, static_prune_candidate
+from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import cleanup_trial_artifacts, print_candidates, suppress_external_viewers
 
 
@@ -85,6 +85,26 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         )
         reasons = static_prune_candidate(candidate, {"max_tile_size": 128})
         self.assertTrue(any("max_tile_size" in reason for reason in reasons))
+
+    def test_sequence_pruning_allows_same_transform_on_different_scopes(self) -> None:
+        reasons = static_prune_sequence(
+            [
+                {"scop": 0, "node": 2, "tr": "TILE_1D", "args": [32]},
+                {"scop": 4, "node": 3, "tr": "TILE_1D", "args": [16]},
+            ],
+            {"max_same_transform_per_sequence": 1},
+        )
+        self.assertEqual(reasons, [])
+
+    def test_sequence_pruning_rejects_repeated_transform_on_same_target(self) -> None:
+        reasons = static_prune_sequence(
+            [
+                {"scop": 0, "node": 2, "tr": "TILE_1D", "args": [32]},
+                {"scop": 0, "node": 2, "tr": "TILE_1D", "args": [16]},
+            ],
+            {"max_same_transform_per_sequence": 1},
+        )
+        self.assertTrue(any("scop=0, node=2" in reason for reason in reasons))
 
     def test_feedback_parser_finds_vectorization_and_pressure_hints(self) -> None:
         feedback = parse_compiler_feedback(

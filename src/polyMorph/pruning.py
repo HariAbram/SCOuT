@@ -48,24 +48,27 @@ def static_prune_sequence(specs: List[JsonDict], constraints: JsonDict | None = 
     reasons: List[str] = []
     seen = set()
     max_same_transform = int(constraints.get("max_same_transform_per_sequence", 2))
-    counts: Dict[str, int] = {}
+    counts: Dict[tuple[int, int, str], int] = {}
 
     for spec in specs:
+        scop = int(spec.get("scop", -1))
+        node = int(spec.get("node", -1))
+        name = str(spec.get("tr", ""))
         key = (
-            int(spec.get("scop", -1)),
-            int(spec.get("node", -1)),
-            str(spec.get("tr", "")),
+            scop,
+            node,
+            name,
             tuple(spec.get("args", [])),
         )
         if key in seen:
             reasons.append("duplicate transform in sequence")
         seen.add(key)
-        name = str(spec.get("tr", ""))
-        counts[name] = counts.get(name, 0) + 1
+        target_key = (scop, node, name)
+        counts[target_key] = counts.get(target_key, 0) + 1
 
-    for name, count in counts.items():
+    for (scop, node, name), count in counts.items():
         if count > max_same_transform:
-            reasons.append(f"{name} appears {count} times in one sequence")
+            reasons.append(f"{name} appears {count} times on scop={scop}, node={node}")
 
     return reasons
 
