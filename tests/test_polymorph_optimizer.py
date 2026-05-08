@@ -35,6 +35,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.constraint_aware)
         self.assertFalse(spec.compiler_feedback)
         self.assertFalse(spec.case_retrieval)
+        self.assertIn("SET_PARALLEL", spec.block_transforms)
 
     def test_config_parses_new_options(self) -> None:
         spec = PolyMorphSearchSpec.from_dict(
@@ -50,6 +51,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "history_jsonl": "/tmp/history.jsonl",
                 "pareto_csv": "/tmp/pareto.csv",
                 "constraints": {"max_tile_size": 64},
+                "block_transforms": [],
                 "compiler_feedback_flags": ["-Rpass=loop-vectorize"],
                 "runtime_feedback_masks": ["omp", "cuda"],
                 "runtime_feedback_debug_level": 4,
@@ -66,6 +68,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(spec.top_k, 7)
         self.assertEqual(spec.retrieval_top_k, 2)
         self.assertEqual(spec.constraints["max_tile_size"], 64)
+        self.assertEqual(spec.block_transforms, [])
         self.assertEqual(spec.runtime_feedback_masks, ["omp", "cuda"])
         self.assertEqual(spec.runtime_feedback_env["XDG_CACHE_HOME"], "/tmp/acpp-cache")
 

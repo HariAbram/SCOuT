@@ -57,8 +57,7 @@
         "FULL_SHIFT_VAR": [[0, -1], [0, 1], [1, -1], [1, 1]],
         "PARTIAL_SHIFT_VAR": [[0, 0, -1], [0, 0, 1]],
         "FULL_SHIFT_PARAM": [[0, -1], [0, 1], [1, -1], [1, 1]],
-        "PARTIAL_SHIFT_PARAM": [[0, 0, -1], [0, 0, 1], [0, 1, -1], [0, 1, 1]],
-        "SET_PARALLEL": [[2], [4], [8]]
+        "PARTIAL_SHIFT_PARAM": [[0, 0, -1], [0, 0, 1], [0, 1, -1], [0, 1, 1]]
       },
       "generated_infix": "dslash",
       "baseline_exec_name": "build/dslash-baseline",

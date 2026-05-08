@@ -1,23 +1,23 @@
 {
   "backend": "perf",
   "perf": {
-    "events": ["cycles", "instructions"],
+    "events": [
+      "cycles",
+      "instructions"
+    ],
     "core_list": "",
-    "objective": { "metric": "CPI", "goal": "min" }
+    "objective": {
+      "metric": "CPI",
+      "goal": "min"
+    }
   },
-  "objectives": [
-    { "metric": "CPI", "goal": "min" }
-  ],
+  "objectives": [{"metric": "CPI", "goal": "min"}],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/microSYCL",
     "source": "test-benchmarks/microSYCL/src/main.cpp",
     "compiler": "acpp",
-    "flags": [
-      "--acpp-platform=cpu",
-      "--acpp-targets=generic",
-      "-O3"
-    ],
+    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
     "optuna_search": true,
     "build_system": "make",
     "exec_name": "bin/main-acpp-generic",
@@ -32,23 +32,8 @@
       "tile_sizes": [8, 16, 32],
       "scale_factors": [2, 4],
       "shift_values": [-2, -1, 1, 2],
-      "allow_transforms": [
-        "TILE_1D",
-        "SCALE",
-        "FULL_SHIFT_VAL",
-        "PARTIAL_SHIFT_VAL",
-        "FULL_SPLIT",
-        "SET_PARALLEL",
-        "SPLIT",
-        "FULL_SHIFT_VAR",
-        "PARTIAL_SHIFT_VAR",
-        "FULL_SHIFT_PARAM",
-        "PARTIAL_SHIFT_PARAM",
-        "SET_LOOP_OPT"
-      ],
-      "block_transforms": [
-        "SET_LOOP_OPT"
-      ],
+      "allow_transforms": ["TILE_1D", "SCALE", "FULL_SHIFT_VAL", "PARTIAL_SHIFT_VAL", "FULL_SPLIT", "SPLIT", "FULL_SHIFT_VAR", "PARTIAL_SHIFT_VAR", "FULL_SHIFT_PARAM", "PARTIAL_SHIFT_PARAM", "SET_LOOP_OPT"],
+      "block_transforms": ["SET_LOOP_OPT"],
       "explicit_args": {
         "SPLIT": [[2], [4], [8]],
         "FULL_SHIFT_VAR": [[0], [1]],

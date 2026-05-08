@@ -11,36 +11,17 @@
       "goal": "min"
     }
   },
-  "objectives": [
-    {
-      "metric": "CPI",
-      "goal": "min"
-    },
-    {
-      "metric": "instructions",
-      "goal": "min"
-    }
-  ],
+  "objectives": [{"metric": "CPI", "goal": "min"}, {"metric": "instructions", "goal": "min"}],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/microSYCL",
     "source": "test-benchmarks/microSYCL/src/main.cpp",
     "compiler": "acpp",
-    "flags": [
-      "--acpp-platform=cpu",
-      "--acpp-targets=generic",
-      "-O3"
-    ],
+    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
     "optuna_search": true,
     "build_system": "make",
     "exec_name": "bin/main-acpp-generic",
-    "runtime_args": [
-      "-s",
-      "1024",
-      "--gemm",
-      "-i",
-      "3"
-    ],
+    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],
     "search": {
       "n_trials": 8,
       "repeat": 2,
@@ -64,13 +45,8 @@
       "pareto_csv": "/tmp/scout-polymorph/pareto.csv",
       "result_json": "/tmp/scout-polymorph/result.json",
       "trial_csv": "/tmp/scout-polymorph/trials.csv",
-      "compiler_feedback_flags": [
-        "-Rpass=loop-vectorize",
-        "-Rpass-missed=loop-vectorize"
-      ],
-      "runtime_feedback_masks": [
-        "omp"
-      ],
+      "compiler_feedback_flags": ["-Rpass=loop-vectorize", "-Rpass-missed=loop-vectorize"],
+      "runtime_feedback_masks": ["omp"],
       "runtime_feedback_debug_level": 4,
       "runtime_feedback_repeat": 1,
       "constraints": {

@@ -1,24 +1,23 @@
 {
   "backend": "perf",
   "perf": {
-    "events": ["cycles", "instructions"],
+    "events": [
+      "cycles",
+      "instructions"
+    ],
     "core_list": "",
-    "objective": { "metric": "CPI", "goal": "min" }
+    "objective": {
+      "metric": "CPI",
+      "goal": "min"
+    }
   },
-  "objectives": [
-    { "metric": "CPI", "goal": "min" }
-  ],
+  "objectives": [{"metric": "CPI", "goal": "min"}],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/microSYCL",
     "source": "test-benchmarks/microSYCL/src/main.cpp",
     "compiler": "acpp",
-    "flags": [
-      "--acpp-platform=cpu",
-      "--acpp-targets=generic",
-      "-O3",
-      "-fopenmp"
-    ],
+    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3", "-fopenmp"],
     "save_jscops": "/tmp/scout-polymorph/jscops",
     "build_system": "make",
     "build_target": "all",

@@ -211,6 +211,8 @@ class WavefrontSpec:
 
 @dataclasses.dataclass
 class PolyMorphSearchSpec:
+    DEFAULT_BLOCK_TRANSFORMS = ["SET_PARALLEL"]
+
     n_trials: int = 20
     repeat: int = 3
     generated_infix: str = "optuna"
@@ -223,7 +225,9 @@ class PolyMorphSearchSpec:
     scale_factors: List[int] = dataclasses.field(default_factory=lambda: [2])
     shift_values: List[int] = dataclasses.field(default_factory=lambda: [-2, -1, 1, 2])
     allow_transforms: List[str] | None = None
-    block_transforms: List[str] = dataclasses.field(default_factory=list)
+    block_transforms: List[str] = dataclasses.field(
+        default_factory=lambda: PolyMorphSearchSpec.DEFAULT_BLOCK_TRANSFORMS[:]
+    )
     explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
     result_json: str | None = None
     trial_csv: str | None = None
@@ -248,6 +252,7 @@ class PolyMorphSearchSpec:
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
         data = raw or {}
         allow = data.get("allow_transforms")
+        block = data.get("block_transforms", cls.DEFAULT_BLOCK_TRANSFORMS)
         return cls(
             n_trials=int(data.get("n_trials", 20)),
             repeat=int(data.get("repeat", 3)),
@@ -261,7 +266,7 @@ class PolyMorphSearchSpec:
             scale_factors=[int(x) for x in data.get("scale_factors", [2])],
             shift_values=[int(x) for x in data.get("shift_values", [-2, -1, 1, 2])],
             allow_transforms=[str(x) for x in allow] if allow is not None else None,
-            block_transforms=[str(x) for x in data.get("block_transforms", [])],
+            block_transforms=[str(x) for x in block],
             explicit_args=dict(data.get("explicit_args", {})),
             result_json=data.get("result_json"),
             trial_csv=data.get("trial_csv"),

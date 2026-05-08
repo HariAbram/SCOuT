@@ -5,20 +5,14 @@
     "aggregate": "sum",
     "run_cwd": "binary_dir"
   },
-  "objectives": [
-    { "metric": "sycl_avg_sum_s", "goal": "min" }
-  ],
+  "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O1/matrixT-sycl",
     "source": "test-benchmarks/polyMorph/O1/matrixT-sycl/main.cpp",
     "compiler": "acpp",
-    "flags": [
-      "-O1"
-    ],
-    "transforms": [
-      { "scop": 9, "node": 1, "tr": "SET_PARALLEL", "args": [4] }
-    ],
+    "flags": ["-O1"],
+    "transforms": [],
     "allow_illegal": true,
     "build_system": "make",
     "exec_name": "build/matrixT-single-transform",
