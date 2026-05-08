@@ -18,7 +18,12 @@ from src.polyMorph.feedback import (
 )
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
-from src.polyMorph.runner import cleanup_trial_artifacts, print_candidates, suppress_external_viewers
+from src.polyMorph.runner import (
+    cleanup_trial_artifacts,
+    print_candidates,
+    select_diverse_top_k,
+    suppress_external_viewers,
+)
 
 
 class DummyNode:
@@ -256,6 +261,20 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertIn("Enumerated 1 candidate", text)
         self.assertIn("suppressed", text)
         self.assertNotIn("TILE_2D", text)
+
+    def test_select_diverse_top_k_keeps_multiple_transform_types(self) -> None:
+        candidates = [
+            {"tr": "TILE_1D", "predictions": {"score": 0.9, "risk": 0.1}},
+            {"tr": "TILE_1D", "predictions": {"score": 0.89, "risk": 0.1}},
+            {"tr": "TILE_1D", "predictions": {"score": 0.88, "risk": 0.1}},
+            {"tr": "FUSE", "predictions": {"score": 0.7, "risk": 0.2}},
+            {"tr": "FULL_SHIFT_VAL", "predictions": {"score": 0.65, "risk": 0.2}},
+        ]
+        selected = select_diverse_top_k(candidates, 3)
+        self.assertEqual(
+            {candidate["tr"] for candidate in selected},
+            {"TILE_1D", "FUSE", "FULL_SHIFT_VAL"},
+        )
 
     def test_suppress_external_viewers_prepends_noop_dotty(self) -> None:
         old_path = os.environ.get("PATH", "")

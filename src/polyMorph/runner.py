@@ -679,14 +679,7 @@ def enumerate_transform_candidates(
                             continue
                     candidates.append(candidate)
     if candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
-        candidates.sort(
-            key=lambda item: (
-                float((item.get("predictions") or {}).get("score", 0.0)),
-                -float((item.get("predictions") or {}).get("risk", 1.0)),
-            ),
-            reverse=True,
-        )
-        candidates = candidates[: poly.search.top_k]
+        candidates = select_diverse_top_k(candidates, poly.search.top_k)
     return candidates
 
 
@@ -704,6 +697,46 @@ def print_candidates(candidates: List[JsonDict], *, verbose: bool = False) -> No
             f"{idx}: scop={candidate['scop']} node={candidate['node']} "
             f"tr={candidate['tr']} args={candidate.get('args', [])}{suffix}"
         )
+
+
+def candidate_rank_key(candidate: JsonDict) -> tuple[float, float]:
+    pred = candidate.get("predictions") or {}
+    return (
+        float(pred.get("score", 0.0)),
+        -float(pred.get("risk", 1.0)),
+    )
+
+
+def select_diverse_top_k(candidates: List[JsonDict], top_k: int) -> List[JsonDict]:
+    if top_k <= 0 or len(candidates) <= top_k:
+        return candidates
+
+    ranked = sorted(candidates, key=candidate_rank_key, reverse=True)
+    groups: Dict[str, List[JsonDict]] = {}
+    for candidate in ranked:
+        name = str(candidate.get("tr", ""))
+        groups.setdefault(name, []).append(candidate)
+
+    group_names = sorted(
+        groups,
+        key=lambda name: candidate_rank_key(groups[name][0]),
+        reverse=True,
+    )
+    selected: List[JsonDict] = []
+    offset = 0
+    while len(selected) < top_k:
+        added = False
+        for name in group_names:
+            group = groups[name]
+            if offset < len(group):
+                selected.append(group[offset])
+                added = True
+                if len(selected) >= top_k:
+                    break
+        if not added:
+            break
+        offset += 1
+    return selected
 
 
 def sample_transform_combination(
