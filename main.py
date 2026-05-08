@@ -12,7 +12,8 @@ Requirements
 Usage
 ~~~~~
 ```bash
-$ python main.py config.json --trials 50
+$ python main.py --mode parameter_tuning config.json --trials 50
+$ python main.py --mode polymorph configs/polyMorph/O1/matrixT-sycl/config.json --trials 50
 ```
 See `sample_config.json` for a minimal two‑objective example.
 """
@@ -83,6 +84,17 @@ def _prompt_int(prompt: str, default: int) -> int:
         except ValueError:
             print("Please enter a positive integer.")
 
+
+def _positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def _run_from_config(cfg: Config, trials: int) -> None:
     study = getattr(cfg, "search", None).study if getattr(cfg, "search", None) else "optuna"
     study = (study or "optuna").lower()
@@ -121,7 +133,15 @@ def main() -> None:
     # Mode-specific inputs (kept generic so future modes can reuse them or ignore them).
     # We make config optional so we can prompt if the user wants interactive usage.
     parser.add_argument("config", nargs="?", type=Path, help="Path to JSON config file")
-    parser.add_argument("--trials", type=int, default=None, help="Number of Optuna trials")
+    parser.add_argument(
+        "--trials",
+        type=_positive_int_arg,
+        default=None,
+        help=(
+            "Number of trials. For parameter_tuning this controls Optuna trials; "
+            "for polymorph it overrides polyMorph.search.n_trials from the config."
+        ),
+    )
     parser.add_argument("--pareto-log", action="store_true", help="Store pareto front (reserved)")
     parser.add_argument("--interactive", action="store_true", help="Prompt for missing args")
 
@@ -174,6 +194,8 @@ def main() -> None:
         cfg = Config.load(config_path)
         t0 = time.perf_counter()
         try:
+            if args.trials is not None:
+                print(f"[polyMorph] overriding search.n_trials with --trials={args.trials}")
             rc = run_poly_morph(cfg, args.trials)
             if rc:
                 raise SystemExit(rc)
