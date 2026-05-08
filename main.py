@@ -121,8 +121,6 @@ def main() -> None:
         description="SCOuT entrypoint (select a mode, then provide mode-specific args)"
     )
 
-    # Top-level “what are we doing?” selector.
-    # Add new modes here later (e.g., runtime_env_tuning, replay, analyze, etc.).
     parser.add_argument(
         "--mode",
         choices=["parameter_tuning", "polymorph"],
@@ -130,9 +128,7 @@ def main() -> None:
         help="Select what SCOuT should do (required unless using interactive prompts).",
     )
 
-    # Mode-specific inputs (kept generic so future modes can reuse them or ignore them).
-    # We make config optional so we can prompt if the user wants interactive usage.
-    parser.add_argument("config", nargs="?", type=Path, help="Path to JSON config file")
+    parser.add_argument("--config", nargs="?", type=Path, help="Path to JSON config file")
     parser.add_argument(
         "--trials",
         type=_positive_int_arg,
