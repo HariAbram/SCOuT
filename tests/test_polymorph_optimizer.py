@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from contextlib import redirect_stdout
 
 from src.config import PolyMorphSearchSpec
-from src.polyMorph.features import enrich_candidate, structural_signature
+from src.polyMorph.features import enrich_candidate, sequence_feature_summary, structural_signature
 from src.polyMorph.feedback import (
     analyze_runtime_feedback,
     parse_adaptivecpp_runtime_feedback,
@@ -20,13 +20,18 @@ from src.polyMorph.history import append_history, load_history, retrieve_sequenc
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import (
     append_evaluation_cache,
+    apply_learned_model_to_candidates,
+    build_learned_candidate_model,
     build_beam_seed_sequences,
     candidate_args_invalid_for_node,
+    candidate_args_for_node,
+    capture_correctness_outputs,
     cleanup_trial_artifacts,
     load_evaluation_cache,
     print_candidates,
     select_diverse_top_k,
     suppress_external_viewers,
+    verify_correctness_outputs,
 )
 
 
@@ -74,6 +79,13 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "runtime_feedback_debug_level": 4,
                 "runtime_feedback_repeat": 1,
                 "runtime_feedback_env": {"XDG_CACHE_HOME": "/tmp/acpp-cache"},
+                "legality_aware_args": False,
+                "correctness_outputs": ["result.txt"],
+                "correctness_tolerance": 1.0e-4,
+                "correctness_required": False,
+                "learned_model": False,
+                "learned_model_min_observations": 2,
+                "target_backend": "cuda",
             }
         )
         self.assertTrue(spec.static_pruning)
@@ -96,6 +108,13 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(spec.block_transforms, [])
         self.assertEqual(spec.runtime_feedback_masks, ["omp", "cuda"])
         self.assertEqual(spec.runtime_feedback_env["XDG_CACHE_HOME"], "/tmp/acpp-cache")
+        self.assertFalse(spec.legality_aware_args)
+        self.assertEqual(spec.correctness_outputs, ["result.txt"])
+        self.assertEqual(spec.correctness_tolerance, 1.0e-4)
+        self.assertFalse(spec.correctness_required)
+        self.assertFalse(spec.learned_model)
+        self.assertEqual(spec.learned_model_min_observations, 2)
+        self.assertEqual(spec.target_backend, "cuda")
 
     def test_enrich_score_and_prune_candidate(self) -> None:
         candidate = {"scop": 0, "node": 1, "tr": "TILE_2D", "args": [16, 32]}
@@ -349,6 +368,84 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertIsNone(candidate_args_invalid_for_node("FUSE", [0, 1], node))
         self.assertIn("exceed", candidate_args_invalid_for_node("FUSE", [0, 2], node) or "")
         self.assertIsNone(candidate_args_invalid_for_node("TILE_1D", [32], node))
+
+    def test_legality_aware_fuse_args_derive_adjacent_children(self) -> None:
+        node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n- filter: C\n")
+        poly = SimpleNamespace(
+            search=SimpleNamespace(
+                legality_aware_args=True,
+                tile_sizes=[8],
+                scale_factors=[2],
+                shift_values=[1],
+            )
+        )
+        self.assertEqual(candidate_args_for_node("FUSE", poly, node), [[0, 1], [1, 2]])
+
+    def test_transform_args_are_inferred_without_explicit_args(self) -> None:
+        node = SimpleNamespace(yaml_str="[p_0, p_1] -> { Stmt[i0, i1] }")
+        poly = SimpleNamespace(
+            search=SimpleNamespace(
+                legality_aware_args=True,
+                tile_sizes=[8, 16],
+                scale_factors=[2],
+                shift_values=[-1, 1],
+            )
+        )
+        self.assertEqual(candidate_args_for_node("TILE_2D", poly, node), [[8, 8], [16, 16]])
+        self.assertIn([1, 1], candidate_args_for_node("FULL_SHIFT_VAR", poly, node))
+        self.assertIn([0, 1], candidate_args_for_node("FULL_SHIFT_PARAM", poly, node))
+        self.assertEqual(candidate_args_for_node("SET_LOOP_OPT", poly, node), [[0, 1], [0, 3], [1, 1], [1, 3]])
+
+    def test_correctness_output_capture_and_numeric_tolerance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "result.txt"
+            output.write_text("value 1.000000\n", encoding="utf-8")
+            app = SimpleNamespace(project_root=root, output_binary=root / "bin", runtime_args=[])
+            cfg = SimpleNamespace(backend="parser", parser=SimpleNamespace(run_cwd="workdir"))
+            poly = SimpleNamespace(
+                search=SimpleNamespace(
+                    correctness_outputs=["result.txt"],
+                    correctness_required=True,
+                    correctness_tolerance=1.0e-4,
+                )
+            )
+            baseline = capture_correctness_outputs(app, cfg, poly)
+            output.write_text("value 1.000050\n", encoding="utf-8")
+            result = verify_correctness_outputs(baseline, app, cfg, poly)
+            self.assertTrue(result["ok"])
+
+    def test_learned_candidate_model_updates_scores(self) -> None:
+        candidate = {
+            "tr": "TILE_1D",
+            "args": [32],
+            "predictions": {"score": 0.5, "risk": 0.1, "reasons": []},
+        }
+        model = build_learned_candidate_model(
+            [
+                {
+                    "status": "complete",
+                    "speedup": 1.5,
+                    "transforms": [{"tr": "TILE_1D", "args": [32]}],
+                    "runtime_feedback_analysis": {
+                        "per_backend": {"cuda": {"score": 0.8}},
+                    },
+                }
+            ],
+            target_backend="cuda",
+        )
+        apply_learned_model_to_candidates([candidate], model, min_observations=1)
+        self.assertGreater(candidate["predictions"]["score"], 0.5)
+        self.assertEqual(candidate["predictions"]["learned_observations"], 1)
+
+    def test_sequence_feature_summary_records_transform_shape(self) -> None:
+        summary = sequence_feature_summary([
+            {"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]},
+            {"scop": 1, "node": 2, "tr": "FULL_SHIFT_VAL", "args": [1]},
+        ])
+        self.assertEqual(summary["length"], 2)
+        self.assertEqual(summary["transform_counts"]["TILE_1D"], 1)
+        self.assertEqual(summary["max_tile_size"], 32.0)
 
     def test_evaluation_cache_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

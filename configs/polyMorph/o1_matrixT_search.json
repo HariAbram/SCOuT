@@ -27,16 +27,6 @@
       "tile_sizes": [8, 16, 32],
       "scale_factors": [2],
       "shift_values": [-1, 1],
-      "explicit_args": {
-        "TILE_2D": [[8, 8], [16, 16], [32, 32]],
-        "FUSE": [[0, 1]],
-        "SPLIT": [[2], [4], [8]],
-        "PARTIAL_SHIFT_VAL": [[0, -1], [0, 1]],
-        "FULL_SHIFT_VAR": [[0, -1], [0, 1], [1, -1], [1, 1]],
-        "PARTIAL_SHIFT_VAR": [[0, 0, -1], [0, 0, 1]],
-        "FULL_SHIFT_PARAM": [[0, -1], [0, 1], [1, -1], [1, 1]],
-        "PARTIAL_SHIFT_PARAM": [[0, 0, -1], [0, 0, 1], [0, 1, -1], [0, 1, 1]]
-      },
       "result_json": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-result.json",
       "trial_csv": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-trials.csv",
       "structural_retrieval": true,

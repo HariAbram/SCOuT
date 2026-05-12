@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 import json
 import os
 import re
@@ -20,6 +21,7 @@ from src.polyMorph.features import (
     candidate_key,
     enrich_candidate,
     file_hash,
+    sequence_feature_summary,
     sequence_signature,
     stable_json_hash,
     structural_signature,
@@ -504,6 +506,86 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
     return {"runtime": min(values)}
 
 
+def _app_run_cwd(app: SyclProjectApp, cfg: Config | None) -> Path:
+    if cfg is not None and cfg.backend == "parser" and cfg.parser is not None:
+        run_cwd = cfg.parser.run_cwd
+        if run_cwd == "workdir":
+            return app.project_root
+        if run_cwd == "project_dir":
+            return app.project_root
+    return app.output_binary.parent
+
+
+def _numbers_from_text(text: str) -> List[float]:
+    return [
+        float(match.group(0))
+        for match in re.finditer(r"[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[eE][-+]?\d+)?", text)
+    ]
+
+
+def _outputs_match(expected: bytes, actual: bytes, tolerance: float) -> bool:
+    if expected == actual:
+        return True
+    try:
+        expected_text = expected.decode("utf-8")
+        actual_text = actual.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    expected_nums = _numbers_from_text(expected_text)
+    actual_nums = _numbers_from_text(actual_text)
+    if expected_nums and len(expected_nums) == len(actual_nums):
+        return all(
+            math.isclose(left, right, rel_tol=tolerance, abs_tol=tolerance)
+            for left, right in zip(expected_nums, actual_nums)
+        )
+    return False
+
+
+def capture_correctness_outputs(app: SyclProjectApp, cfg: Config | None, poly: PolyMorphSpec) -> Dict[str, bytes]:
+    outputs: Dict[str, bytes] = {}
+    if not poly.search.correctness_outputs:
+        return outputs
+    cwd = _app_run_cwd(app, cfg)
+    for raw_path in poly.search.correctness_outputs:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = cwd / path
+        if not path.exists():
+            if poly.search.correctness_required:
+                raise RuntimeError(f"Correctness output not found: {path}")
+            continue
+        outputs[str(raw_path)] = path.read_bytes()
+    return outputs
+
+
+def verify_correctness_outputs(
+    baseline_outputs: Dict[str, bytes],
+    app: SyclProjectApp,
+    cfg: Config | None,
+    poly: PolyMorphSpec,
+) -> JsonDict:
+    if not baseline_outputs:
+        return {"checked": False}
+    actual_outputs = capture_correctness_outputs(app, cfg, poly)
+    mismatches: List[str] = []
+    missing: List[str] = []
+    for name, expected in baseline_outputs.items():
+        actual = actual_outputs.get(name)
+        if actual is None:
+            missing.append(name)
+            continue
+        if not _outputs_match(expected, actual, poly.search.correctness_tolerance):
+            mismatches.append(name)
+    ok = not mismatches and not missing
+    return {
+        "checked": True,
+        "ok": ok,
+        "mismatches": mismatches,
+        "missing": missing,
+        "outputs": sorted(baseline_outputs),
+    }
+
+
 def collect_runtime_feedback(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[str, JsonDict]:
     if not poly.search.runtime_feedback:
         return {}
@@ -593,6 +675,93 @@ def _cache_key(
             "repeat": poly.search.repeat,
         }
     )
+
+
+def _candidate_model_key(candidate: JsonDict) -> tuple[str, tuple[Any, ...]]:
+    return (str(candidate.get("tr", "")), tuple(candidate.get("args", [])))
+
+
+def _record_backend_score(record: JsonDict, target_backend: str | None) -> float:
+    if not target_backend:
+        return 0.0
+    analysis = record.get("runtime_feedback_analysis") or {}
+    per_backend = analysis.get("per_backend") if isinstance(analysis, dict) else None
+    if not isinstance(per_backend, dict):
+        return 0.0
+    backend = per_backend.get(target_backend)
+    if not isinstance(backend, dict):
+        return 0.0
+    return float(backend.get("score", 0.0) or 0.0)
+
+
+def build_learned_candidate_model(records: Sequence[JsonDict], target_backend: str | None = None) -> Dict[tuple[str, tuple[Any, ...]], JsonDict]:
+    model: Dict[tuple[str, tuple[Any, ...]], JsonDict] = {}
+    for record in records:
+        transforms = record.get("transforms") or []
+        if not isinstance(transforms, list) or not transforms:
+            continue
+        speedup = float(record.get("speedup", 0.0) or 0.0)
+        status = str(record.get("status", ""))
+        backend_score = _record_backend_score(record, target_backend)
+        for transform in transforms:
+            key = _candidate_model_key(transform)
+            stats = model.setdefault(
+                key,
+                {
+                    "observations": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "speedup_sum": 0.0,
+                    "backend_score_sum": 0.0,
+                },
+            )
+            stats["observations"] = int(stats["observations"]) + 1
+            if status in {"complete", "success"}:
+                stats["successes"] = int(stats["successes"]) + 1
+                stats["speedup_sum"] = float(stats["speedup_sum"]) + speedup
+                stats["backend_score_sum"] = float(stats["backend_score_sum"]) + backend_score
+            elif status in {"failed", "pruned"}:
+                stats["failures"] = int(stats["failures"]) + 1
+
+    for stats in model.values():
+        successes = max(1, int(stats.get("successes", 0) or 0))
+        observations = max(1, int(stats.get("observations", 0) or 0))
+        failures = int(stats.get("failures", 0) or 0)
+        stats["avg_speedup"] = float(stats.get("speedup_sum", 0.0) or 0.0) / successes
+        stats["avg_backend_score"] = float(stats.get("backend_score_sum", 0.0) or 0.0) / successes
+        stats["failure_rate"] = failures / observations
+    return model
+
+
+def apply_learned_model_to_candidates(
+    candidates: List[JsonDict],
+    model: Dict[tuple[str, tuple[Any, ...]], JsonDict],
+    *,
+    min_observations: int,
+) -> None:
+    for candidate in candidates:
+        stats = model.get(_candidate_model_key(candidate))
+        if not stats or int(stats.get("observations", 0) or 0) < min_observations:
+            continue
+        predictions = candidate.setdefault("predictions", {})
+        base_score = float(predictions.get("score", 0.5) or 0.5)
+        base_risk = float(predictions.get("risk", 0.1) or 0.1)
+        avg_speedup = float(stats.get("avg_speedup", 0.0) or 0.0)
+        backend_score = float(stats.get("avg_backend_score", 0.0) or 0.0)
+        failure_rate = float(stats.get("failure_rate", 0.0) or 0.0)
+        speedup_bonus = max(-0.25, min(0.25, (avg_speedup - 1.0) * 0.2))
+        backend_bonus = max(0.0, min(0.12, backend_score * 0.12))
+        predictions["learned_observations"] = int(stats.get("observations", 0) or 0)
+        predictions["learned_avg_speedup"] = avg_speedup
+        predictions["learned_failure_rate"] = failure_rate
+        predictions["learned_backend_score"] = backend_score
+        predictions["score"] = max(0.0, min(1.0, base_score + speedup_bonus + backend_bonus - 0.2 * failure_rate))
+        predictions["risk"] = max(0.0, min(1.0, base_risk + 0.25 * failure_rate))
+        reasons = predictions.setdefault("reasons", [])
+        if isinstance(reasons, list):
+            reasons.append(
+                f"learned model: avg_speedup={avg_speedup:.3f}, failure_rate={failure_rate:.3f}"
+            )
 
 
 def _compact_transform_specs(specs: List[JsonDict]) -> List[JsonDict]:
@@ -690,39 +859,95 @@ def transform_allowed(name: str, poly: PolyMorphSpec) -> bool:
     return True
 
 
-def candidate_args_for_transform(name: str, poly: PolyMorphSpec) -> List[List[Any]]:
+def _node_loop_rank(node: Any) -> int:
+    yaml_str = str(getattr(node, "yaml_str", "") or "")
+    dims = {
+        int(match.group(1))
+        for match in re.finditer(r"\bi(\d+)\b", yaml_str)
+    }
+    return max(dims) + 1 if dims else 1
+
+
+def _node_param_count(node: Any) -> int:
+    yaml_str = str(getattr(node, "yaml_str", "") or "")
+    params = {
+        int(match.group(1))
+        for match in re.finditer(r"\bp_(\d+)\b", yaml_str)
+    }
+    return max(params) + 1 if params else 1
+
+
+def _bounded_indexes(count: int, limit: int = 3) -> List[int]:
+    return list(range(max(0, min(count, limit))))
+
+
+def candidate_args_for_transform(name: str, poly: PolyMorphSpec, node: Any | None = None) -> List[List[Any]]:
+    loop_rank = _node_loop_rank(node) if node is not None else 1
+    param_count = _node_param_count(node) if node is not None else 1
+    loop_indexes = _bounded_indexes(loop_rank)
+    param_indexes = _bounded_indexes(param_count)
+
     if name == "TILE_1D":
         return [[int(x)] for x in poly.search.tile_sizes]
     if name == "TILE_2D":
-        return list(poly.search.explicit_args.get(name, []))
+        if loop_rank < 2:
+            return []
+        return [[int(x), int(x)] for x in poly.search.tile_sizes]
     if name == "TILE_3D":
-        return list(poly.search.explicit_args.get(name, []))
+        if loop_rank < 3:
+            return []
+        return [[int(x), int(x), int(x)] for x in poly.search.tile_sizes]
     if name == "INTERCHANGE":
         return [[]]
     if name == "FULL_FUSE":
         return [[]]
     if name == "FUSE":
-        return list(poly.search.explicit_args.get(name, []))
+        return []
     if name == "FULL_SPLIT":
         return [[]]
     if name == "SPLIT":
-        return list(poly.search.explicit_args.get(name, []))
+        return [[int(x)] for x in poly.search.scale_factors]
     if name == "SCALE":
         return [[int(x)] for x in poly.search.scale_factors]
     if name == "FULL_SHIFT_VAL":
         return [[int(x)] for x in poly.search.shift_values]
     if name == "PARTIAL_SHIFT_VAL":
-        return list(poly.search.explicit_args.get(name, []))
-    if name in {
-        "FULL_SHIFT_VAR",
-        "PARTIAL_SHIFT_VAR",
-        "FULL_SHIFT_PARAM",
-        "PARTIAL_SHIFT_PARAM",
-        "SET_PARALLEL",
-        "SET_LOOP_OPT",
-    }:
-        return list(poly.search.explicit_args.get(name, []))
+        return [[dim, int(value)] for dim in loop_indexes for value in poly.search.shift_values]
+    if name == "FULL_SHIFT_VAR":
+        return [[dim, int(value)] for dim in loop_indexes for value in poly.search.shift_values]
+    if name == "PARTIAL_SHIFT_VAR":
+        return [
+            [target_dim, shift_dim, int(value)]
+            for target_dim in loop_indexes
+            for shift_dim in loop_indexes
+            for value in poly.search.shift_values
+        ]
+    if name == "FULL_SHIFT_PARAM":
+        return [[param, int(value)] for param in param_indexes for value in poly.search.shift_values]
+    if name == "PARTIAL_SHIFT_PARAM":
+        return [
+            [target_dim, param, int(value)]
+            for target_dim in loop_indexes
+            for param in param_indexes
+            for value in poly.search.shift_values
+        ]
+    if name == "SET_PARALLEL":
+        return [[int(x)] for x in poly.search.scale_factors]
+    if name == "SET_LOOP_OPT":
+        return [[dim, opt] for dim in loop_indexes for opt in [1, 3]]
     return [[]]
+
+
+def candidate_args_for_node(name: str, poly: PolyMorphSpec, node: Any) -> List[List[Any]]:
+    inferred = candidate_args_for_transform(name, poly, node)
+    if not poly.search.legality_aware_args:
+        return inferred
+
+    child_count = _sequence_child_count(node)
+    if name == "FUSE" and child_count >= 2:
+        return [[idx, idx + 1] for idx in range(child_count - 1)]
+
+    return inferred
 
 
 def _sequence_child_count(node: Any) -> int:
@@ -764,7 +989,7 @@ def enumerate_transform_candidates(
                 name = getattr(tr, "name", str(tr))
                 if not transform_allowed(name, poly):
                     continue
-                for args in candidate_args_for_transform(name, poly):
+                for args in candidate_args_for_node(name, poly, node):
                     invalid_reason = candidate_args_invalid_for_node(name, args, node)
                     if invalid_reason:
                         continue
@@ -1319,6 +1544,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     )
     build_app_or_raise(baseline_app)
     baseline_metrics = measure_metrics_or_raise(baseline_app, poly.search.repeat, cfg)
+    baseline_correctness_outputs = capture_correctness_outputs(baseline_app, cfg, poly)
+    if baseline_correctness_outputs:
+        print(f"Captured {len(baseline_correctness_outputs)} baseline correctness output(s).")
     baseline_value = _objective_values_from_metrics(cfg, baseline_metrics)[0]
     print(f"Baseline objective: {baseline_value}")
 
@@ -1359,12 +1587,28 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     evaluation_cache = load_evaluation_cache(cache_path)
     if evaluation_cache:
         print(f"Loaded {len(evaluation_cache)} cached evaluation record(s) from {cache_path}.")
+    history_records = load_history(poly.search.history_jsonl)
+    if poly.search.learned_model:
+        learned_records = [*history_records, *evaluation_cache.values()]
+        learned_model = build_learned_candidate_model(
+            learned_records,
+            target_backend=poly.search.target_backend,
+        )
+        apply_learned_model_to_candidates(
+            candidates,
+            learned_model,
+            min_observations=poly.search.learned_model_min_observations,
+        )
+        if learned_model:
+            print(f"Loaded learned candidate model with {len(learned_model)} transform key(s).")
+        if poly.search.analytical_model and poly.search.top_k:
+            candidates = select_diverse_top_k(candidates, poly.search.top_k)
     runtime_bias: Dict[str, JsonDict] = {}
     seeded_sequences: List[List[JsonDict]] = []
     if poly.search.case_retrieval:
-        records = load_history(poly.search.history_jsonl)
+        retrieval_records = [*history_records, *evaluation_cache.values()]
         seeded_sequences = retrieve_sequences(
-            history=records,
+            history=retrieval_records,
             source_hash=source_hash,
             candidates=candidates,
             limit=poly.search.retrieval_top_k,
@@ -1421,6 +1665,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 trial.set_user_attr("speedup", speedup)
                 trial.set_user_attr("compiler_feedback", cached.get("compiler_feedback", {}))
                 trial.set_user_attr("runtime_feedback", cached.get("runtime_feedback", {}))
+                trial.set_user_attr("correctness", cached.get("correctness", {}))
                 trial.set_user_attr(
                     "runtime_feedback_analysis",
                     cached.get("runtime_feedback_analysis", {}),
@@ -1469,6 +1714,11 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
             obj_values = _objective_values_from_metrics(cfg, metrics)
             value = obj_values[0]
+            correctness = verify_correctness_outputs(baseline_correctness_outputs, transformed_app, cfg, poly)
+            if correctness.get("checked"):
+                trial.set_user_attr("correctness", correctness)
+                if not correctness.get("ok", False):
+                    raise optuna.TrialPruned(f"correctness check failed: {correctness}")
 
             runtime_feedback = collect_runtime_feedback(transformed_app, poly)
             runtime_feedback_analysis = analyze_runtime_feedback(
@@ -1499,12 +1749,15 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "source": str(source),
                     "source_hash": source_hash,
                     "structural_signature": source_structural_signature,
+                    "sequence_features": sequence_feature_summary(specs),
+                    "target_backend": poly.search.target_backend,
                     "transforms": specs,
                     "metrics": metrics,
                     "objectives": obj_values,
                     "speedup": speedup,
                     "compiler_feedback": feedback,
                     "runtime_feedback_analysis": runtime_feedback_analysis,
+                    "correctness": correctness,
                 },
             )
             record = {
@@ -1513,6 +1766,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 "source": str(source),
                 "source_hash": source_hash,
                 "structural_signature": source_structural_signature,
+                "sequence_features": sequence_feature_summary(specs),
+                "target_backend": poly.search.target_backend,
                 "transform_signature": transform_signature,
                 "transforms": specs,
                 "metrics": metrics,
@@ -1521,6 +1776,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 "compiler_feedback": feedback,
                 "runtime_feedback": runtime_feedback,
                 "runtime_feedback_analysis": runtime_feedback_analysis,
+                "correctness": correctness,
             }
             evaluation_cache[cache_key] = record
             append_evaluation_cache(cache_path, record)
@@ -1535,6 +1791,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "source": str(source),
                     "source_hash": source_hash,
                     "structural_signature": source_structural_signature,
+                    "sequence_features": sequence_feature_summary(specs),
+                    "target_backend": poly.search.target_backend,
                     "transforms": specs,
                     "failure": str(exc),
                 },
@@ -1547,6 +1805,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "source": str(source),
                     "source_hash": source_hash,
                     "structural_signature": source_structural_signature,
+                    "sequence_features": sequence_feature_summary(specs),
+                    "target_backend": poly.search.target_backend,
                     "transform_signature": sequence_signature(specs),
                     "transforms": specs,
                     "failure": str(exc),
@@ -1563,6 +1823,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "trial": trial.number,
                     "source": str(source),
                     "source_hash": source_hash,
+                    "structural_signature": source_structural_signature,
                     "transforms": trial.user_attrs.get("transforms", []),
                     "failure": str(exc),
                 },
@@ -1575,6 +1836,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "status": "failed",
                     "source": str(source),
                     "source_hash": source_hash,
+                    "structural_signature": source_structural_signature,
+                    "sequence_features": sequence_feature_summary(specs),
+                    "target_backend": poly.search.target_backend,
                     "transform_signature": sequence_signature(specs),
                     "transforms": specs,
                     "failure": str(exc),
@@ -1638,6 +1902,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             "baseline_runtime": baseline_value,
             "baseline_metrics": baseline_metrics,
             "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
+            "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
             "best_runtime": best_runtime,
             "best_speedup": best_speedup,
             "best_transforms": best_specs,

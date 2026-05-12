@@ -228,7 +228,6 @@ class PolyMorphSearchSpec:
     block_transforms: List[str] = dataclasses.field(
         default_factory=lambda: PolyMorphSearchSpec.DEFAULT_BLOCK_TRANSFORMS[:]
     )
-    explicit_args: Dict[str, List[List[Any]]] = dataclasses.field(default_factory=dict)
     result_json: str | None = None
     trial_csv: str | None = None
     static_pruning: bool = False
@@ -255,6 +254,13 @@ class PolyMorphSearchSpec:
     runtime_feedback_debug_level: int = 4
     runtime_feedback_repeat: int = 1
     runtime_feedback_env: Dict[str, str] = dataclasses.field(default_factory=dict)
+    legality_aware_args: bool = True
+    correctness_outputs: List[str] = dataclasses.field(default_factory=list)
+    correctness_tolerance: float = 1.0e-6
+    correctness_required: bool = True
+    learned_model: bool = True
+    learned_model_min_observations: int = 1
+    target_backend: str | None = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
@@ -275,7 +281,6 @@ class PolyMorphSearchSpec:
             shift_values=[int(x) for x in data.get("shift_values", [-2, -1, 1, 2])],
             allow_transforms=[str(x) for x in allow] if allow is not None else None,
             block_transforms=[str(x) for x in block],
-            explicit_args=dict(data.get("explicit_args", {})),
             result_json=data.get("result_json"),
             trial_csv=data.get("trial_csv"),
             static_pruning=bool(data.get("static_pruning", False)),
@@ -311,6 +316,13 @@ class PolyMorphSearchSpec:
                 str(k): str(v)
                 for k, v in dict(data.get("runtime_feedback_env", {}) or {}).items()
             },
+            legality_aware_args=bool(data.get("legality_aware_args", True)),
+            correctness_outputs=[str(path) for path in data.get("correctness_outputs", [])],
+            correctness_tolerance=float(data.get("correctness_tolerance", 1.0e-6)),
+            correctness_required=bool(data.get("correctness_required", True)),
+            learned_model=bool(data.get("learned_model", True)),
+            learned_model_min_observations=int(data.get("learned_model_min_observations", 1)),
+            target_backend=str(data["target_backend"]) if data.get("target_backend") is not None else None,
         )
 
 

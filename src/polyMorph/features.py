@@ -131,6 +131,35 @@ def structural_signature(candidates: List[JsonDict]) -> JsonDict:
     }
 
 
+def sequence_feature_summary(specs: List[JsonDict]) -> JsonDict:
+    transform_counts: Dict[str, int] = {}
+    max_tile_size = 0.0
+    tile_volume_sum = 0.0
+    max_abs_shift = 0.0
+    scop_ids: set[int] = set()
+    node_ids: set[tuple[int, int]] = set()
+
+    for spec in specs:
+        name = str(spec.get("tr", ""))
+        transform_counts[name] = transform_counts.get(name, 0) + 1
+        features = spec.get("features") or transform_features(spec)
+        max_tile_size = max(max_tile_size, float(features.get("max_tile_size", 0.0) or 0.0))
+        tile_volume_sum += float(features.get("tile_volume", 0.0) or 0.0)
+        max_abs_shift = max(max_abs_shift, float(features.get("max_abs_shift", 0.0) or 0.0))
+        scop_ids.add(int(spec.get("scop", -1)))
+        node_ids.add((int(spec.get("scop", -1)), int(spec.get("node", -1))))
+
+    return {
+        "length": len(specs),
+        "scop_count": len(scop_ids),
+        "node_count": len(node_ids),
+        "transform_counts": transform_counts,
+        "max_tile_size": max_tile_size,
+        "tile_volume_sum": tile_volume_sum,
+        "max_abs_shift": max_abs_shift,
+    }
+
+
 def structural_similarity(left: JsonDict | None, right: JsonDict | None) -> float:
     if not left or not right:
         return 0.0

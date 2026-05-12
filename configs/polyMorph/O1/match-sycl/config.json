@@ -57,16 +57,6 @@
         "runtime_backend_sensitivity_rel_threshold": 0.35,
         "runtime_feedback_bias_weight": 0.35
       },
-      "explicit_args": {
-        "TILE_2D": [[8, 8], [16, 16], [32, 32]],
-        "FUSE": [[0, 1]],
-        "SPLIT": [[2], [4], [8]],
-        "PARTIAL_SHIFT_VAL": [[0, -1], [0, 1]],
-        "FULL_SHIFT_VAR": [[0, -1], [0, 1], [1, -1], [1, 1]],
-        "PARTIAL_SHIFT_VAR": [[0, 0, -1], [0, 0, 1]],
-        "FULL_SHIFT_PARAM": [[0, -1], [0, 1], [1, -1], [1, 1]],
-        "PARTIAL_SHIFT_PARAM": [[0, 0, -1], [0, 0, 1], [0, 1, -1], [0, 1, 1]]
-      },
       "generated_infix": "match",
       "baseline_exec_name": "build/match-baseline",
       "history_jsonl": "configs/polyMorph/O1/match-sycl/o1-match-history.jsonl",

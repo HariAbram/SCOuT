@@ -34,14 +34,6 @@
       "shift_values": [-2, -1, 1, 2],
       "allow_transforms": ["TILE_1D", "SCALE", "FULL_SHIFT_VAL", "PARTIAL_SHIFT_VAL", "FULL_SPLIT", "SPLIT", "FULL_SHIFT_VAR", "PARTIAL_SHIFT_VAR", "FULL_SHIFT_PARAM", "PARTIAL_SHIFT_PARAM", "SET_LOOP_OPT"],
       "block_transforms": ["SET_LOOP_OPT"],
-      "explicit_args": {
-        "SPLIT": [[2], [4], [8]],
-        "FULL_SHIFT_VAR": [[0], [1]],
-        "PARTIAL_SHIFT_VAR": [[0], [1]],
-        "FULL_SHIFT_PARAM": [[0], [1]],
-        "PARTIAL_SHIFT_PARAM": [[0], [1]],
-        "SET_LOOP_OPT": [[0], [1]]
-      },
       "structural_retrieval": true,
       "search_strategy": "beam_optuna",
       "beam_width": 8,
