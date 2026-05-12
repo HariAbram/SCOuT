@@ -329,8 +329,15 @@ def apply_transforms_to_scops(
                 raise InvalidTransformArgs(
                     f"invalid args={tuple(tr_args)} for tr={tr_name} on scop={scop_idx}, node={node_idx}"
                 ) from exc
-            raise
+            first_line = message.splitlines()[0] if message else type(exc).__name__
+            raise InvalidTransformArgs(
+                f"{tr_name} is not valid on scop={scop_idx}, node={node_idx}: {first_line}"
+            ) from exc
         print(f"  result={ok}")
+        if not ok:
+            raise InvalidTransformArgs(
+                f"{tr_name} returned False on scop={scop_idx}, node={node_idx}"
+            )
 
         available = getattr(node, "available_transformations", [])
         names = [getattr(item, "name", str(item)) for item in available]
@@ -586,13 +593,18 @@ def verify_correctness_outputs(
     }
 
 
-def collect_runtime_feedback(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[str, JsonDict]:
+def collect_runtime_feedback(
+    app: SyclProjectApp,
+    poly: PolyMorphSpec,
+    cfg: Config | None = None,
+) -> Dict[str, JsonDict]:
     if not poly.search.runtime_feedback:
         return {}
 
     masks = poly.search.runtime_feedback_masks or [""]
     repeat = max(1, poly.search.runtime_feedback_repeat)
     results: Dict[str, JsonDict] = {}
+    cwd = _app_run_cwd(app, cfg)
     for raw_mask in masks:
         mask = str(raw_mask)
         stdout_parts: List[str] = []
@@ -606,7 +618,7 @@ def collect_runtime_feedback(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[s
             }
             if mask:
                 env["ACPP_VISIBILITY_MASK"] = mask
-            proc = _run(app.run_cmd(), cwd=app.output_binary.parent, env=env)
+            proc = _run(app.run_cmd(), cwd=cwd, env=env)
             stdout_parts.append(proc.stdout or "")
             stderr_parts.append(proc.stderr or "")
             last_returncode = proc.returncode
@@ -1093,6 +1105,11 @@ def build_beam_seed_sequences(candidates: List[JsonDict], poly: PolyMorphSpec, l
     for _ in range(depth):
         expanded: List[tuple[float, List[JsonDict]]] = []
         for score, seq in beam:
+            max_seed_per_scop = int(poly.search.constraints.get("max_transforms_per_scop", 0) or 1)
+            scop_counts: Dict[int, int] = {}
+            for item in seq:
+                scop = int(item.get("scop", -1))
+                scop_counts[scop] = scop_counts.get(scop, 0) + 1
             used_exact = {
                 (
                     int(item.get("scop", -1)),
@@ -1110,6 +1127,9 @@ def build_beam_seed_sequences(candidates: List[JsonDict], poly: PolyMorphSpec, l
                     tuple(candidate.get("args", [])),
                 )
                 if exact in used_exact:
+                    continue
+                scop = int(candidate.get("scop", -1))
+                if max_seed_per_scop > 0 and scop_counts.get(scop, 0) >= max_seed_per_scop:
                     continue
                 new_seq = [*seq, candidate]
                 if static_prune_sequence(new_seq, poly.search.constraints):
@@ -1133,6 +1153,26 @@ def build_beam_seed_sequences(candidates: List[JsonDict], poly: PolyMorphSpec, l
         if len(unique) >= limit:
             break
     return unique
+
+
+def _candidate_exact_key(candidate: JsonDict) -> tuple[int, int, str, tuple[Any, ...]]:
+    return (
+        int(candidate.get("scop", -1)),
+        int(candidate.get("node", -1)),
+        str(candidate.get("tr", "")),
+        tuple(candidate.get("args", [])),
+    )
+
+
+def _live_seed_candidate(
+    desired: JsonDict,
+    live_candidates: List[JsonDict],
+) -> JsonDict | None:
+    desired_key = _candidate_exact_key(desired)
+    for candidate in live_candidates:
+        if _candidate_exact_key(candidate) == desired_key:
+            return candidate
+    return None
 
 
 def sample_transform_combination(
@@ -1172,18 +1212,23 @@ def sample_transform_sequence(
             raise optuna.TrialPruned("; ".join(reasons))
         chosen: List[JsonDict] = []
         for spec in specs:
+            live_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
+            live_spec = _live_seed_candidate(spec, live_candidates)
+            if live_spec is None:
+                continue
             try:
                 apply_transforms_to_scops(
                     app.scops,
-                    [spec],
+                    [live_spec],
                     legality_cb=lambda: app.legal,
                 )
             except InvalidTransformArgs as exc:
-                raise optuna.TrialPruned(str(exc)) from exc
+                continue
             if not poly.allow_illegal and not app.legal:
                 raise optuna.TrialPruned("Illegal transformed schedule")
-            chosen.append(spec)
-        return chosen
+            chosen.append(live_spec)
+        if chosen:
+            return chosen
 
     max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(initial_candidates)))
     n_transforms = trial.suggest_int("n_transforms", 1, max_transforms)
@@ -1569,7 +1614,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     baseline_runtime_feedback: Dict[str, JsonDict] = {}
     baseline_runtime_analysis: JsonDict = {}
     if poly.search.runtime_feedback:
-        baseline_runtime_feedback = collect_runtime_feedback(baseline_app, poly)
+        baseline_runtime_feedback = collect_runtime_feedback(baseline_app, poly, cfg)
         baseline_runtime_analysis = analyze_runtime_feedback(
             baseline_runtime_feedback,
             constraints=poly.search.constraints,
@@ -1720,7 +1765,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 if not correctness.get("ok", False):
                     raise optuna.TrialPruned(f"correctness check failed: {correctness}")
 
-            runtime_feedback = collect_runtime_feedback(transformed_app, poly)
+            runtime_feedback = collect_runtime_feedback(transformed_app, poly, cfg)
             runtime_feedback_analysis = analyze_runtime_feedback(
                 runtime_feedback,
                 baseline=baseline_runtime_feedback,
