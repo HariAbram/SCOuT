@@ -237,9 +237,7 @@ class PolyMorphSearchSpec:
     runtime_feedback: bool = False
     case_retrieval: bool = False
     structural_retrieval: bool = True
-    search_strategy: str = "beam_optuna"
-    beam_width: int = 8
-    beam_seed_trials: int = 8
+    search_strategy: str = "adaptive_tree"
     cache_jsonl: str | None = None
     cache_evaluations: bool = True
     multi_fidelity: bool = True
@@ -290,9 +288,11 @@ class PolyMorphSearchSpec:
             runtime_feedback=bool(data.get("runtime_feedback", False)),
             case_retrieval=bool(data.get("case_retrieval", False)),
             structural_retrieval=bool(data.get("structural_retrieval", True)),
-            search_strategy=str(data.get("search_strategy", "beam_optuna")),
-            beam_width=int(data.get("beam_width", 8)),
-            beam_seed_trials=int(data.get("beam_seed_trials", 8)),
+            search_strategy=(
+                "adaptive_tree"
+                if str(data.get("search_strategy", "adaptive_tree")).startswith("beam")
+                else str(data.get("search_strategy", "adaptive_tree"))
+            ),
             cache_jsonl=data.get("cache_jsonl"),
             cache_evaluations=bool(data.get("cache_evaluations", True)),
             multi_fidelity=bool(data.get("multi_fidelity", True)),

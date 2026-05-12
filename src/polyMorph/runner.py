@@ -4,12 +4,14 @@ import csv
 import math
 import json
 import os
+import random
 import re
 import shutil
 import shlex
 import subprocess
 import stat
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
@@ -1119,68 +1121,6 @@ def select_diverse_top_k(candidates: List[JsonDict], top_k: int) -> List[JsonDic
     return selected
 
 
-def build_beam_seed_sequences(candidates: List[JsonDict], poly: PolyMorphSpec, limit: int) -> List[List[JsonDict]]:
-    if limit <= 0 or not candidates:
-        return []
-    depth = max(1, int(poly.search.max_transforms_per_trial))
-    beam_width = max(1, int(poly.search.beam_width))
-    ranked = sorted(candidates, key=candidate_rank_key, reverse=True)
-    ranked = select_diverse_top_k(ranked, max(limit * beam_width, beam_width))
-    beam: List[tuple[float, List[JsonDict]]] = [(0.0, [])]
-    completed: List[tuple[float, List[JsonDict]]] = []
-
-    for _ in range(depth):
-        expanded: List[tuple[float, List[JsonDict]]] = []
-        for score, seq in beam:
-            max_seed_per_scop = int(poly.search.constraints.get("max_transforms_per_scop", 0) or 1)
-            scop_counts: Dict[int, int] = {}
-            for item in seq:
-                scop = int(item.get("scop", -1))
-                scop_counts[scop] = scop_counts.get(scop, 0) + 1
-            used_exact = {
-                (
-                    int(item.get("scop", -1)),
-                    int(item.get("node", -1)),
-                    str(item.get("tr", "")),
-                    tuple(item.get("args", [])),
-                )
-                for item in seq
-            }
-            for candidate in ranked:
-                exact = (
-                    int(candidate.get("scop", -1)),
-                    int(candidate.get("node", -1)),
-                    str(candidate.get("tr", "")),
-                    tuple(candidate.get("args", [])),
-                )
-                if exact in used_exact:
-                    continue
-                scop = int(candidate.get("scop", -1))
-                if max_seed_per_scop > 0 and scop_counts.get(scop, 0) >= max_seed_per_scop:
-                    continue
-                new_seq = [*seq, candidate]
-                if static_prune_sequence(new_seq, poly.search.constraints):
-                    continue
-                new_score = score + candidate_rank_key(candidate)[0] + candidate_rank_key(candidate)[1]
-                expanded.append((new_score, [dict(item) for item in new_seq]))
-        if not expanded:
-            break
-        expanded.sort(key=lambda item: item[0], reverse=True)
-        beam = expanded[:beam_width]
-        completed.extend(beam)
-
-    unique: List[List[JsonDict]] = []
-    seen: set[str] = set()
-    for _, seq in sorted(completed, key=lambda item: item[0], reverse=True):
-        signature = sequence_signature(seq)
-        if signature in seen:
-            continue
-        seen.add(signature)
-        unique.append(seq)
-        if len(unique) >= limit:
-            break
-    return unique
-
 
 def _candidate_exact_key(candidate: JsonDict) -> tuple[int, int, str, tuple[Any, ...]]:
     return (
@@ -1191,87 +1131,193 @@ def _candidate_exact_key(candidate: JsonDict) -> tuple[int, int, str, tuple[Any,
     )
 
 
-def _live_seed_candidate(
-    desired: JsonDict,
-    live_candidates: List[JsonDict],
-) -> JsonDict | None:
-    desired_key = _candidate_exact_key(desired)
-    for candidate in live_candidates:
-        if _candidate_exact_key(candidate) == desired_key:
-            return candidate
-    return None
+@dataclass
+class PrefixStats:
+    visits: int = 0
+    total_reward: float = 0.0
+    best_reward: float = 0.0
+    pruned_count: int = 0
+    early_stop_count: int = 0
+    failed_count: int = 0
+
+    @property
+    def mean_reward(self) -> float:
+        return self.total_reward / self.visits if self.visits else 0.0
 
 
-def sample_transform_combination(
-    trial: optuna.Trial,
-    candidates: List[JsonDict],
-    poly: PolyMorphSpec,
-) -> List[JsonDict]:
-    max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(candidates)))
-    n_transforms = trial.suggest_int("n_transforms", 1, max_transforms)
+@dataclass
+class AdaptiveTreeState:
+    constraints: JsonDict
+    rng: random.Random
+    stats: Dict[str, PrefixStats] = field(default_factory=dict)
+    tried_sequences: set[str] = field(default_factory=set)
 
-    chosen: List[JsonDict] = []
-    used_indices: set[int] = set()
-    for pos in range(n_transforms):
-        idx = trial.suggest_int(f"candidate_{pos}", 0, len(candidates) - 1)
-        if idx in used_indices:
+    def prefix_key(self, specs: List[JsonDict]) -> str:
+        return sequence_signature(specs) if specs else "root"
+
+    def get(self, specs: List[JsonDict]) -> PrefixStats:
+        return self.stats.setdefault(self.prefix_key(specs), PrefixStats())
+
+    def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
+        if specs:
+            self.tried_sequences.add(sequence_signature(specs))
+        self.update(specs, reward, status)
+
+    def update(self, specs: List[JsonDict], reward: float, status: str) -> None:
+        root = self.get([])
+        root.visits += 1
+        root.total_reward += reward
+        root.best_reward = max(root.best_reward, reward)
+        if status == "early_stop":
+            root.early_stop_count += 1
+        elif status == "pruned":
+            root.pruned_count += 1
+        elif status == "failed":
+            root.failed_count += 1
+
+        for i in range(1, len(specs) + 1):
+            stat = self.get(specs[:i])
+            stat.visits += 1
+            stat.total_reward += reward
+            stat.best_reward = max(stat.best_reward, reward)
+            if status == "early_stop":
+                stat.early_stop_count += 1
+            elif status == "pruned":
+                stat.pruned_count += 1
+            elif status == "failed":
+                stat.failed_count += 1
+
+    def is_bad_prefix(self, specs: List[JsonDict]) -> bool:
+        if not specs:
+            return False
+        stat = self.get(specs)
+        min_visits = int(self.constraints.get("tree_prune_min_visits", 2))
+        min_best = float(self.constraints.get("tree_prune_best_speedup_below", 0.95))
+        if stat.visits >= min_visits and stat.best_reward < min_best:
+            return True
+        max_bad = int(self.constraints.get("tree_prune_after_early_stops", 3))
+        if max_bad > 0 and stat.early_stop_count >= max_bad and stat.best_reward < 1.0:
+            return True
+        return False
+
+    def should_expand(self, specs: List[JsonDict]) -> bool:
+        if not specs:
+            return True
+        stat = self.get(specs)
+        if stat.visits < int(self.constraints.get("tree_min_visits_before_expand", 1)):
+            return False
+        if self.is_bad_prefix(specs):
+            return False
+        return stat.best_reward >= float(self.constraints.get("tree_expand_min_best_speedup", 0.90))
+
+    def score_child(
+        self,
+        parent: List[JsonDict],
+        child: List[JsonDict],
+        candidate: JsonDict,
+    ) -> float:
+        parent_visits = max(1, self.get(parent).visits)
+        stat = self.get(child)
+        prior_score, neg_risk = candidate_rank_key(candidate)
+        prior = 0.35 * prior_score + 0.15 * max(0.0, 1.0 + neg_risk)
+        if stat.visits == 0:
+            novelty = float(self.constraints.get("tree_unvisited_bonus", 1.0))
+            return novelty + prior + self.rng.random() * 1.0e-6
+        exploration = float(self.constraints.get("tree_exploration", 0.8))
+        failure_rate = (stat.pruned_count + stat.failed_count + stat.early_stop_count) / max(stat.visits, 1)
+        return (
+            stat.mean_reward
+            + exploration * math.sqrt(math.log(parent_visits + 1.0) / stat.visits)
+            + prior / (stat.visits + 1.0)
+            - float(self.constraints.get("tree_failure_penalty", 0.25)) * failure_rate
+            + self.rng.random() * 1.0e-6
+        )
+
+
+def seed_tree_from_records(tree: AdaptiveTreeState, records: Sequence[JsonDict]) -> None:
+    for record in records:
+        specs = list(record.get("transforms", []) or [])
+        if not specs:
             continue
-        used_indices.add(idx)
-        chosen.append(candidates[idx])
-    return chosen
+        status = str(record.get("status", "complete"))
+        if status == "complete":
+            reward = float(record.get("speedup", 0.0) or 0.0)
+            tree.mark_existing(specs, reward, "complete")
+        else:
+            failure = str(record.get("failure", "")).lower()
+            tree.mark_existing(specs, 0.0, "early_stop" if "early stop" in failure else "failed")
+
+
+def _candidate_diversity_allowed(specs: List[JsonDict], candidate: JsonDict, constraints: JsonDict) -> bool:
+    max_per_scop = int(constraints.get("max_transforms_per_scop", 0) or 0)
+    if max_per_scop <= 0:
+        max_per_scop = int(constraints.get("tree_max_transforms_per_scop", 1))
+    if max_per_scop <= 0:
+        return True
+    scop = int(candidate.get("scop", -1))
+    count = sum(1 for spec in specs if int(spec.get("scop", -1)) == scop)
+    return count < max_per_scop
+
+
+def _sort_tree_candidates(
+    candidates: List[JsonDict],
+    tree: AdaptiveTreeState,
+    chosen: List[JsonDict],
+) -> List[JsonDict]:
+    scored = [
+        (tree.score_child(chosen, [*chosen, candidate], candidate), candidate)
+        for candidate in candidates
+    ]
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [candidate for _, candidate in scored]
+
+
+def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> float:
+    return max(0.0, _speedup_for_primary(cfg, baseline_value, value))
 
 
 def sample_transform_sequence(
     trial: optuna.Trial,
     app: SyclProjectApp,
     poly: PolyMorphSpec,
-    seeded_sequences: List[List[JsonDict]] | None = None,
+    tree: AdaptiveTreeState,
     runtime_bias: Dict[str, JsonDict] | None = None,
 ) -> List[JsonDict]:
     initial_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
     if not initial_candidates:
         return []
 
-    if seeded_sequences and trial.number < len(seeded_sequences):
-        specs = seeded_sequences[trial.number]
-        reasons = static_prune_sequence(specs, poly.search.constraints)
-        if poly.search.constraint_aware and reasons:
-            raise optuna.TrialPruned("; ".join(reasons))
-        chosen: List[JsonDict] = []
-        for spec in specs:
-            live_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
-            live_spec = _live_seed_candidate(spec, live_candidates)
-            if live_spec is None:
-                continue
-            try:
-                apply_transforms_to_scops(
-                    app.scops,
-                    [live_spec],
-                    legality_cb=lambda: app.legal,
-                )
-            except InvalidTransformArgs as exc:
-                continue
-            if not poly.allow_illegal and not app.legal:
-                raise optuna.TrialPruned("Illegal transformed schedule")
-            chosen.append(live_spec)
-        if chosen:
-            return chosen
-
     max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(initial_candidates)))
-    n_transforms = trial.suggest_int("n_transforms", 1, max_transforms)
-
     chosen: List[JsonDict] = []
-    for pos in range(n_transforms):
+    used_exact: set[tuple[int, int, str, tuple[Any, ...]]] = set()
+    for _pos in range(max_transforms):
         current_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
         if not current_candidates:
             break
 
-        idx = trial.suggest_int(f"candidate_{pos}", 0, len(current_candidates) - 1)
-        ordered_indexes = [idx, *[i for i in range(len(current_candidates)) if i != idx]]
+        viable: List[JsonDict] = []
+        for candidate in current_candidates:
+            exact = _candidate_exact_key(candidate)
+            if exact in used_exact:
+                continue
+            if not _candidate_diversity_allowed(chosen, candidate, poly.search.constraints):
+                continue
+            next_prefix = [*chosen, candidate]
+            if tree.is_bad_prefix(next_prefix):
+                continue
+            if sequence_signature(next_prefix) in tree.tried_sequences and not tree.should_expand(next_prefix):
+                continue
+            if poly.search.constraint_aware:
+                reasons = static_prune_sequence(next_prefix, poly.search.constraints)
+                if reasons:
+                    continue
+            viable.append(candidate)
+        if not viable:
+            break
+
         spec = None
         last_invalid: InvalidTransformArgs | None = None
-        for candidate_idx in ordered_indexes:
-            candidate = current_candidates[candidate_idx]
+        for candidate in _sort_tree_candidates(viable, tree, chosen):
             try:
                 apply_transforms_to_scops(
                     app.scops,
@@ -1286,6 +1332,7 @@ def sample_transform_sequence(
         if spec is None:
             raise optuna.TrialPruned(str(last_invalid) if last_invalid else "No valid transform candidates")
         chosen.append(spec)
+        used_exact.add(_candidate_exact_key(spec))
 
         if not poly.allow_illegal and not app.legal:
             raise optuna.TrialPruned("Illegal transformed schedule")
@@ -1294,6 +1341,9 @@ def sample_transform_sequence(
             reasons = static_prune_sequence(chosen, poly.search.constraints)
             if reasons:
                 raise optuna.TrialPruned("; ".join(reasons))
+
+        if not tree.should_expand(chosen):
+            break
 
     return chosen
 
@@ -1676,28 +1726,28 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         if poly.search.analytical_model and poly.search.top_k:
             candidates = select_diverse_top_k(candidates, poly.search.top_k)
     runtime_bias: Dict[str, JsonDict] = {}
-    seeded_sequences: List[List[JsonDict]] = []
+    tree_state = AdaptiveTreeState(
+        constraints=poly.search.constraints,
+        rng=random.Random(poly.search.seed),
+    )
     if poly.search.case_retrieval:
         retrieval_records = [*history_records, *evaluation_cache.values()]
-        seeded_sequences = retrieve_sequences(
+        retrieved_sequences = retrieve_sequences(
             history=retrieval_records,
             source_hash=source_hash,
             candidates=candidates,
             limit=poly.search.retrieval_top_k,
             structural_sig=source_structural_signature if poly.search.structural_retrieval else None,
         )
-        if seeded_sequences:
-            print(f"Retrieved {len(seeded_sequences)} previous transform sequence(s).")
-    if poly.search.search_strategy in {"beam", "beam_optuna", "tree", "tree_optuna"}:
-        limit = max(0, int(poly.search.beam_seed_trials))
-        beam_sequences = build_beam_seed_sequences(candidates, poly, limit)
-        existing = {sequence_signature(seq) for seq in seeded_sequences}
-        for seq in beam_sequences:
-            if sequence_signature(seq) not in existing:
-                seeded_sequences.append(seq)
-                existing.add(sequence_signature(seq))
-        if beam_sequences:
-            print(f"Prepared {len(beam_sequences)} beam/tree seed sequence(s).")
+        for seq in retrieved_sequences:
+            tree_state.mark_existing(seq, 1.0, "complete")
+        if retrieved_sequences:
+            print(f"Seeded adaptive tree with {len(retrieved_sequences)} retrieved sequence(s).")
+    seed_tree_from_records(tree_state, [*history_records, *evaluation_cache.values()])
+    print(
+        "Using adaptive UCT tree search "
+        f"with {len(tree_state.stats)} seeded prefix statistic(s)."
+    )
 
     is_multi = len(cfg.objectives) > 1
 
@@ -1713,7 +1763,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial, trial_app, poly, seeded_sequences, runtime_bias)
+            specs = sample_transform_sequence(trial, trial_app, poly, tree_state, runtime_bias)
             if not specs:
                 raise optuna.TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
@@ -1726,12 +1776,16 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 status = str(cached.get("status", "complete"))
                 trial.set_user_attr("cache_hit", True)
                 if status == "failed":
+                    tree_state.update(specs, 0.0, "failed")
+                    trial.set_user_attr("tree_updated", True)
                     raise optuna.TrialPruned(str(cached.get("failure", "cached failed evaluation")))
                 metrics = dict(cached.get("metrics", {}) or {})
                 obj_values = [float(x) for x in cached.get("objectives", [])]
                 if not obj_values:
                     obj_values = _objective_values_from_metrics(cfg, metrics)
                 speedup = float(cached.get("speedup", _speedup_for_primary(cfg, baseline_value, obj_values[0])) or 0.0)
+                tree_state.update(specs, max(0.0, speedup), "complete")
+                trial.set_user_attr("tree_updated", True)
                 trial.set_user_attr("runtime", obj_values[0])
                 trial.set_user_attr("metrics", metrics)
                 trial.set_user_attr("speedup", speedup)
@@ -1786,6 +1840,12 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     poly.search.early_stop_worse_than,
                 ):
                     trial.set_user_attr("early_stopped", True)
+                    tree_state.update(
+                        specs,
+                        _tree_reward_for_value(cfg, baseline_value, first_value),
+                        "early_stop",
+                    )
+                    trial.set_user_attr("tree_updated", True)
                     raise optuna.TrialPruned(
                         f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
                         f"{first_value} worse than baseline {baseline_value} "
@@ -1817,6 +1877,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 trial.set_user_attr("runtime_feedback", runtime_feedback)
 
             speedup = _speedup_for_primary(cfg, baseline_value, value)
+            tree_state.update(specs, max(0.0, speedup), "complete")
+            trial.set_user_attr("tree_updated", True)
 
             trial.set_user_attr("runtime", value)
             trial.set_user_attr("metrics", metrics)
@@ -1864,6 +1926,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             return obj_values if is_multi else value
         except optuna.TrialPruned as exc:
             specs = trial.user_attrs.get("transforms", [])
+            if specs and not trial.user_attrs.get("tree_updated", False):
+                tree_state.update(specs, 0.0, "pruned")
             append_history(
                 poly.search.history_jsonl,
                 {
@@ -1897,6 +1961,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             raise
         except Exception as exc:
             trial.set_user_attr("failure", str(exc))
+            specs = trial.user_attrs.get("transforms", [])
+            if specs and not trial.user_attrs.get("tree_updated", False):
+                tree_state.update(specs, 0.0, "failed")
             append_history(
                 poly.search.history_jsonl,
                 {
@@ -1909,7 +1976,6 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "failure": str(exc),
                 },
             )
-            specs = trial.user_attrs.get("transforms", [])
             if specs:
                 cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
                 record = {

@@ -19,10 +19,10 @@ from src.polyMorph.feedback import (
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import (
+    AdaptiveTreeState,
     append_evaluation_cache,
     apply_learned_model_to_candidates,
     build_learned_candidate_model,
-    build_beam_seed_sequences,
     candidate_args_invalid_for_node,
     candidate_args_for_node,
     capture_correctness_outputs,
@@ -62,8 +62,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "case_retrieval": True,
                 "structural_retrieval": False,
                 "search_strategy": "beam_optuna",
-                "beam_width": 4,
-                "beam_seed_trials": 3,
                 "cache_jsonl": "/tmp/polymorph-cache.jsonl",
                 "cache_evaluations": False,
                 "multi_fidelity": False,
@@ -95,9 +93,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(spec.runtime_feedback)
         self.assertTrue(spec.case_retrieval)
         self.assertFalse(spec.structural_retrieval)
-        self.assertEqual(spec.search_strategy, "beam_optuna")
-        self.assertEqual(spec.beam_width, 4)
-        self.assertEqual(spec.beam_seed_trials, 3)
+        self.assertEqual(spec.search_strategy, "adaptive_tree")
         self.assertEqual(spec.cache_jsonl, "/tmp/polymorph-cache.jsonl")
         self.assertFalse(spec.cache_evaluations)
         self.assertFalse(spec.multi_fidelity)
@@ -342,26 +338,16 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             {"TILE_1D", "FUSE", "FULL_SHIFT_VAL"},
         )
 
-    def test_build_beam_seed_sequences_prefers_ranked_diverse_sequences(self) -> None:
-        candidates = [
-            {
-                "scop": 0,
-                "node": idx,
-                "tr": tr,
-                "args": [],
-                "predictions": {"score": score, "risk": 0.1},
-            }
-            for idx, (tr, score) in enumerate(
-                [("TILE_1D", 0.9), ("FUSE", 0.8), ("FULL_SHIFT_VAL", 0.7)]
-            )
-        ]
-        spec = SimpleNamespace(
-            search=SimpleNamespace(max_transforms_per_trial=2, beam_width=2, constraints={})
+    def test_adaptive_tree_prunes_bad_prefixes(self) -> None:
+        tree = AdaptiveTreeState(
+            constraints={"tree_prune_min_visits": 2, "tree_prune_best_speedup_below": 0.95},
+            rng=__import__("random").Random(0),
         )
-        sequences = build_beam_seed_sequences(candidates, spec, 2)
-        self.assertTrue(sequences)
-        self.assertLessEqual(len(sequences[0]), 2)
-        self.assertEqual(sequences[0][0]["tr"], "TILE_1D")
+        prefix = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
+        tree.update(prefix, 0.8, "early_stop")
+        self.assertFalse(tree.is_bad_prefix(prefix))
+        tree.update(prefix, 0.7, "early_stop")
+        self.assertTrue(tree.is_bad_prefix(prefix))
 
     def test_fuse_candidate_args_are_checked_against_sequence_children(self) -> None:
         node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n")
