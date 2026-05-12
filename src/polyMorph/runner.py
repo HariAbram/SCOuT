@@ -159,6 +159,7 @@ class SyclProjectApp(App):
         compiler_executable: str | None = None,
         translator: Any | None = None,
         compiler_options: Sequence[str] | None = None,
+        run_env: Dict[str, str] | None = None,
         original_source: str | Path | None = None,
         ephemeral: bool = False,
         populate_scops: bool = True,
@@ -169,6 +170,7 @@ class SyclProjectApp(App):
         self.build_target = build_target
         self.build_dir = Path(build_dir).resolve() if build_dir else self.project_root
         self.runtime_args = list(runtime_args or [])
+        self.run_env = dict(run_env or {})
         self.compiler_options = list(compiler_options or [])
         self.compiler_executable = compiler_executable
         self.original_source = (
@@ -196,6 +198,7 @@ class SyclProjectApp(App):
             "build_target": self.build_target,
             "build_dir": self.build_dir,
             "runtime_args": self.runtime_args,
+            "run_env": self.run_env,
             "original_source": self.original_source,
         }
 
@@ -503,7 +506,7 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
             cfg.parser,
             app.output_binary,
             app.runtime_args,
-            {},
+            app.run_env,
             repeat,
             workdir=app.project_root,
             project=None,
@@ -513,19 +516,19 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
     if cfg is not None and cfg.backend == "perf":
         if cfg.perf is None:
             raise RuntimeError("Perf backend selected, but perf config is missing.")
-        metrics = measure_perf(cfg.perf, app.output_binary, app.runtime_args, {}, repeat)
+        metrics = measure_perf(cfg.perf, app.output_binary, app.runtime_args, app.run_env, repeat)
         return {str(k): float(v) for k, v in metrics.items()}
 
     if cfg is not None and cfg.backend == "likwid":
         if cfg.likwid is None:
             raise RuntimeError("LIKWID backend selected, but likwid config is missing.")
-        metrics = measure_likwid(cfg.likwid, app.output_binary, app.runtime_args, {}, repeat)
+        metrics = measure_likwid(cfg.likwid, app.output_binary, app.runtime_args, app.run_env, repeat)
         return {str(k): float(v) for k, v in metrics.items()}
 
     values: List[float] = []
     cmd = app.run_cmd()
     for _ in range(repeat):
-        proc = _run(cmd)
+        proc = _run(cmd, env={**os.environ, **app.run_env})
         if proc.returncode != 0:
             raise RuntimeError(
                 "Run failed\n"
@@ -642,6 +645,7 @@ def collect_runtime_feedback(
         for _ in range(repeat):
             env = {
                 **os.environ,
+                **app.run_env,
                 **poly.search.runtime_feedback_env,
                 "ACPP_DEBUG_LEVEL": str(poly.search.runtime_feedback_debug_level),
             }
@@ -670,6 +674,7 @@ def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProj
     dst.build_target = src.build_target
     dst.build_dir = src.build_dir
     dst.runtime_args = list(src.runtime_args)
+    dst.run_env = dict(src.run_env)
     dst.original_source = src.original_source
     return dst
 
@@ -1359,6 +1364,9 @@ def make_project_app(
     compiler_options = list(poly.flags)
     if poly.search.compiler_feedback:
         compiler_options.extend(poly.search.compiler_feedback_flags)
+    run_env: Dict[str, str] = {}
+    if poly.search.target_backend:
+        run_env["ACPP_VISIBILITY_MASK"] = str(poly.search.target_backend)
     return SyclProjectApp(
         project_root=poly.project_root,
         source=source,
@@ -1370,6 +1378,7 @@ def make_project_app(
         compiler_executable=poly.compiler,
         translator=Polly(poly.compiler) if populate_scops else None,
         compiler_options=compiler_options,
+        run_env=run_env,
         ephemeral=False,
         populate_scops=populate_scops,
     )
@@ -1656,6 +1665,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         raise ValueError("polyMorph.exec_name is required for search mode.")
 
     baseline_exec = poly.search.baseline_exec_name or f"{poly.exec_name}-baseline"
+    if poly.search.target_backend:
+        print(f"[polyMorph] measuring baseline and trials with ACPP_VISIBILITY_MASK={poly.search.target_backend}")
 
     print("\n=== Building/measuring baseline ===")
     baseline_app = make_project_app(

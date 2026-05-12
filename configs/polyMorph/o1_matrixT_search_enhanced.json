@@ -45,7 +45,8 @@
       "compiler_feedback_flags": ["-Rpass=loop-vectorize", "-Rpass-missed=loop-vectorize"],
       "runtime_feedback_masks": ["omp", "ocl"],
       "runtime_feedback_debug_level": 4,
-      "runtime_feedback_repeat": 1,
+      "runtime_feedback_repeat": 2,
+      "target_backend": "omp",
       "constraints": {
         "max_tile_size": 128,
         "max_tile_volume": 16384,
