@@ -9,7 +9,7 @@
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O3/crs-sycl",
-    "source": "test-benchmarks/polyMorph/O3/crs-sycl/main.cpp",
+    "source": "test-benchmarks/polyMorph/O3/crs-sycl/kernels.cpp",
     "compiler": "acpp",
     "flags": ["-O3"],
     "optuna_search": true,

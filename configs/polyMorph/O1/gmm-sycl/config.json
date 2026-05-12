@@ -9,7 +9,7 @@
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O1/gmm-sycl",
-    "source": "test-benchmarks/polyMorph/O1/gmm-sycl/main.cpp",
+    "source": "test-benchmarks/polyMorph/O1/gmm-sycl/cluster.cpp",
     "compiler": "acpp",
     "flags": ["-O1"],
     "optuna_search": true,

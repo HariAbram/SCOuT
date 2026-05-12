@@ -9,7 +9,7 @@
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O1/resnet-kernels-sycl",
-    "source": "test-benchmarks/polyMorph/O1/resnet-kernels-sycl/main.cpp",
+    "source": "test-benchmarks/polyMorph/O1/resnet-kernels-sycl/Kernel128_winograd.cpp",
     "compiler": "acpp",
     "flags": ["-O1"],
     "optuna_search": true,

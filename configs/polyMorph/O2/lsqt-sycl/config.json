@@ -9,7 +9,7 @@
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O2/lsqt-sycl",
-    "source": "test-benchmarks/polyMorph/O2/lsqt-sycl/main.cpp",
+    "source": "test-benchmarks/polyMorph/O2/lsqt-sycl/hamiltonian.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
     "optuna_search": true,

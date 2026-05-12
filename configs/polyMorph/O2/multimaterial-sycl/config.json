@@ -9,7 +9,7 @@
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O2/multimaterial-sycl",
-    "source": "test-benchmarks/polyMorph/O2/multimaterial-sycl/multimat.cpp",
+    "source": "test-benchmarks/polyMorph/O2/multimaterial-sycl/compact.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
     "optuna_search": true,
