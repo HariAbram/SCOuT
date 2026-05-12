@@ -248,7 +248,16 @@ def measure_parser_sycl(
     for i in range(total_runs):
         proc = _run(cmd, cwd=cwd, env=merged_env)
         if proc.returncode != 0:
-            raise RuntimeError(f"program exited with rc={proc.returncode}")
+            logs = (workdir or cwd) / "parser_logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / f"rc_{proc.returncode}_{i:02d}.out").write_text(proc.stdout or "")
+            (logs / f"rc_{proc.returncode}_{i:02d}.err").write_text(proc.stderr or "")
+            text = ((proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")).strip()
+            excerpt = text[-1200:] if text else "<no stdout/stderr>"
+            raise RuntimeError(
+                f"program exited with rc={proc.returncode}; "
+                f"logs saved under {logs}; output excerpt:\n{excerpt}"
+            )
 
         # For warm-up iterations, don’t enforce parsing or errors
         is_warmup = i < cfg.warmup_runs
