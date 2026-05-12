@@ -455,6 +455,33 @@ def measure_app_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = 
     return float(metrics[metric_name])
 
 
+def _metric_warmup_config(cfg: Config | None) -> Any | None:
+    if cfg is None:
+        return None
+    if cfg.backend == "parser":
+        return cfg.parser
+    if cfg.backend == "perf":
+        return cfg.perf
+    if cfg.backend == "likwid":
+        return cfg.likwid
+    return None
+
+
+@contextmanager
+def temporary_metric_warmup_runs(cfg: Config | None, extra_warmups: int) -> Iterator[None]:
+    target = _metric_warmup_config(cfg)
+    if target is None or extra_warmups <= 0:
+        yield
+        return
+
+    old_value = int(getattr(target, "warmup_runs", 0) or 0)
+    setattr(target, "warmup_runs", old_value + int(extra_warmups))
+    try:
+        yield
+    finally:
+        setattr(target, "warmup_runs", old_value)
+
+
 def _primary_metric_name(cfg: Config | None) -> str:
     if cfg is not None and cfg.objectives:
         return cfg.objectives[0].metric
@@ -1740,9 +1767,18 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 )
 
             if poly.search.multi_fidelity and poly.search.repeat > 1:
-                first_metrics = measure_metrics_or_raise(transformed_app, 1, cfg)
+                early_stop_warmups = int(
+                    poly.search.constraints.get("early_stop_warmup_runs", 1)
+                )
+                early_stop_runs = max(
+                    1,
+                    int(poly.search.constraints.get("early_stop_measure_runs", 1)),
+                )
+                with temporary_metric_warmup_runs(cfg, early_stop_warmups):
+                    first_metrics = measure_metrics_or_raise(transformed_app, early_stop_runs, cfg)
                 first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
                 trial.set_user_attr("first_fidelity_metrics", first_metrics)
+                trial.set_user_attr("first_fidelity_warmup_runs", early_stop_warmups)
                 if _is_bad_first_fidelity(
                     cfg,
                     baseline_value,
@@ -1751,7 +1787,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 ):
                     trial.set_user_attr("early_stopped", True)
                     raise optuna.TrialPruned(
-                        "early stop: first-fidelity objective "
+                        f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
                         f"{first_value} worse than baseline {baseline_value} "
                         f"by factor {poly.search.early_stop_worse_than}"
                     )

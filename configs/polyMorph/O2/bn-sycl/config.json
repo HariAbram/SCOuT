@@ -42,7 +42,7 @@
       "top_k": 100,
       "retrieval_top_k": 3,
       "compiler_feedback_flags": ["-Rpass=loop-vectorize", "-Rpass-missed=loop-vectorize"],
-      "runtime_feedback_masks": ["omp"],
+      "runtime_feedback_masks": ["omp", "ocl"],
       "runtime_feedback_debug_level": 4,
       "runtime_feedback_repeat": 1,
       "constraints": {
@@ -55,7 +55,9 @@
         "max_runtime_feedback_penalty": 0.9,
         "runtime_memcpy_per_kernel_threshold": 3.0,
         "runtime_backend_sensitivity_rel_threshold": 0.35,
-        "runtime_feedback_bias_weight": 0.35
+        "runtime_feedback_bias_weight": 0.35,
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
       },
       "generated_infix": "bn",
       "baseline_exec_name": "build/bn-baseline",

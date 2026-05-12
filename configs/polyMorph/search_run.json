@@ -41,6 +41,10 @@
       "cache_evaluations": true,
       "multi_fidelity": true,
       "early_stop_worse_than": 1.15,
+      "constraints": {
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      },
       "cache_jsonl": "/tmp/scout-polymorph/search_result.cache.jsonl"
     }
   }

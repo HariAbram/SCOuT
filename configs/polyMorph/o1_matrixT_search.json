@@ -36,6 +36,10 @@
       "cache_evaluations": true,
       "multi_fidelity": true,
       "early_stop_worse_than": 1.15,
+      "constraints": {
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      },
       "cache_jsonl": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-result.cache.jsonl"
     }
   }

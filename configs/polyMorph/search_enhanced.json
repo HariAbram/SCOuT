@@ -54,7 +54,7 @@
       "result_json": "/tmp/scout-polymorph/result.json",
       "trial_csv": "/tmp/scout-polymorph/trials.csv",
       "compiler_feedback_flags": ["-Rpass=loop-vectorize", "-Rpass-missed=loop-vectorize"],
-      "runtime_feedback_masks": ["omp"],
+      "runtime_feedback_masks": ["omp", "ocl"],
       "runtime_feedback_debug_level": 4,
       "runtime_feedback_repeat": 1,
       "constraints": {
@@ -62,7 +62,9 @@
         "max_tile_volume": 16384,
         "max_abs_shift": 16,
         "preferred_tile_size": 32,
-        "max_predicted_risk": 0.85
+        "max_predicted_risk": 0.85,
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
       }
     }
   }

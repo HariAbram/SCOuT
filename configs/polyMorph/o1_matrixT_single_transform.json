@@ -27,7 +27,11 @@
       "beam_seed_trials": 8,
       "cache_evaluations": true,
       "multi_fidelity": true,
-      "early_stop_worse_than": 1.15
+      "early_stop_worse_than": 1.15,
+      "constraints": {
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      }
     }
   }
 }
