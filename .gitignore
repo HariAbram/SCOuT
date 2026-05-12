@@ -17,6 +17,7 @@
 main
 __pycache__
 **/build/
+*.jsonl
 
 # Packages #
 ############

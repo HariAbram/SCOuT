@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from contextlib import redirect_stdout
 
 from src.config import PolyMorphSearchSpec
-from src.polyMorph.features import enrich_candidate
+from src.polyMorph.features import enrich_candidate, structural_signature
 from src.polyMorph.feedback import (
     analyze_runtime_feedback,
     parse_adaptivecpp_runtime_feedback,
@@ -19,7 +19,11 @@ from src.polyMorph.feedback import (
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import (
+    append_evaluation_cache,
+    build_beam_seed_sequences,
+    candidate_args_invalid_for_node,
     cleanup_trial_artifacts,
+    load_evaluation_cache,
     print_candidates,
     select_diverse_top_k,
     suppress_external_viewers,
@@ -51,6 +55,14 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "compiler_feedback": True,
                 "runtime_feedback": True,
                 "case_retrieval": True,
+                "structural_retrieval": False,
+                "search_strategy": "beam_optuna",
+                "beam_width": 4,
+                "beam_seed_trials": 3,
+                "cache_jsonl": "/tmp/polymorph-cache.jsonl",
+                "cache_evaluations": False,
+                "multi_fidelity": False,
+                "early_stop_worse_than": 1.4,
                 "top_k": 7,
                 "retrieval_top_k": 2,
                 "history_jsonl": "/tmp/history.jsonl",
@@ -70,6 +82,14 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(spec.compiler_feedback)
         self.assertTrue(spec.runtime_feedback)
         self.assertTrue(spec.case_retrieval)
+        self.assertFalse(spec.structural_retrieval)
+        self.assertEqual(spec.search_strategy, "beam_optuna")
+        self.assertEqual(spec.beam_width, 4)
+        self.assertEqual(spec.beam_seed_trials, 3)
+        self.assertEqual(spec.cache_jsonl, "/tmp/polymorph-cache.jsonl")
+        self.assertFalse(spec.cache_evaluations)
+        self.assertFalse(spec.multi_fidelity)
+        self.assertEqual(spec.early_stop_worse_than, 1.4)
         self.assertEqual(spec.top_k, 7)
         self.assertEqual(spec.retrieval_top_k, 2)
         self.assertEqual(spec.constraints["max_tile_size"], 64)
@@ -220,6 +240,33 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             )
             self.assertEqual(retrieved, [transforms])
 
+    def test_history_retrieval_uses_structural_similarity(self) -> None:
+        transforms = [{"scop": 0, "node": 1, "tr": "FUSE", "args": [0, 1]}]
+        candidates = list(transforms)
+        sig = {
+            "scop_count": 1,
+            "node_count": 1,
+            "transform_counts": {"FUSE": 1},
+            "node_type_counts": {"NodeType.BAND": 1},
+            "available_transform_counts": {"FUSE": 1},
+        }
+        retrieved = retrieve_sequences(
+            history=[
+                {
+                    "status": "complete",
+                    "source_hash": "different",
+                    "structural_signature": sig,
+                    "speedup": 1.2,
+                    "transforms": transforms,
+                }
+            ],
+            source_hash="current",
+            structural_sig=sig,
+            candidates=candidates,
+            limit=1,
+        )
+        self.assertEqual(retrieved, [transforms])
+
     def test_cleanup_trial_artifacts_removes_only_trial_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -275,6 +322,57 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             {candidate["tr"] for candidate in selected},
             {"TILE_1D", "FUSE", "FULL_SHIFT_VAL"},
         )
+
+    def test_build_beam_seed_sequences_prefers_ranked_diverse_sequences(self) -> None:
+        candidates = [
+            {
+                "scop": 0,
+                "node": idx,
+                "tr": tr,
+                "args": [],
+                "predictions": {"score": score, "risk": 0.1},
+            }
+            for idx, (tr, score) in enumerate(
+                [("TILE_1D", 0.9), ("FUSE", 0.8), ("FULL_SHIFT_VAL", 0.7)]
+            )
+        ]
+        spec = SimpleNamespace(
+            search=SimpleNamespace(max_transforms_per_trial=2, beam_width=2, constraints={})
+        )
+        sequences = build_beam_seed_sequences(candidates, spec, 2)
+        self.assertTrue(sequences)
+        self.assertLessEqual(len(sequences[0]), 2)
+        self.assertEqual(sequences[0][0]["tr"], "TILE_1D")
+
+    def test_fuse_candidate_args_are_checked_against_sequence_children(self) -> None:
+        node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n")
+        self.assertIsNone(candidate_args_invalid_for_node("FUSE", [0, 1], node))
+        self.assertIn("exceed", candidate_args_invalid_for_node("FUSE", [0, 2], node) or "")
+        self.assertIsNone(candidate_args_invalid_for_node("TILE_1D", [32], node))
+
+    def test_evaluation_cache_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cache.jsonl"
+            append_evaluation_cache(path, {"key": "abc", "status": "complete", "metrics": {"runtime": 1.0}})
+            loaded = load_evaluation_cache(path)
+            self.assertEqual(loaded["abc"]["metrics"]["runtime"], 1.0)
+
+    def test_structural_signature_counts_candidate_shapes(self) -> None:
+        sig = structural_signature(
+            [
+                {
+                    "scop": 0,
+                    "node": 1,
+                    "tr": "FUSE",
+                    "features": {
+                        "node_type": "NodeType.BAND",
+                        "available_transformations": ["FUSE", "TILE_1D"],
+                    },
+                }
+            ]
+        )
+        self.assertEqual(sig["transform_counts"]["FUSE"], 1)
+        self.assertEqual(sig["available_transform_counts"]["TILE_1D"], 1)
 
     def test_suppress_external_viewers_prepends_noop_dotty(self) -> None:
         old_path = os.environ.get("PATH", "")

@@ -1,2 +1,1 @@
-[;35m[AdaptiveCpp Warning] [0m[backend_loader] Could not load library: /opt/AdaptiveCpp/bin/../lib/hipSYCL/librt-backend-cuda.so (libcuda.so.1: cannot open shared object file: No such file or directory)
-[;35m[AdaptiveCpp Warning] [0m[backend_loader] Could not load library: /opt/AdaptiveCpp/bin/../lib/hipSYCL/librt-backend-cuda.so (libcuda.so.1: cannot open shared object file: No such file or directory)
+[;35m[AdaptiveCpp Warning] [0mfrom /home/hari/Desktop/PhD/AdaptiveCpp/src/runtime/ocl/ocl_hardware_manager.cpp:632 @ ocl_hardware_manager(): ocl_hardware_manager: Could not obtain platform list (error code = CL:-1001)

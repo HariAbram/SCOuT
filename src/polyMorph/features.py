@@ -102,6 +102,69 @@ def candidate_key(candidate: JsonDict) -> str:
     return sequence_signature([candidate])
 
 
+def structural_signature(candidates: List[JsonDict]) -> JsonDict:
+    transform_counts: Dict[str, int] = {}
+    node_type_counts: Dict[str, int] = {}
+    available_counts: Dict[str, int] = {}
+    scop_ids: set[int] = set()
+    node_ids: set[tuple[int, int]] = set()
+
+    for candidate in candidates:
+        features = candidate.get("features", {}) or {}
+        transform = str(candidate.get("tr", ""))
+        transform_counts[transform] = transform_counts.get(transform, 0) + 1
+        node_type = str(features.get("node_type", ""))
+        if node_type:
+            node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
+        for name in features.get("available_transformations", []) or []:
+            name = str(name)
+            available_counts[name] = available_counts.get(name, 0) + 1
+        scop_ids.add(int(candidate.get("scop", -1)))
+        node_ids.add((int(candidate.get("scop", -1)), int(candidate.get("node", -1))))
+
+    return {
+        "scop_count": len(scop_ids),
+        "node_count": len(node_ids),
+        "transform_counts": transform_counts,
+        "node_type_counts": node_type_counts,
+        "available_transform_counts": available_counts,
+    }
+
+
+def structural_similarity(left: JsonDict | None, right: JsonDict | None) -> float:
+    if not left or not right:
+        return 0.0
+    scores = [
+        _counter_similarity(
+            dict(left.get("transform_counts", {}) or {}),
+            dict(right.get("transform_counts", {}) or {}),
+        ),
+        _counter_similarity(
+            dict(left.get("node_type_counts", {}) or {}),
+            dict(right.get("node_type_counts", {}) or {}),
+        ),
+        _counter_similarity(
+            dict(left.get("available_transform_counts", {}) or {}),
+            dict(right.get("available_transform_counts", {}) or {}),
+        ),
+    ]
+    for key in ["scop_count", "node_count"]:
+        a = float(left.get(key, 0) or 0)
+        b = float(right.get(key, 0) or 0)
+        if max(a, b) > 0:
+            scores.append(1.0 - abs(a - b) / max(a, b))
+    return sum(scores) / len(scores) if scores else 0.0
+
+
+def _counter_similarity(left: Dict[str, int], right: Dict[str, int]) -> float:
+    keys = set(left) | set(right)
+    if not keys:
+        return 0.0
+    intersection = sum(min(int(left.get(key, 0)), int(right.get(key, 0))) for key in keys)
+    union = sum(max(int(left.get(key, 0)), int(right.get(key, 0))) for key in keys)
+    return intersection / union if union else 0.0
+
+
 def _product(values: List[float]) -> float:
     result = 1.0
     for value in values:

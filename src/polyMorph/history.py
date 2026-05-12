@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
-from src.polyMorph.features import sequence_signature
+from src.polyMorph.features import sequence_signature, structural_similarity
 
 
 JsonDict = Dict[str, Any]
@@ -46,6 +46,8 @@ def retrieve_sequences(
     source_hash: str,
     candidates: List[JsonDict],
     limit: int,
+    structural_sig: JsonDict | None = None,
+    structural_weight: float = 0.75,
 ) -> List[List[JsonDict]]:
     candidate_keys = {
         (
@@ -74,8 +76,12 @@ def retrieve_sequences(
         seen_signatures.add(signature)
 
         source_bonus = 1.0 if record.get("source_hash") == source_hash else 0.0
+        structure_bonus = structural_weight * structural_similarity(
+            structural_sig,
+            record.get("structural_signature") if isinstance(record.get("structural_signature"), dict) else None,
+        )
         speedup = float(record.get("speedup", 0.0) or 0.0)
-        score = source_bonus + speedup
+        score = source_bonus + structure_bonus + speedup
         sequences.append((score, [dict(item) for item in transforms]))
 
     sequences.sort(key=lambda item: item[0], reverse=True)

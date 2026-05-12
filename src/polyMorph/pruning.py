@@ -49,6 +49,8 @@ def static_prune_sequence(specs: List[JsonDict], constraints: JsonDict | None = 
     seen = set()
     max_same_transform = int(constraints.get("max_same_transform_per_sequence", 2))
     counts: Dict[tuple[int, int, str], int] = {}
+    scop_counts: Dict[int, int] = {}
+    max_per_scop = int(constraints.get("max_transforms_per_scop", 0) or 0)
 
     for spec in specs:
         scop = int(spec.get("scop", -1))
@@ -65,10 +67,15 @@ def static_prune_sequence(specs: List[JsonDict], constraints: JsonDict | None = 
         seen.add(key)
         target_key = (scop, node, name)
         counts[target_key] = counts.get(target_key, 0) + 1
+        scop_counts[scop] = scop_counts.get(scop, 0) + 1
 
     for (scop, node, name), count in counts.items():
         if count > max_same_transform:
             reasons.append(f"{name} appears {count} times on scop={scop}, node={node}")
+    if max_per_scop > 0:
+        for scop, count in scop_counts.items():
+            if count > max_per_scop:
+                reasons.append(f"{count} transforms target scop={scop}; max_transforms_per_scop={max_per_scop}")
 
     return reasons
 

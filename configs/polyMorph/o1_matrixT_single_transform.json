@@ -20,7 +20,14 @@
     "runtime_args": ["1024", "1024", "50"],
     "measure": false,
     "search": {
-      "repeat": 1
+      "repeat": 1,
+      "structural_retrieval": true,
+      "search_strategy": "beam_optuna",
+      "beam_width": 8,
+      "beam_seed_trials": 8,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15
     }
   }
 }

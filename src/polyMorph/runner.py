@@ -16,7 +16,14 @@ import optuna
 
 from src.config import Config, PolyMorphSpec
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
-from src.polyMorph.features import candidate_key, enrich_candidate, file_hash, sequence_signature
+from src.polyMorph.features import (
+    candidate_key,
+    enrich_candidate,
+    file_hash,
+    sequence_signature,
+    stable_json_hash,
+    structural_signature,
+)
 from src.polyMorph.feedback import (
     analyze_runtime_feedback,
     merge_feedback,
@@ -44,6 +51,10 @@ except Exception as exc:
 
 
 JsonDict = Dict[str, Any]
+
+
+class InvalidTransformArgs(RuntimeError):
+    pass
 
 
 @contextmanager
@@ -308,7 +319,15 @@ def apply_transforms_to_scops(
             f"Applying transform #{idx}: "
             f"scop={scop_idx}, node={node_idx}, tr={tr_name}, args={tr_args}"
         )
-        ok = node.transform(tr, *tr_args)
+        try:
+            ok = node.transform(tr, *tr_args)
+        except Exception as exc:
+            message = str(exc)
+            if "Not valid args" in message:
+                raise InvalidTransformArgs(
+                    f"invalid args={tuple(tr_args)} for tr={tr_name} on scop={scop_idx}, node={node_idx}"
+                ) from exc
+            raise
         print(f"  result={ok}")
 
         available = getattr(node, "available_transformations", [])
@@ -541,6 +560,76 @@ def _trial_csv_path(poly: PolyMorphSpec) -> Path:
     return Path("polymorph_trials.csv")
 
 
+def _cache_path(poly: PolyMorphSpec) -> Path | None:
+    if not poly.search.cache_evaluations:
+        return None
+    if poly.search.cache_jsonl:
+        return Path(poly.search.cache_jsonl)
+    if poly.search.history_jsonl:
+        return Path(poly.search.history_jsonl).with_suffix(".cache.jsonl")
+    if poly.search.result_json:
+        return Path(poly.search.result_json).with_suffix(".cache.jsonl")
+    return None
+
+
+def _cache_key(
+    *,
+    source_hash: str,
+    specs: List[JsonDict],
+    poly: PolyMorphSpec,
+    cfg: Config,
+) -> str:
+    return stable_json_hash(
+        {
+            "source_hash": source_hash,
+            "transforms": _compact_transform_specs(specs),
+            "flags": poly.flags,
+            "compiler": poly.compiler,
+            "runtime_args": poly.runtime_args,
+            "objectives": [(obj.metric, obj.goal) for obj in cfg.objectives],
+            "backend": cfg.backend,
+            "multi_fidelity": poly.search.multi_fidelity,
+            "early_stop_worse_than": poly.search.early_stop_worse_than,
+            "repeat": poly.search.repeat,
+        }
+    )
+
+
+def _compact_transform_specs(specs: List[JsonDict]) -> List[JsonDict]:
+    return [
+        {
+            "scop": int(spec.get("scop", -1)),
+            "node": int(spec.get("node", -1)),
+            "tr": str(spec.get("tr", "")),
+            "args": list(spec.get("args", [])),
+        }
+        for spec in specs
+    ]
+
+
+def load_evaluation_cache(path: Path | None) -> Dict[str, JsonDict]:
+    if path is None or not path.exists():
+        return {}
+    entries: Dict[str, JsonDict] = {}
+    with path.open("r", encoding="utf-8") as fp:
+        for line in fp:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict) and item.get("key"):
+                entries[str(item["key"])] = item
+    return entries
+
+
+def append_evaluation_cache(path: Path | None, record: JsonDict) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fp:
+        fp.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+
+
 def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
     out_csv = _trial_csv_path(poly)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -636,6 +725,30 @@ def candidate_args_for_transform(name: str, poly: PolyMorphSpec) -> List[List[An
     return [[]]
 
 
+def _sequence_child_count(node: Any) -> int:
+    yaml_str = str(getattr(node, "yaml_str", "") or "")
+    return len(re.findall(r"^\s*-\s+filter:", yaml_str, flags=re.MULTILINE))
+
+
+def candidate_args_invalid_for_node(name: str, args: Sequence[Any], node: Any) -> str | None:
+    if name != "FUSE":
+        return None
+    if len(args) != 2:
+        return "FUSE requires two child indexes"
+    try:
+        left, right = (int(args[0]), int(args[1]))
+    except (TypeError, ValueError):
+        return "FUSE child indexes must be integers"
+    if left < 0 or right < 0:
+        return "FUSE child indexes must be non-negative"
+    if left == right:
+        return "FUSE child indexes must be distinct"
+    child_count = _sequence_child_count(node)
+    if child_count and max(left, right) >= child_count:
+        return f"FUSE args {list(args)} exceed sequence child count {child_count}"
+    return None
+
+
 def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
@@ -652,6 +765,9 @@ def enumerate_transform_candidates(
                 if not transform_allowed(name, poly):
                     continue
                 for args in candidate_args_for_transform(name, poly):
+                    invalid_reason = candidate_args_invalid_for_node(name, args, node)
+                    if invalid_reason:
+                        continue
                     candidate = {
                         "scop": scop_idx,
                         "node": node_idx,
@@ -739,6 +855,61 @@ def select_diverse_top_k(candidates: List[JsonDict], top_k: int) -> List[JsonDic
     return selected
 
 
+def build_beam_seed_sequences(candidates: List[JsonDict], poly: PolyMorphSpec, limit: int) -> List[List[JsonDict]]:
+    if limit <= 0 or not candidates:
+        return []
+    depth = max(1, int(poly.search.max_transforms_per_trial))
+    beam_width = max(1, int(poly.search.beam_width))
+    ranked = sorted(candidates, key=candidate_rank_key, reverse=True)
+    ranked = select_diverse_top_k(ranked, max(limit * beam_width, beam_width))
+    beam: List[tuple[float, List[JsonDict]]] = [(0.0, [])]
+    completed: List[tuple[float, List[JsonDict]]] = []
+
+    for _ in range(depth):
+        expanded: List[tuple[float, List[JsonDict]]] = []
+        for score, seq in beam:
+            used_exact = {
+                (
+                    int(item.get("scop", -1)),
+                    int(item.get("node", -1)),
+                    str(item.get("tr", "")),
+                    tuple(item.get("args", [])),
+                )
+                for item in seq
+            }
+            for candidate in ranked:
+                exact = (
+                    int(candidate.get("scop", -1)),
+                    int(candidate.get("node", -1)),
+                    str(candidate.get("tr", "")),
+                    tuple(candidate.get("args", [])),
+                )
+                if exact in used_exact:
+                    continue
+                new_seq = [*seq, candidate]
+                if static_prune_sequence(new_seq, poly.search.constraints):
+                    continue
+                new_score = score + candidate_rank_key(candidate)[0] + candidate_rank_key(candidate)[1]
+                expanded.append((new_score, [dict(item) for item in new_seq]))
+        if not expanded:
+            break
+        expanded.sort(key=lambda item: item[0], reverse=True)
+        beam = expanded[:beam_width]
+        completed.extend(beam)
+
+    unique: List[List[JsonDict]] = []
+    seen: set[str] = set()
+    for _, seq in sorted(completed, key=lambda item: item[0], reverse=True):
+        signature = sequence_signature(seq)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        unique.append(seq)
+        if len(unique) >= limit:
+            break
+    return unique
+
+
 def sample_transform_combination(
     trial: optuna.Trial,
     candidates: List[JsonDict],
@@ -776,11 +947,14 @@ def sample_transform_sequence(
             raise optuna.TrialPruned("; ".join(reasons))
         chosen: List[JsonDict] = []
         for spec in specs:
-            apply_transforms_to_scops(
-                app.scops,
-                [spec],
-                legality_cb=lambda: app.legal,
-            )
+            try:
+                apply_transforms_to_scops(
+                    app.scops,
+                    [spec],
+                    legality_cb=lambda: app.legal,
+                )
+            except InvalidTransformArgs as exc:
+                raise optuna.TrialPruned(str(exc)) from exc
             if not poly.allow_illegal and not app.legal:
                 raise optuna.TrialPruned("Illegal transformed schedule")
             chosen.append(spec)
@@ -796,14 +970,25 @@ def sample_transform_sequence(
             break
 
         idx = trial.suggest_int(f"candidate_{pos}", 0, len(current_candidates) - 1)
-        spec = current_candidates[idx]
+        ordered_indexes = [idx, *[i for i in range(len(current_candidates)) if i != idx]]
+        spec = None
+        last_invalid: InvalidTransformArgs | None = None
+        for candidate_idx in ordered_indexes:
+            candidate = current_candidates[candidate_idx]
+            try:
+                apply_transforms_to_scops(
+                    app.scops,
+                    [candidate],
+                    legality_cb=lambda: app.legal,
+                )
+            except InvalidTransformArgs as exc:
+                last_invalid = exc
+                continue
+            spec = candidate
+            break
+        if spec is None:
+            raise optuna.TrialPruned(str(last_invalid) if last_invalid else "No valid transform candidates")
         chosen.append(spec)
-
-        apply_transforms_to_scops(
-            app.scops,
-            [spec],
-            legality_cb=lambda: app.legal,
-        )
 
         if not poly.allow_illegal and not app.legal:
             raise optuna.TrialPruned("Illegal transformed schedule")
@@ -886,6 +1071,15 @@ def _speedup_for_primary(cfg: Config, baseline_value: float, value: float) -> fl
     return baseline_value / value
 
 
+def _is_bad_first_fidelity(cfg: Config, baseline_value: float, value: float, worse_than: float) -> bool:
+    if value <= 0.0 or baseline_value <= 0.0:
+        return False
+    goal = cfg.objectives[0].goal if cfg.objectives else "min"
+    if goal == "max":
+        return value < baseline_value / max(worse_than, 1.0)
+    return value > baseline_value * max(worse_than, 1.0)
+
+
 def _pick_representative_trial(trials: Sequence[Any], cfg: Config) -> Any:
     if not trials:
         raise RuntimeError("No Pareto trials available.")
@@ -893,6 +1087,34 @@ def _pick_representative_trial(trials: Sequence[Any], cfg: Config) -> Any:
     if first_goal == "max":
         return max(trials, key=lambda trial: trial.values[0] if trial.values else float("-inf"))
     return min(trials, key=lambda trial: trial.values[0] if trial.values else float("inf"))
+
+
+def _backend_specific_best(study: optuna.study.Study, cfg: Config) -> JsonDict:
+    best: Dict[str, JsonDict] = {}
+    for trial in study.trials:
+        if trial.state != optuna.trial.TrialState.COMPLETE:
+            continue
+        analysis = trial.user_attrs.get("runtime_feedback_analysis") or {}
+        per_backend = analysis.get("per_backend") or {}
+        if not isinstance(per_backend, dict):
+            continue
+        speedup = float(trial.user_attrs.get("speedup", 0.0) or 0.0)
+        value = trial.values[0] if trial.values else trial.user_attrs.get("runtime")
+        for backend, backend_analysis in per_backend.items():
+            if not isinstance(backend_analysis, dict):
+                continue
+            quality = speedup + float(backend_analysis.get("score", 0.0) or 0.0)
+            current = best.get(str(backend))
+            if current is None or quality > float(current.get("quality", float("-inf"))):
+                best[str(backend)] = {
+                    "trial": trial.number,
+                    "quality": quality,
+                    "objective": value,
+                    "speedup": speedup,
+                    "transforms": trial.user_attrs.get("transforms", []),
+                    "runtime_feedback": backend_analysis,
+                }
+    return best
 
 
 def _write_pareto_csv(study: optuna.study.Study, poly: PolyMorphSpec, cfg: Config) -> None:
@@ -1132,6 +1354,11 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
     source_hash = file_hash(source)
+    source_structural_signature = structural_signature(candidates)
+    cache_path = _cache_path(poly)
+    evaluation_cache = load_evaluation_cache(cache_path)
+    if evaluation_cache:
+        print(f"Loaded {len(evaluation_cache)} cached evaluation record(s) from {cache_path}.")
     runtime_bias: Dict[str, JsonDict] = {}
     seeded_sequences: List[List[JsonDict]] = []
     if poly.search.case_retrieval:
@@ -1141,9 +1368,20 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             source_hash=source_hash,
             candidates=candidates,
             limit=poly.search.retrieval_top_k,
+            structural_sig=source_structural_signature if poly.search.structural_retrieval else None,
         )
         if seeded_sequences:
             print(f"Retrieved {len(seeded_sequences)} previous transform sequence(s).")
+    if poly.search.search_strategy in {"beam", "beam_optuna", "tree", "tree_optuna"}:
+        limit = max(0, int(poly.search.beam_seed_trials))
+        beam_sequences = build_beam_seed_sequences(candidates, poly, limit)
+        existing = {sequence_signature(seq) for seq in seeded_sequences}
+        for seq in beam_sequences:
+            if sequence_signature(seq) not in existing:
+                seeded_sequences.append(seq)
+                existing.add(sequence_signature(seq))
+        if beam_sequences:
+            print(f"Prepared {len(beam_sequences)} beam/tree seed sequence(s).")
 
     is_multi = len(cfg.objectives) > 1
 
@@ -1163,7 +1401,32 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             if not specs:
                 raise optuna.TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
-            trial.set_user_attr("transform_signature", sequence_signature(specs))
+            transform_signature = sequence_signature(specs)
+            trial.set_user_attr("transform_signature", transform_signature)
+
+            cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
+            cached = evaluation_cache.get(cache_key)
+            if cached:
+                status = str(cached.get("status", "complete"))
+                trial.set_user_attr("cache_hit", True)
+                if status == "failed":
+                    raise optuna.TrialPruned(str(cached.get("failure", "cached failed evaluation")))
+                metrics = dict(cached.get("metrics", {}) or {})
+                obj_values = [float(x) for x in cached.get("objectives", [])]
+                if not obj_values:
+                    obj_values = _objective_values_from_metrics(cfg, metrics)
+                speedup = float(cached.get("speedup", _speedup_for_primary(cfg, baseline_value, obj_values[0])) or 0.0)
+                trial.set_user_attr("runtime", obj_values[0])
+                trial.set_user_attr("metrics", metrics)
+                trial.set_user_attr("speedup", speedup)
+                trial.set_user_attr("compiler_feedback", cached.get("compiler_feedback", {}))
+                trial.set_user_attr("runtime_feedback", cached.get("runtime_feedback", {}))
+                trial.set_user_attr(
+                    "runtime_feedback_analysis",
+                    cached.get("runtime_feedback_analysis", {}),
+                )
+                print(f"Trial {trial.number}: cache hit objective={obj_values[0]}, transforms={specs}")
+                return obj_values if is_multi else obj_values[0]
 
             transformed_app = trial_app.generate_code(
                 alt_infix=generated_infix,
@@ -1185,6 +1448,23 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     getattr(transformed_app, "last_build_stdout", ""),
                     getattr(transformed_app, "last_build_stderr", ""),
                 )
+
+            if poly.search.multi_fidelity and poly.search.repeat > 1:
+                first_metrics = measure_metrics_or_raise(transformed_app, 1, cfg)
+                first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
+                trial.set_user_attr("first_fidelity_metrics", first_metrics)
+                if _is_bad_first_fidelity(
+                    cfg,
+                    baseline_value,
+                    first_value,
+                    poly.search.early_stop_worse_than,
+                ):
+                    trial.set_user_attr("early_stopped", True)
+                    raise optuna.TrialPruned(
+                        "early stop: first-fidelity objective "
+                        f"{first_value} worse than baseline {baseline_value} "
+                        f"by factor {poly.search.early_stop_worse_than}"
+                    )
 
             metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
             obj_values = _objective_values_from_metrics(cfg, metrics)
@@ -1218,6 +1498,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "trial": trial.number,
                     "source": str(source),
                     "source_hash": source_hash,
+                    "structural_signature": source_structural_signature,
                     "transforms": specs,
                     "metrics": metrics,
                     "objectives": obj_values,
@@ -1226,8 +1507,26 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "runtime_feedback_analysis": runtime_feedback_analysis,
                 },
             )
+            record = {
+                "key": cache_key,
+                "status": "complete",
+                "source": str(source),
+                "source_hash": source_hash,
+                "structural_signature": source_structural_signature,
+                "transform_signature": transform_signature,
+                "transforms": specs,
+                "metrics": metrics,
+                "objectives": obj_values,
+                "speedup": speedup,
+                "compiler_feedback": feedback,
+                "runtime_feedback": runtime_feedback,
+                "runtime_feedback_analysis": runtime_feedback_analysis,
+            }
+            evaluation_cache[cache_key] = record
+            append_evaluation_cache(cache_path, record)
             return obj_values if is_multi else value
         except optuna.TrialPruned as exc:
+            specs = trial.user_attrs.get("transforms", [])
             append_history(
                 poly.search.history_jsonl,
                 {
@@ -1235,10 +1534,25 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "trial": trial.number,
                     "source": str(source),
                     "source_hash": source_hash,
-                    "transforms": trial.user_attrs.get("transforms", []),
+                    "structural_signature": source_structural_signature,
+                    "transforms": specs,
                     "failure": str(exc),
                 },
             )
+            if specs:
+                cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
+                record = {
+                    "key": cache_key,
+                    "status": "failed",
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "structural_signature": source_structural_signature,
+                    "transform_signature": sequence_signature(specs),
+                    "transforms": specs,
+                    "failure": str(exc),
+                }
+                evaluation_cache[cache_key] = record
+                append_evaluation_cache(cache_path, record)
             raise
         except Exception as exc:
             trial.set_user_attr("failure", str(exc))
@@ -1253,6 +1567,20 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "failure": str(exc),
                 },
             )
+            specs = trial.user_attrs.get("transforms", [])
+            if specs:
+                cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
+                record = {
+                    "key": cache_key,
+                    "status": "failed",
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "transform_signature": sequence_signature(specs),
+                    "transforms": specs,
+                    "failure": str(exc),
+                }
+                evaluation_cache[cache_key] = record
+                append_evaluation_cache(cache_path, record)
             raise optuna.TrialPruned(str(exc))
         finally:
             if transformed_app is not None:
@@ -1314,6 +1642,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             "best_speedup": best_speedup,
             "best_transforms": best_specs,
             "best_trial_number": best_trial.number,
+            "backend_best_configs": _backend_specific_best(study, cfg),
         }
         if is_multi:
             result["pareto_trials"] = [

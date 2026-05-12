@@ -33,7 +33,15 @@
       "tile_sizes": [16, 32],
       "scale_factors": [2],
       "shift_values": [-1, 1],
-      "result_json": "/tmp/scout-polymorph/search_result.json"
+      "result_json": "/tmp/scout-polymorph/search_result.json",
+      "structural_retrieval": true,
+      "search_strategy": "beam_optuna",
+      "beam_width": 8,
+      "beam_seed_trials": 8,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15,
+      "cache_jsonl": "/tmp/scout-polymorph/search_result.cache.jsonl"
     }
   }
 }

@@ -41,7 +41,14 @@
         "FULL_SHIFT_PARAM": [[0], [1]],
         "PARTIAL_SHIFT_PARAM": [[0], [1]],
         "SET_LOOP_OPT": [[0], [1]]
-      }
+      },
+      "structural_retrieval": true,
+      "search_strategy": "beam_optuna",
+      "beam_width": 8,
+      "beam_seed_trials": 8,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15
     }
   }
 }
