@@ -23,7 +23,7 @@
       "seed": 42,
       "timeout": 600,
       "baseline_exec_name": "build/matrixT-baseline",
-      "max_transforms_per_trial": 4,
+      "max_transforms_per_trial": 5,
       "tile_sizes": [8, 16, 32],
       "scale_factors": [2],
       "shift_values": [-1, 1],

@@ -28,7 +28,7 @@
       "repeat": 2,
       "generated_infix": "enumerate",
       "seed": 7,
-      "max_transforms_per_trial": 3,
+      "max_transforms_per_trial": 5,
       "tile_sizes": [8, 16, 32],
       "scale_factors": [2, 4],
       "shift_values": [-2, -1, 1, 2],

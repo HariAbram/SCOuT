@@ -29,7 +29,7 @@
       "seed": 42,
       "timeout": 600,
       "baseline_exec_name": "bin/main-acpp-generic-baseline",
-      "max_transforms_per_trial": 2,
+      "max_transforms_per_trial": 5,
       "tile_sizes": [16, 32],
       "scale_factors": [2],
       "shift_values": [-1, 1],
