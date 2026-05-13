@@ -206,9 +206,10 @@ int main(int argc, const char * argv[]) {
   }
   }
 
-  SYCL_TIMER_DUMP();
+  
 
   printf("Total encoding time %lf (s)\n", encode_time * 1e-3);
 
+  SYCL_TIMER_DUMP();
   return 0;
 }
