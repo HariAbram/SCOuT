@@ -52,3 +52,9 @@ __pycache__
 .Trashes
 ehthumbs.db
 Thumbs.db
+# polyMorph generated outputs
+configs/polyMorph/**/*.jsonl
+configs/polyMorph/**/*-result.json
+configs/polyMorph/**/*-trials.csv
+configs/polyMorph/**/*-cache.jsonl
+configs/polyMorph/**/*-history.jsonl
