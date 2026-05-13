@@ -5,6 +5,7 @@
 #include <sycl/sycl.hpp>
 #include "GCRSMatrix.h"
 #include "utils.h"
+#include "sycl_timer.hpp"
 
 typedef void (*coding_func)(
     sycl::queue &q,
@@ -204,6 +205,8 @@ int main(int argc, const char * argv[]) {
   }
   }
   }
+
+  SYCL_TIMER_DUMP();
 
   printf("Total encoding time %lf (s)\n", encode_time * 1e-3);
 
