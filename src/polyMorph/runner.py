@@ -28,12 +28,6 @@ from src.polyMorph.features import (
     stable_json_hash,
     structural_signature,
 )
-from src.polyMorph.feedback import (
-    analyze_runtime_feedback,
-    merge_feedback,
-    parse_adaptivecpp_runtime_feedback,
-    parse_compiler_feedback,
-)
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import (
     analytical_score,
@@ -625,45 +619,65 @@ def verify_correctness_outputs(
     }
 
 
-def collect_runtime_feedback(
+def collect_backend_sensitivity(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
-    cfg: Config | None = None,
-) -> Dict[str, JsonDict]:
-    if not poly.search.runtime_feedback:
-        return {}
+    cfg: Config,
+) -> JsonDict:
+    masks = [str(mask) for mask in poly.search.backend_sensitivity_masks if str(mask).strip()]
+    if len(masks) < 2:
+        return {"checked": False, "backend_sensitive": False, "per_backend": {}}
 
-    masks = poly.search.runtime_feedback_masks or [""]
-    repeat = max(1, poly.search.runtime_feedback_repeat)
-    results: Dict[str, JsonDict] = {}
-    cwd = _app_run_cwd(app, cfg)
-    for raw_mask in masks:
-        mask = str(raw_mask)
-        stdout_parts: List[str] = []
-        stderr_parts: List[str] = []
-        last_returncode = 0
-        for _ in range(repeat):
-            env = {
-                **os.environ,
-                **app.run_env,
-                **poly.search.runtime_feedback_env,
-                "ACPP_DEBUG_LEVEL": str(poly.search.runtime_feedback_debug_level),
-            }
-            if mask:
-                env["ACPP_VISIBILITY_MASK"] = mask
-            proc = _run(app.run_cmd(), cwd=cwd, env=env)
-            stdout_parts.append(proc.stdout or "")
-            stderr_parts.append(proc.stderr or "")
-            last_returncode = proc.returncode
+    original_env = dict(app.run_env)
+    per_backend: Dict[str, JsonDict] = {}
+    repeat = max(1, int(poly.search.backend_sensitivity_repeat))
+    try:
+        for mask in masks:
+            app.run_env = {**original_env, "ACPP_VISIBILITY_MASK": mask}
+            try:
+                metrics = measure_metrics_or_raise(app, repeat, cfg)
+                values = _objective_values_from_metrics(cfg, metrics)
+                per_backend[mask] = {
+                    "ok": True,
+                    "metrics": metrics,
+                    "objective": values[0],
+                }
+            except Exception as exc:
+                per_backend[mask] = {
+                    "ok": False,
+                    "error": str(exc),
+                }
+    finally:
+        app.run_env = original_env
 
-        parsed = parse_adaptivecpp_runtime_feedback(
-            "\n".join(stdout_parts),
-            "\n".join(stderr_parts),
-            mask=mask or "<default>",
-        )
-        parsed["returncode"] = last_returncode
-        results[mask or "default"] = parsed
-    return results
+    objectives = [
+        float(item["objective"])
+        for item in per_backend.values()
+        if item.get("ok") and item.get("objective") is not None
+    ]
+    rel_threshold = float(poly.search.constraints.get("backend_sensitivity_rel_threshold", 0.20))
+    backend_sensitive = False
+    reasons: List[str] = []
+    if len(objectives) >= 2:
+        min_obj = min(objectives)
+        max_obj = max(objectives)
+        rel = (max_obj - min_obj) / max(min_obj, 1.0e-12)
+        backend_sensitive = rel >= rel_threshold
+        if backend_sensitive:
+            reasons.append(
+                f"objective varies across backend masks by {rel:.3f}, threshold={rel_threshold:.3f}"
+            )
+    failed = [mask for mask, item in per_backend.items() if not item.get("ok")]
+    if failed:
+        backend_sensitive = True
+        reasons.append(f"backend mask(s) failed: {failed}")
+
+    return {
+        "checked": True,
+        "backend_sensitive": backend_sensitive,
+        "reasons": reasons,
+        "per_backend": per_backend,
+    }
 
 
 def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProjectApp:
@@ -730,14 +744,16 @@ def _candidate_model_key(candidate: JsonDict) -> tuple[str, tuple[Any, ...]]:
 def _record_backend_score(record: JsonDict, target_backend: str | None) -> float:
     if not target_backend:
         return 0.0
-    analysis = record.get("runtime_feedback_analysis") or {}
+    analysis = record.get("backend_sensitivity") or {}
     per_backend = analysis.get("per_backend") if isinstance(analysis, dict) else None
     if not isinstance(per_backend, dict):
         return 0.0
     backend = per_backend.get(target_backend)
     if not isinstance(backend, dict):
         return 0.0
-    return float(backend.get("score", 0.0) or 0.0)
+    if not backend.get("ok"):
+        return -1.0
+    return 1.0
 
 
 def build_learned_candidate_model(records: Sequence[JsonDict], target_backend: str | None = None) -> Dict[tuple[str, tuple[Any, ...]], JsonDict]:
@@ -858,8 +874,8 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
         "transforms",
         "failure",
         "metrics",
-        "compiler_feedback",
-        "runtime_feedback_analysis",
+        "performance_feedback_analysis",
+        "backend_sensitivity",
         "params",
     ]
     with open(out_csv, "w", newline="", encoding="utf-8") as fp:
@@ -872,9 +888,12 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
             transforms = json.dumps(t.user_attrs.get("transforms", []))
             failure = t.user_attrs.get("failure", "")
             metrics = json.dumps(t.user_attrs.get("metrics", {}), sort_keys=True)
-            feedback = json.dumps(t.user_attrs.get("compiler_feedback", {}), sort_keys=True)
-            runtime_feedback_analysis = json.dumps(
-                t.user_attrs.get("runtime_feedback_analysis", {}),
+            feedback = json.dumps(
+                t.user_attrs.get("performance_feedback_analysis", {}),
+                sort_keys=True,
+            )
+            backend_sensitivity = json.dumps(
+                t.user_attrs.get("backend_sensitivity", {}),
                 sort_keys=True,
             )
             params = json.dumps(t.params, sort_keys=True)
@@ -889,7 +908,7 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
                     failure,
                     metrics,
                     feedback,
-                    runtime_feedback_analysis,
+                    backend_sensitivity,
                     params,
                 ]
             )
@@ -1023,11 +1042,11 @@ def candidate_args_invalid_for_node(name: str, args: Sequence[Any], node: Any) -
 def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
-    runtime_bias: Dict[str, JsonDict] | None = None,
+    performance_bias: Dict[str, JsonDict] | None = None,
 ) -> List[JsonDict]:
     candidates: List[JsonDict] = []
     candidate_pipeline = _candidate_pipeline_enabled(poly)
-    runtime_bias = runtime_bias or {}
+    performance_bias = performance_bias or {}
     for scop_idx, scop in enumerate(app.scops):
         for node_idx, node in enumerate(scop.schedule_tree):
             available = getattr(node, "available_transformations", [])
@@ -1051,16 +1070,16 @@ def enumerate_transform_candidates(
                             prediction = analytical_score(candidate, poly.search.constraints)
                             candidate["predictions"].update(prediction)
                         key = candidate_key(candidate)
-                        bias = runtime_bias.get(key)
+                        bias = performance_bias.get(key)
                         if bias:
-                            _apply_runtime_bias(candidate, bias, poly.search.constraints)
+                            _apply_performance_bias(candidate, bias, poly.search.constraints)
                         if poly.search.static_pruning:
                             reasons = static_prune_candidate(candidate, poly.search.constraints)
                             candidate["prune_reasons"].extend(reasons)
                         if poly.search.constraint_aware:
                             reasons = violates_constraints(candidate, poly.search.constraints)
                             candidate["prune_reasons"].extend(reasons)
-                            reasons = _runtime_bias_prune_reasons(candidate, poly.search.constraints)
+                            reasons = _performance_bias_prune_reasons(candidate, poly.search.constraints)
                             candidate["prune_reasons"].extend(reasons)
                         if candidate["prune_reasons"]:
                             continue
@@ -1155,6 +1174,7 @@ class AdaptiveTreeState:
     constraints: JsonDict
     rng: random.Random
     stats: Dict[str, PrefixStats] = field(default_factory=dict)
+    pair_stats: Dict[str, PrefixStats] = field(default_factory=dict)
     tried_sequences: set[str] = field(default_factory=set)
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
@@ -1182,6 +1202,19 @@ class AdaptiveTreeState:
 
         for i in range(1, len(specs) + 1):
             stat = self.get(specs[:i])
+            stat.visits += 1
+            stat.total_reward += reward
+            stat.best_reward = max(stat.best_reward, reward)
+            if status == "early_stop":
+                stat.early_stop_count += 1
+            elif status == "pruned":
+                stat.pruned_count += 1
+            elif status == "failed":
+                stat.failed_count += 1
+
+        for left, right in zip(specs, specs[1:]):
+            pair_key = stable_json_hash([_compact_transform_specs([left])[0], _compact_transform_specs([right])[0]])
+            stat = self.pair_stats.setdefault(pair_key, PrefixStats())
             stat.visits += 1
             stat.total_reward += reward
             stat.best_reward = max(stat.best_reward, reward)
@@ -1225,6 +1258,14 @@ class AdaptiveTreeState:
         stat = self.get(child)
         prior_score, neg_risk = candidate_rank_key(candidate)
         prior = 0.35 * prior_score + 0.15 * max(0.0, 1.0 + neg_risk)
+        if parent:
+            pair_key = stable_json_hash([
+                _compact_transform_specs([parent[-1]])[0],
+                _compact_transform_specs([candidate])[0],
+            ])
+            pair = self.pair_stats.get(pair_key)
+            if pair and pair.visits:
+                prior += max(-0.25, min(0.25, (pair.mean_reward - 1.0) * 0.4))
         if stat.visits == 0:
             novelty = float(self.constraints.get("tree_unvisited_bonus", 1.0))
             return novelty + prior + self.rng.random() * 1.0e-6
@@ -1286,17 +1327,39 @@ def sample_transform_sequence(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
     tree: AdaptiveTreeState,
-    runtime_bias: Dict[str, JsonDict] | None = None,
+    performance_bias: Dict[str, JsonDict] | None = None,
 ) -> List[JsonDict]:
-    initial_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
+    initial_candidates = enumerate_transform_candidates(app, poly, performance_bias)
     if not initial_candidates:
         return []
+
+    if bool(poly.search.constraints.get("single_transform_screening", True)):
+        limit = int(poly.search.constraints.get("single_transform_screening_limit", 0) or 0)
+        if limit <= 0:
+            limit = min(16, len(initial_candidates))
+        if tree.get([]).visits < limit:
+            for candidate in _sort_tree_candidates(initial_candidates, tree, []):
+                prefix = [candidate]
+                if sequence_signature(prefix) in tree.tried_sequences:
+                    continue
+                if tree.is_bad_prefix(prefix):
+                    continue
+                try:
+                    apply_transforms_to_scops(
+                        app.scops,
+                        prefix,
+                        legality_cb=lambda: app.legal,
+                    )
+                except InvalidTransformArgs:
+                    continue
+                tree.mark_tried(prefix)
+                return prefix
 
     max_transforms = max(1, min(poly.search.max_transforms_per_trial, len(initial_candidates)))
     chosen: List[JsonDict] = []
     used_exact: set[tuple[int, int, str, tuple[Any, ...]]] = set()
     for _pos in range(max_transforms):
-        current_candidates = enumerate_transform_candidates(app, poly, runtime_bias)
+        current_candidates = enumerate_transform_candidates(app, poly, performance_bias)
         if not current_candidates:
             break
 
@@ -1362,8 +1425,6 @@ def make_project_app(
 ) -> SyclProjectApp:
     ensure_tadashi_available()
     compiler_options = list(poly.flags)
-    if poly.search.compiler_feedback:
-        compiler_options.extend(poly.search.compiler_feedback_flags)
     run_env: Dict[str, str] = {}
     if poly.search.target_backend:
         run_env["ACPP_VISIBILITY_MASK"] = str(poly.search.target_backend)
@@ -1427,6 +1488,114 @@ def _speedup_for_primary(cfg: Config, baseline_value: float, value: float) -> fl
     return baseline_value / value
 
 
+_SYCL_KERNEL_METRIC_RE = re.compile(r"^sycl_kernel_(\d+)_(avg|sum)_s$")
+
+
+def _kernel_metrics(metrics: Dict[str, float]) -> Dict[int, float]:
+    kernels: Dict[int, float] = {}
+    for name, value in metrics.items():
+        match = _SYCL_KERNEL_METRIC_RE.match(str(name))
+        if not match:
+            continue
+        label = match.group(2)
+        if label != "avg":
+            continue
+        kernels[int(match.group(1))] = float(value)
+    if kernels:
+        return kernels
+    for name, value in metrics.items():
+        match = _SYCL_KERNEL_METRIC_RE.match(str(name))
+        if match:
+            kernels[int(match.group(1))] = float(value)
+    return kernels
+
+
+def analyze_kernel_timing_deltas(
+    baseline_metrics: Dict[str, float],
+    metrics: Dict[str, float],
+    specs: List[JsonDict],
+) -> JsonDict:
+    baseline_kernels = _kernel_metrics(baseline_metrics)
+    candidate_kernels = _kernel_metrics(metrics)
+    common = sorted(set(baseline_kernels) & set(candidate_kernels))
+    per_kernel: Dict[str, JsonDict] = {}
+    regressions: List[tuple[int, float]] = []
+    improvements: List[tuple[int, float]] = []
+    for kernel_id in common:
+        baseline = baseline_kernels[kernel_id]
+        candidate = candidate_kernels[kernel_id]
+        if baseline <= 0.0:
+            continue
+        ratio = candidate / baseline
+        entry = {
+            "baseline": baseline,
+            "candidate": candidate,
+            "ratio": ratio,
+            "speedup": baseline / candidate if candidate > 0.0 else 0.0,
+        }
+        per_kernel[str(kernel_id)] = entry
+        if ratio > 1.05:
+            regressions.append((kernel_id, ratio))
+        elif ratio < 0.95:
+            improvements.append((kernel_id, ratio))
+
+    if not common:
+        classification = "no_kernel_detail"
+    elif len(regressions) == 1:
+        classification = "single_kernel_regression"
+    elif len(regressions) > 1 and len(regressions) >= max(2, len(common) // 2):
+        classification = "broad_kernel_regression"
+    elif improvements and not regressions:
+        classification = "kernel_improvement"
+    elif regressions:
+        classification = "mixed_kernel_regression"
+    else:
+        classification = "kernel_neutral"
+
+    worst_kernel = None
+    worst_ratio = 1.0
+    if regressions:
+        worst_kernel, worst_ratio = max(regressions, key=lambda item: item[1])
+
+    attribution = []
+    for spec in specs:
+        attribution.append(
+            {
+                "scop": int(spec.get("scop", -1)),
+                "node": int(spec.get("node", -1)),
+                "transform": str(spec.get("tr", "")),
+                "args": list(spec.get("args", [])),
+                "suspected_kernel": worst_kernel,
+                "confidence": "heuristic" if worst_kernel is not None else "none",
+            }
+        )
+
+    return {
+        "classification": classification,
+        "per_kernel": per_kernel,
+        "worst_kernel": worst_kernel,
+        "worst_ratio": worst_ratio,
+        "improved_kernel_count": len(improvements),
+        "regressed_kernel_count": len(regressions),
+        "attribution": attribution,
+    }
+
+
+def classify_performance_regression(
+    cfg: Config,
+    baseline_value: float,
+    value: float,
+    kernel_analysis: JsonDict,
+) -> str:
+    speedup = _speedup_for_primary(cfg, baseline_value, value)
+    if speedup >= 1.0:
+        return "objective_improvement"
+    classification = str(kernel_analysis.get("classification", "no_kernel_detail"))
+    if classification != "no_kernel_detail":
+        return classification
+    return "objective_regression"
+
+
 def _is_bad_first_fidelity(cfg: Config, baseline_value: float, value: float, worse_than: float) -> bool:
     if value <= 0.0 or baseline_value <= 0.0:
         return False
@@ -1450,7 +1619,7 @@ def _backend_specific_best(study: optuna.study.Study, cfg: Config) -> JsonDict:
     for trial in study.trials:
         if trial.state != optuna.trial.TrialState.COMPLETE:
             continue
-        analysis = trial.user_attrs.get("runtime_feedback_analysis") or {}
+        analysis = trial.user_attrs.get("backend_sensitivity") or {}
         per_backend = analysis.get("per_backend") or {}
         if not isinstance(per_backend, dict):
             continue
@@ -1459,16 +1628,17 @@ def _backend_specific_best(study: optuna.study.Study, cfg: Config) -> JsonDict:
         for backend, backend_analysis in per_backend.items():
             if not isinstance(backend_analysis, dict):
                 continue
-            quality = speedup + float(backend_analysis.get("score", 0.0) or 0.0)
+            objective = backend_analysis.get("objective", value)
+            quality = speedup if backend_analysis.get("ok") else -1.0
             current = best.get(str(backend))
             if current is None or quality > float(current.get("quality", float("-inf"))):
                 best[str(backend)] = {
                     "trial": trial.number,
                     "quality": quality,
-                    "objective": value,
+                    "objective": objective,
                     "speedup": speedup,
                     "transforms": trial.user_attrs.get("transforms", []),
-                    "runtime_feedback": backend_analysis,
+                    "backend_sensitivity": backend_analysis,
                 }
     return best
 
@@ -1513,18 +1683,17 @@ def _candidate_pipeline_enabled(poly: PolyMorphSpec) -> bool:
     )
 
 
-def _apply_runtime_bias(candidate: JsonDict, bias: JsonDict, constraints: JsonDict) -> None:
+def _apply_performance_bias(candidate: JsonDict, bias: JsonDict, constraints: JsonDict) -> None:
     predictions = candidate.setdefault("predictions", {})
     base_score = float(predictions.get("score", 0.5) or 0.5)
     base_risk = float(predictions.get("risk", 0.1) or 0.1)
     penalty = float(bias.get("penalty", 0.0) or 0.0)
     bonus = float(bias.get("bonus", 0.0) or 0.0)
-    weight = float(constraints.get("runtime_feedback_bias_weight", 0.35))
+    weight = float(constraints.get("performance_feedback_bias_weight", 0.35))
 
-    predictions["runtime_penalty"] = penalty
-    predictions["runtime_bonus"] = bonus
-    predictions["runtime_observations"] = int(bias.get("observations", 0) or 0)
-    predictions["runtime_backend_sensitive"] = bool(bias.get("backend_sensitive"))
+    predictions["performance_penalty"] = penalty
+    predictions["performance_bonus"] = bonus
+    predictions["performance_observations"] = int(bias.get("observations", 0) or 0)
     predictions["score"] = max(0.0, min(1.0, base_score - weight * penalty + 0.5 * weight * bonus))
     predictions["risk"] = max(0.0, min(1.0, base_risk + weight * penalty))
     reasons = predictions.setdefault("reasons", [])
@@ -1532,38 +1701,45 @@ def _apply_runtime_bias(candidate: JsonDict, bias: JsonDict, constraints: JsonDi
         reasons.extend(str(reason) for reason in bias.get("reasons", [])[:5])
 
 
-def _runtime_bias_prune_reasons(candidate: JsonDict, constraints: JsonDict) -> List[str]:
+def _performance_bias_prune_reasons(candidate: JsonDict, constraints: JsonDict) -> List[str]:
     predictions = candidate.get("predictions", {}) or {}
-    observations = int(predictions.get("runtime_observations", 0) or 0)
-    if observations < int(constraints.get("runtime_feedback_min_observations_for_prune", 1)):
+    observations = int(predictions.get("performance_observations", 0) or 0)
+    if observations < int(constraints.get("performance_feedback_min_observations_for_prune", 1)):
         return []
 
     reasons: List[str] = []
-    max_penalty = constraints.get("max_runtime_feedback_penalty")
-    penalty = float(predictions.get("runtime_penalty", 0.0) or 0.0)
+    max_penalty = constraints.get("max_performance_feedback_penalty")
+    penalty = float(predictions.get("performance_penalty", 0.0) or 0.0)
     if max_penalty is not None and penalty > float(max_penalty):
-        reasons.append(f"runtime feedback penalty {penalty:.3f} exceeds max_runtime_feedback_penalty={max_penalty}")
-
-    if bool(predictions.get("runtime_backend_sensitive")) and constraints.get("prune_backend_sensitive"):
-        reasons.append("runtime feedback marks transform as backend-sensitive")
+        reasons.append(f"performance feedback penalty {penalty:.3f} exceeds max_performance_feedback_penalty={max_penalty}")
 
     return reasons
 
 
-def _update_runtime_bias(
-    runtime_bias: Dict[str, JsonDict],
+def _update_performance_bias(
+    performance_bias: Dict[str, JsonDict],
     specs: List[JsonDict],
+    speedup: float,
     analysis: JsonDict,
 ) -> None:
-    if not specs or not analysis:
+    if not specs:
         return
-    penalty = float(analysis.get("penalty", 0.0) or 0.0)
-    bonus = float(analysis.get("bonus", 0.0) or 0.0)
-    backend_sensitive = bool(analysis.get("backend_sensitive"))
-    reasons = list(analysis.get("reasons", []) or [])
+    regression = str(analysis.get("regression", ""))
+    kernel_timing = analysis.get("kernel_timing", {}) or {}
+    worst_ratio = float(kernel_timing.get("worst_ratio", 1.0) or 1.0)
+    penalty = max(0.0, min(1.0, 1.0 - speedup))
+    if regression in {"single_kernel_regression", "mixed_kernel_regression", "broad_kernel_regression"}:
+        penalty = max(penalty, min(1.0, 0.2 * max(0.0, worst_ratio - 1.0)))
+    bonus = max(0.0, min(0.5, speedup - 1.0))
+    reasons = [regression] if regression else []
+    if kernel_timing.get("worst_kernel") is not None:
+        reasons.append(
+            f"worst kernel {kernel_timing.get('worst_kernel')} ratio={worst_ratio:.3f}"
+        )
+
     for spec in specs:
         key = candidate_key(spec)
-        current = runtime_bias.setdefault(
+        current = performance_bias.setdefault(
             key,
             {
                 "observations": 0,
@@ -1577,7 +1753,6 @@ def _update_runtime_bias(
         current["observations"] = n + 1
         current["penalty"] = ((float(current.get("penalty", 0.0) or 0.0) * n) + penalty) / (n + 1)
         current["bonus"] = ((float(current.get("bonus", 0.0) or 0.0) * n) + bonus) / (n + 1)
-        current["backend_sensitive"] = bool(current.get("backend_sensitive")) or backend_sensitive
         merged_reasons = list(current.get("reasons", []) or [])
         merged_reasons.extend(reasons[:5])
         current["reasons"] = merged_reasons[-10:]
@@ -1699,20 +1874,14 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     if poly.search.enumerate_only:
         return 0
 
-    baseline_runtime_feedback: Dict[str, JsonDict] = {}
-    baseline_runtime_analysis: JsonDict = {}
-    if poly.search.runtime_feedback:
-        baseline_runtime_feedback = collect_runtime_feedback(baseline_app, poly, cfg)
-        baseline_runtime_analysis = analyze_runtime_feedback(
-            baseline_runtime_feedback,
-            constraints=poly.search.constraints,
-        )
+    baseline_backend_sensitivity = collect_backend_sensitivity(baseline_app, poly, cfg)
+    if baseline_backend_sensitivity.get("checked"):
         print(
-            "Baseline runtime feedback: "
-            f"score={baseline_runtime_analysis.get('score', '')}, "
-            f"penalty={baseline_runtime_analysis.get('penalty', '')}, "
-            f"backend_sensitive={baseline_runtime_analysis.get('backend_sensitive', False)}"
+            "Baseline backend sensitivity: "
+            f"backend_sensitive={baseline_backend_sensitivity.get('backend_sensitive', False)}"
         )
+        for reason in baseline_backend_sensitivity.get("reasons", []):
+            print(f"  - {reason}")
 
     source_hash = file_hash(source)
     source_structural_signature = structural_signature(candidates)
@@ -1736,7 +1905,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             print(f"Loaded learned candidate model with {len(learned_model)} transform key(s).")
         if poly.search.analytical_model and poly.search.top_k:
             candidates = select_diverse_top_k(candidates, poly.search.top_k)
-    runtime_bias: Dict[str, JsonDict] = {}
+    performance_bias: Dict[str, JsonDict] = {}
     tree_state = AdaptiveTreeState(
         constraints=poly.search.constraints,
         rng=random.Random(poly.search.seed),
@@ -1774,7 +1943,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial, trial_app, poly, tree_state, runtime_bias)
+            specs = sample_transform_sequence(trial, trial_app, poly, tree_state, performance_bias)
             if not specs:
                 raise optuna.TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
@@ -1800,13 +1969,12 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 trial.set_user_attr("runtime", obj_values[0])
                 trial.set_user_attr("metrics", metrics)
                 trial.set_user_attr("speedup", speedup)
-                trial.set_user_attr("compiler_feedback", cached.get("compiler_feedback", {}))
-                trial.set_user_attr("runtime_feedback", cached.get("runtime_feedback", {}))
                 trial.set_user_attr("correctness", cached.get("correctness", {}))
                 trial.set_user_attr(
-                    "runtime_feedback_analysis",
-                    cached.get("runtime_feedback_analysis", {}),
+                    "performance_feedback_analysis",
+                    cached.get("performance_feedback_analysis", {}),
                 )
+                trial.set_user_attr("backend_sensitivity", cached.get("backend_sensitivity", {}))
                 print(f"Trial {trial.number}: cache hit objective={obj_values[0]}, transforms={specs}")
                 return obj_values if is_multi else obj_values[0]
 
@@ -1824,12 +1992,6 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             )
 
             build_app_or_raise(transformed_app)
-            compile_feedback = {}
-            if poly.search.compiler_feedback:
-                compile_feedback = parse_compiler_feedback(
-                    getattr(transformed_app, "last_build_stdout", ""),
-                    getattr(transformed_app, "last_build_stderr", ""),
-                )
 
             if poly.search.multi_fidelity and poly.search.repeat > 1:
                 early_stop_warmups = int(
@@ -1842,8 +2004,26 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 with temporary_metric_warmup_runs(cfg, early_stop_warmups):
                     first_metrics = measure_metrics_or_raise(transformed_app, early_stop_runs, cfg)
                 first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
+                first_kernel_analysis = analyze_kernel_timing_deltas(
+                    baseline_metrics,
+                    first_metrics,
+                    specs,
+                )
+                first_regression = classify_performance_regression(
+                    cfg,
+                    baseline_value,
+                    first_value,
+                    first_kernel_analysis,
+                )
                 trial.set_user_attr("first_fidelity_metrics", first_metrics)
                 trial.set_user_attr("first_fidelity_warmup_runs", early_stop_warmups)
+                trial.set_user_attr(
+                    "first_fidelity_performance_feedback",
+                    {
+                        "kernel_timing": first_kernel_analysis,
+                        "regression": first_regression,
+                    },
+                )
                 if _is_bad_first_fidelity(
                     cfg,
                     baseline_value,
@@ -1856,6 +2036,15 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                         _tree_reward_for_value(cfg, baseline_value, first_value),
                         "early_stop",
                     )
+                    _update_performance_bias(
+                        performance_bias,
+                        specs,
+                        _speedup_for_primary(cfg, baseline_value, first_value),
+                        {
+                            "kernel_timing": first_kernel_analysis,
+                            "regression": first_regression,
+                        },
+                    )
                     trial.set_user_attr("tree_updated", True)
                     raise optuna.TrialPruned(
                         f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
@@ -1866,29 +2055,31 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
             obj_values = _objective_values_from_metrics(cfg, metrics)
             value = obj_values[0]
+            kernel_analysis = analyze_kernel_timing_deltas(baseline_metrics, metrics, specs)
+            regression_class = classify_performance_regression(
+                cfg,
+                baseline_value,
+                value,
+                kernel_analysis,
+            )
+            performance_feedback_analysis = {
+                "kernel_timing": kernel_analysis,
+                "regression": regression_class,
+            }
+            trial.set_user_attr("performance_feedback_analysis", performance_feedback_analysis)
             correctness = verify_correctness_outputs(baseline_correctness_outputs, transformed_app, cfg, poly)
             if correctness.get("checked"):
                 trial.set_user_attr("correctness", correctness)
                 if not correctness.get("ok", False):
                     raise optuna.TrialPruned(f"correctness check failed: {correctness}")
 
-            runtime_feedback = collect_runtime_feedback(transformed_app, poly, cfg)
-            runtime_feedback_analysis = analyze_runtime_feedback(
-                runtime_feedback,
-                baseline=baseline_runtime_feedback,
-                constraints=poly.search.constraints,
-            ) if runtime_feedback else {}
-            if runtime_feedback_analysis:
-                trial.set_user_attr("runtime_feedback_analysis", runtime_feedback_analysis)
-                _update_runtime_bias(runtime_bias, specs, runtime_feedback_analysis)
-            feedback = merge_feedback(compile_feedback, runtime_feedback)
-            if feedback:
-                trial.set_user_attr("compiler_feedback", feedback)
-            if runtime_feedback:
-                trial.set_user_attr("runtime_feedback", runtime_feedback)
+            backend_sensitivity = collect_backend_sensitivity(transformed_app, poly, cfg)
+            if backend_sensitivity.get("checked"):
+                trial.set_user_attr("backend_sensitivity", backend_sensitivity)
 
             speedup = _speedup_for_primary(cfg, baseline_value, value)
             tree_state.update(specs, max(0.0, speedup), "complete")
+            _update_performance_bias(performance_bias, specs, speedup, performance_feedback_analysis)
             trial.set_user_attr("tree_updated", True)
 
             trial.set_user_attr("runtime", value)
@@ -1909,8 +2100,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "metrics": metrics,
                     "objectives": obj_values,
                     "speedup": speedup,
-                    "compiler_feedback": feedback,
-                    "runtime_feedback_analysis": runtime_feedback_analysis,
+                    "performance_feedback_analysis": performance_feedback_analysis,
+                    "backend_sensitivity": backend_sensitivity,
                     "correctness": correctness,
                 },
             )
@@ -1927,9 +2118,8 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 "metrics": metrics,
                 "objectives": obj_values,
                 "speedup": speedup,
-                "compiler_feedback": feedback,
-                "runtime_feedback": runtime_feedback,
-                "runtime_feedback_analysis": runtime_feedback_analysis,
+                "performance_feedback_analysis": performance_feedback_analysis,
+                "backend_sensitivity": backend_sensitivity,
                 "correctness": correctness,
             }
             evaluation_cache[cache_key] = record
@@ -1939,6 +2129,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             specs = trial.user_attrs.get("transforms", [])
             if specs and not trial.user_attrs.get("tree_updated", False):
                 tree_state.update(specs, 0.0, "pruned")
+            pruned_feedback = trial.user_attrs.get("first_fidelity_performance_feedback", {})
             append_history(
                 poly.search.history_jsonl,
                 {
@@ -1950,6 +2141,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "sequence_features": sequence_feature_summary(specs),
                     "target_backend": poly.search.target_backend,
                     "transforms": specs,
+                    "performance_feedback_analysis": pruned_feedback,
                     "failure": str(exc),
                 },
             )
@@ -1965,6 +2157,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "target_backend": poly.search.target_backend,
                     "transform_signature": sequence_signature(specs),
                     "transforms": specs,
+                    "performance_feedback_analysis": pruned_feedback,
                     "failure": str(exc),
                 }
                 evaluation_cache[cache_key] = record
@@ -2038,8 +2231,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             result = {
                 "baseline_runtime": baseline_value,
                 "baseline_metrics": baseline_metrics,
-                "baseline_runtime_feedback": baseline_runtime_feedback,
-                "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
+                "baseline_backend_sensitivity": baseline_backend_sensitivity,
                 "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
                 "target_backend": poly.search.target_backend,
                 "completed_trials": 0,
@@ -2074,8 +2266,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         result = {
             "baseline_runtime": baseline_value,
             "baseline_metrics": baseline_metrics,
-            "baseline_runtime_feedback": baseline_runtime_feedback,
-            "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
+            "baseline_backend_sensitivity": baseline_backend_sensitivity,
             "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
             "target_backend": poly.search.target_backend,
             "best_runtime": best_runtime,

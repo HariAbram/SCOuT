@@ -233,8 +233,6 @@ class PolyMorphSearchSpec:
     static_pruning: bool = False
     analytical_model: bool = False
     constraint_aware: bool = False
-    compiler_feedback: bool = False
-    runtime_feedback: bool = False
     case_retrieval: bool = False
     structural_retrieval: bool = True
     cache_jsonl: str | None = None
@@ -246,11 +244,8 @@ class PolyMorphSearchSpec:
     history_jsonl: str | None = None
     pareto_csv: str | None = None
     constraints: Dict[str, Any] = dataclasses.field(default_factory=dict)
-    compiler_feedback_flags: List[str] = dataclasses.field(default_factory=list)
-    runtime_feedback_masks: List[str] = dataclasses.field(default_factory=list)
-    runtime_feedback_debug_level: int = 4
-    runtime_feedback_repeat: int = 1
-    runtime_feedback_env: Dict[str, str] = dataclasses.field(default_factory=dict)
+    backend_sensitivity_masks: List[str] = dataclasses.field(default_factory=list)
+    backend_sensitivity_repeat: int = 1
     legality_aware_args: bool = True
     correctness_outputs: List[str] = dataclasses.field(default_factory=list)
     correctness_tolerance: float = 1.0e-6
@@ -283,8 +278,6 @@ class PolyMorphSearchSpec:
             static_pruning=bool(data.get("static_pruning", False)),
             analytical_model=bool(data.get("analytical_model", False)),
             constraint_aware=bool(data.get("constraint_aware", False)),
-            compiler_feedback=bool(data.get("compiler_feedback", False)),
-            runtime_feedback=bool(data.get("runtime_feedback", False)),
             case_retrieval=bool(data.get("case_retrieval", False)),
             structural_retrieval=bool(data.get("structural_retrieval", True)),
             cache_jsonl=data.get("cache_jsonl"),
@@ -296,20 +289,11 @@ class PolyMorphSearchSpec:
             history_jsonl=data.get("history_jsonl"),
             pareto_csv=data.get("pareto_csv"),
             constraints=dict(data.get("constraints", {}) or {}),
-            compiler_feedback_flags=[
-                str(flag) for flag in data.get("compiler_feedback_flags", [])
-                if str(flag).strip()
-            ],
-            runtime_feedback_masks=[
-                str(mask) for mask in data.get("runtime_feedback_masks", [])
+            backend_sensitivity_masks=[
+                str(mask) for mask in data.get("backend_sensitivity_masks", [])
                 if str(mask).strip()
             ],
-            runtime_feedback_debug_level=int(data.get("runtime_feedback_debug_level", 4)),
-            runtime_feedback_repeat=int(data.get("runtime_feedback_repeat", 1)),
-            runtime_feedback_env={
-                str(k): str(v)
-                for k, v in dict(data.get("runtime_feedback_env", {}) or {}).items()
-            },
+            backend_sensitivity_repeat=int(data.get("backend_sensitivity_repeat", 1)),
             legality_aware_args=bool(data.get("legality_aware_args", True)),
             correctness_outputs=[str(path) for path in data.get("correctness_outputs", [])],
             correctness_tolerance=float(data.get("correctness_tolerance", 1.0e-6)),

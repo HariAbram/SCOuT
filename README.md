@@ -32,3 +32,4 @@ An optional `polymorph` mode is also available for Tadashi-based SYCL transforma
 
 - Architecture and configuration: [docs/architecture.md](/home/hari/git/SCOuT/docs/architecture.md)
 - Search methods: [docs/search-algorithms.md](/home/hari/git/SCOuT/docs/search-algorithms.md)
+- polyMorph adaptive tree search: [docs/polymorph-adaptive-tree-search.md](/home/hari/git/SCOuT/docs/polymorph-adaptive-tree-search.md)

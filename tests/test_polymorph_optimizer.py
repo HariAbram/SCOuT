@@ -11,15 +11,11 @@ from contextlib import redirect_stdout
 
 from src.config import PolyMorphSearchSpec
 from src.polyMorph.features import enrich_candidate, sequence_feature_summary, structural_signature
-from src.polyMorph.feedback import (
-    analyze_runtime_feedback,
-    parse_adaptivecpp_runtime_feedback,
-    parse_compiler_feedback,
-)
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import (
     AdaptiveTreeState,
+    analyze_kernel_timing_deltas,
     append_evaluation_cache,
     apply_learned_model_to_candidates,
     build_learned_candidate_model,
@@ -47,7 +43,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.static_pruning)
         self.assertFalse(spec.analytical_model)
         self.assertFalse(spec.constraint_aware)
-        self.assertFalse(spec.compiler_feedback)
         self.assertFalse(spec.case_retrieval)
         self.assertIn("SET_PARALLEL", spec.block_transforms)
 
@@ -57,8 +52,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "static_pruning": True,
                 "analytical_model": True,
                 "constraint_aware": True,
-                "compiler_feedback": True,
-                "runtime_feedback": True,
                 "case_retrieval": True,
                 "structural_retrieval": False,
                 "cache_jsonl": "/tmp/polymorph-cache.jsonl",
@@ -71,11 +64,8 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "pareto_csv": "/tmp/pareto.csv",
                 "constraints": {"max_tile_size": 64},
                 "block_transforms": [],
-                "compiler_feedback_flags": ["-Rpass=loop-vectorize"],
-                "runtime_feedback_masks": ["omp", "cuda"],
-                "runtime_feedback_debug_level": 4,
-                "runtime_feedback_repeat": 1,
-                "runtime_feedback_env": {"XDG_CACHE_HOME": "/tmp/acpp-cache"},
+                "backend_sensitivity_masks": ["omp", "cuda"],
+                "backend_sensitivity_repeat": 2,
                 "legality_aware_args": False,
                 "correctness_outputs": ["result.txt"],
                 "correctness_tolerance": 1.0e-4,
@@ -88,8 +78,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(spec.static_pruning)
         self.assertTrue(spec.analytical_model)
         self.assertTrue(spec.constraint_aware)
-        self.assertTrue(spec.compiler_feedback)
-        self.assertTrue(spec.runtime_feedback)
         self.assertTrue(spec.case_retrieval)
         self.assertFalse(spec.structural_retrieval)
         self.assertEqual(spec.cache_jsonl, "/tmp/polymorph-cache.jsonl")
@@ -100,8 +88,8 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(spec.retrieval_top_k, 2)
         self.assertEqual(spec.constraints["max_tile_size"], 64)
         self.assertEqual(spec.block_transforms, [])
-        self.assertEqual(spec.runtime_feedback_masks, ["omp", "cuda"])
-        self.assertEqual(spec.runtime_feedback_env["XDG_CACHE_HOME"], "/tmp/acpp-cache")
+        self.assertEqual(spec.backend_sensitivity_masks, ["omp", "cuda"])
+        self.assertEqual(spec.backend_sensitivity_repeat, 2)
         self.assertFalse(spec.legality_aware_args)
         self.assertEqual(spec.correctness_outputs, ["result.txt"])
         self.assertEqual(spec.correctness_tolerance, 1.0e-4)
@@ -147,89 +135,21 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         )
         self.assertTrue(any("scop=0, node=2" in reason for reason in reasons))
 
-    def test_feedback_parser_finds_vectorization_and_pressure_hints(self) -> None:
-        feedback = parse_compiler_feedback(
-            stderr=(
-                "remark: loop vectorized\n"
-                "warning: loop not vectorized: unsafe dependency\n"
-                "register pressure is high\n"
-            )
+    def test_kernel_timing_delta_classifies_single_kernel_regression(self) -> None:
+        analysis = analyze_kernel_timing_deltas(
+            {
+                "sycl_kernel_1_avg_s": 1.0,
+                "sycl_kernel_2_avg_s": 1.0,
+            },
+            {
+                "sycl_kernel_1_avg_s": 1.0,
+                "sycl_kernel_2_avg_s": 1.6,
+            },
+            [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}],
         )
-        self.assertEqual(feedback["vectorized_count"], 1)
-        self.assertEqual(feedback["missed_vectorization_count"], 1)
-        self.assertTrue(feedback["register_pressure_hint"])
-
-    def test_adaptivecpp_runtime_feedback_parser_counts_jit_signals(self) -> None:
-        feedback = parse_adaptivecpp_runtime_feedback(
-            stdout=(
-                "[AdaptiveCpp Info] backend_loader: Successfully opened plugin: librt-backend-omp.so\n"
-                "[AdaptiveCpp Info] Registering backend: 'omp'...\n"
-                "[AdaptiveCpp Info] kernel_cache: Registering kernel foo\n"
-                "[AdaptiveCpp Info] hcf_cache: Registering HCF object 123...\n"
-                "[AdaptiveCpp Info] hcf_cache: Registering kernel info for kernel foo\n"
-                "[AdaptiveCpp Info] adaptivity_engine: Inferred pointer alignment of 32 for kernel argument 0\n"
-                "[AdaptiveCpp Info] adaptivity_engine: Inferred noalias pointer semantics for kernel argument 0\n"
-                "[AdaptiveCpp Info] kernel_cache: Persistent cache hit for id 1.2\n"
-                "[AdaptiveCpp Info] Load module: /tmp/a.jit.so\n"
-                "[AdaptiveCpp Info] omp_queue: Successfully compiled SSCP kernels to module 0x1\n"
-                "[AdaptiveCpp Info] omp_queue: Submitting kernel...\n"
-                "[AdaptiveCpp Info] runtime: ******* rt shutdown ********\n"
-            ),
-            mask="omp",
-        )
-        self.assertEqual(feedback["backend_plugin_count"], 1)
-        self.assertEqual(feedback["registered_backend_count"], 1)
-        self.assertEqual(feedback["registered_kernel_count"], 1)
-        self.assertEqual(feedback["hcf_object_count"], 1)
-        self.assertEqual(feedback["pointer_alignment_count"], 1)
-        self.assertEqual(feedback["noalias_count"], 1)
-        self.assertEqual(feedback["cache_hit_count"], 1)
-        self.assertEqual(feedback["jit_compile_hint_count"], 2)
-        self.assertTrue(feedback["rt_shutdown"])
-
-    def test_runtime_feedback_analysis_penalizes_and_marks_backend_sensitivity(self) -> None:
-        runtime_feedback = {
-            "omp": {
-                "error_count": 0,
-                "warning_count": 1,
-                "cache_hit_count": 100,
-                "cache_miss_count": 0,
-                "jit_compile_hint_count": 2,
-                "kernel_submit_count": 20,
-                "memcpy_submit_count": 30,
-                "rt_shutdown": True,
-            },
-            "cuda": {
-                "error_count": 2,
-                "warning_count": 12,
-                "cache_hit_count": 10,
-                "cache_miss_count": 4,
-                "jit_compile_hint_count": 50,
-                "kernel_submit_count": 20,
-                "memcpy_submit_count": 200,
-                "rt_shutdown": False,
-            },
-        }
-        baseline = {
-            "omp": {
-                "jit_compile_hint_count": 2,
-                "kernel_submit_count": 20,
-                "memcpy_submit_count": 30,
-            },
-            "cuda": {
-                "jit_compile_hint_count": 2,
-                "kernel_submit_count": 20,
-                "memcpy_submit_count": 30,
-            },
-        }
-        analysis = analyze_runtime_feedback(
-            runtime_feedback,
-            baseline=baseline,
-            constraints={"runtime_jit_threshold": 5},
-        )
-        self.assertGreater(analysis["penalty"], 0.0)
-        self.assertTrue(analysis["backend_sensitive"])
-        self.assertLess(analysis["score"], 1.0)
+        self.assertEqual(analysis["classification"], "single_kernel_regression")
+        self.assertEqual(analysis["worst_kernel"], 2)
+        self.assertEqual(analysis["attribution"][0]["suspected_kernel"], 2)
 
     def test_history_retrieves_available_successful_sequence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -411,8 +331,8 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                     "status": "complete",
                     "speedup": 1.5,
                     "transforms": [{"tr": "TILE_1D", "args": [32]}],
-                    "runtime_feedback_analysis": {
-                        "per_backend": {"cuda": {"score": 0.8}},
+                    "backend_sensitivity": {
+                        "per_backend": {"cuda": {"ok": True, "objective": 1.0}},
                     },
                 }
             ],

@@ -55,10 +55,21 @@ Code: [src/searchMethods/anneal_flags.py](/home/hari/git/SCOuT/src/searchMethods
 - Helps escape local minima
 - Useful as a lightweight heuristic alternative
 
+### polyMorph Adaptive Tree Search
+
+Code: [src/polyMorph/runner.py](/home/hari/git/SCOuT/src/polyMorph/runner.py)
+
+- Sequential search over Tadashi transformation prefixes
+- Re-enumerates legal transformations after each applied transformation
+- Learns prefix statistics from completed, pruned, failed, cached, and historical evaluations
+- Prunes subtrees whose prefixes are repeatedly worse than baseline
+- Detailed description: [docs/polymorph-adaptive-tree-search.md](/home/hari/git/SCOuT/docs/polymorph-adaptive-tree-search.md)
+
 ## Practical guidance
 
 - Use Optuna for the most reliable default.
 - Use wavefront when you want structured flag-combination exploration.
 - Use tabu when you want richer local search over a mixed configuration space.
 - Use annealing when you want a simpler stochastic local search.
+- Use polyMorph adaptive tree search for Tadashi-based loop transformation search.
 - Treat beam-tabu as experimental until its config path is cleaned up.

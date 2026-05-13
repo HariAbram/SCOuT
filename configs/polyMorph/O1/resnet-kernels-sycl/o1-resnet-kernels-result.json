@@ -7,28 +7,6 @@
     "sycl_avg_sum_s": 0.0078885,
     "sycl_iters": 100.0
   },
-  "baseline_runtime_feedback_analysis": {
-    "score": 0.85,
-    "penalty": 0.15,
-    "bonus": 0.0,
-    "backend_sensitive": false,
-    "backend_sensitivity_reasons": [],
-    "per_backend": {
-      "omp": {
-        "penalty": 0.15,
-        "bonus": 0.0,
-        "score": 0.85,
-        "cache_hit_rate": 0.0,
-        "memcpy_per_kernel": 0.0,
-        "reasons": [
-          "runtime shutdown marker missing"
-        ]
-      }
-    },
-    "reasons": [
-      "omp: runtime shutdown marker missing"
-    ]
-  },
   "best_runtime": 0.003377,
   "best_speedup": 2.3359490672194254,
   "best_transforms": [
@@ -139,17 +117,7 @@
           },
           "prune_reasons": []
         }
-      ],
-      "runtime_feedback": {
-        "penalty": 0.15,
-        "bonus": 0.0,
-        "score": 0.85,
-        "cache_hit_rate": 0.0,
-        "memcpy_per_kernel": 0.0,
-        "reasons": [
-          "runtime shutdown marker missing"
-        ]
-      }
+      ]
     }
   }
 }
