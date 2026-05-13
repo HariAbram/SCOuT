@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O2/burger-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/burger-search",
     "runtime_args": ["8193", "8193", "100"],

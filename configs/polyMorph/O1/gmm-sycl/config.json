@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O1/gmm-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O1"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/gmm-search",
     "runtime_args": ["500", "data", "result"],

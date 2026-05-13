@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O2/particlefilter-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/particlefilter-search",
     "runtime_args": ["-x", "128", "-y", "128", "-z", "10", "-np", "400000"],

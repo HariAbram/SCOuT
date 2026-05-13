@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O2/bfs-sycl/bfs.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/bfs-search",
     "runtime_args": ["data/graph1MW_6.txt"],

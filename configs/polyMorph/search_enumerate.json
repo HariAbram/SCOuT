@@ -18,7 +18,7 @@
     "source": "test-benchmarks/microSYCL/src/main.cpp",
     "compiler": "acpp",
     "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "bin/main-acpp-generic",
     "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],

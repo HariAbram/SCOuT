@@ -10,12 +10,11 @@ import shutil
 import shlex
 import subprocess
 import stat
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
-
-import optuna
 
 from src.config import BuildProject, Config, PolyMorphSpec
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
@@ -53,6 +52,22 @@ JsonDict = Dict[str, Any]
 
 class InvalidTransformArgs(RuntimeError):
     pass
+
+
+class TrialPruned(RuntimeError):
+    pass
+
+
+@dataclass
+class NativeTrial:
+    number: int
+    state: str = "RUNNING"
+    values: List[float] | None = None
+    user_attrs: JsonDict = field(default_factory=dict)
+    params: JsonDict = field(default_factory=dict)
+
+    def set_user_attr(self, key: str, value: Any) -> None:
+        self.user_attrs[key] = value
 
 
 @contextmanager
@@ -543,7 +558,7 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
                 f"stdout:\n{proc.stdout}"
             )
         values.append(value)
-    return {"runtime": min(values)}
+    return {"runtime": sum(values) / len(values)}
 
 
 def _app_run_cwd(app: SyclProjectApp, cfg: Config | None) -> Path:
@@ -884,7 +899,7 @@ def append_evaluation_cache(path: Path | None, record: JsonDict) -> None:
         fp.write(json.dumps(record, sort_keys=True, default=str) + "\n")
 
 
-def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
+def write_trial_csv(trials: Sequence[NativeTrial], poly: PolyMorphSpec) -> Path:
     out_csv = _trial_csv_path(poly)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
@@ -904,7 +919,7 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
     with open(out_csv, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
         writer.writerow(header)
-        for t in study.trials:
+        for t in trials:
             objective = t.values[0] if t.values is not None and len(t.values) == 1 else ""
             objectives = json.dumps(t.values) if t.values is not None else ""
             speedup = t.user_attrs.get("speedup", "")
@@ -923,7 +938,7 @@ def write_trial_csv(study: optuna.study.Study, poly: PolyMorphSpec) -> Path:
             writer.writerow(
                 [
                     t.number,
-                    str(t.state.name),
+                    str(t.state),
                     objective,
                     objectives,
                     speedup,
@@ -1349,7 +1364,6 @@ def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> 
 
 
 def sample_transform_sequence(
-    trial: optuna.Trial,
     app: SyclProjectApp,
     poly: PolyMorphSpec,
     tree: AdaptiveTreeState,
@@ -1378,6 +1392,9 @@ def sample_transform_sequence(
                     )
                 except InvalidTransformArgs:
                     continue
+                if not poly.allow_illegal and not app.legal:
+                    tree.mark_existing(prefix, 0.0, "failed")
+                    raise TrialPruned("Illegal transformed schedule")
                 tree.mark_tried(prefix)
                 return prefix
 
@@ -1418,23 +1435,27 @@ def sample_transform_sequence(
                     [candidate],
                     legality_cb=lambda: app.legal,
                 )
+                if not poly.allow_illegal and not app.legal:
+                    tree.mark_existing([*chosen, candidate], 0.0, "failed")
+                    last_invalid = InvalidTransformArgs("Illegal transformed schedule")
+                    raise TrialPruned("Illegal transformed schedule")
             except InvalidTransformArgs as exc:
                 last_invalid = exc
                 continue
             spec = candidate
             break
         if spec is None:
-            raise optuna.TrialPruned(str(last_invalid) if last_invalid else "No valid transform candidates")
+            raise TrialPruned(str(last_invalid) if last_invalid else "No valid transform candidates")
         chosen.append(spec)
         used_exact.add(_candidate_exact_key(spec))
 
         if not poly.allow_illegal and not app.legal:
-            raise optuna.TrialPruned("Illegal transformed schedule")
+            raise TrialPruned("Illegal transformed schedule")
 
         if poly.search.constraint_aware:
             reasons = static_prune_sequence(chosen, poly.search.constraints)
             if reasons:
-                raise optuna.TrialPruned("; ".join(reasons))
+                raise TrialPruned("; ".join(reasons))
 
         if not tree.should_expand(chosen):
             break
@@ -1646,10 +1667,10 @@ def _pick_representative_trial(trials: Sequence[Any], cfg: Config) -> Any:
     return min(trials, key=lambda trial: trial.values[0] if trial.values else float("inf"))
 
 
-def _backend_specific_best(study: optuna.study.Study, cfg: Config) -> JsonDict:
+def _backend_specific_best(trials: Sequence[NativeTrial], cfg: Config) -> JsonDict:
     best: Dict[str, JsonDict] = {}
-    for trial in study.trials:
-        if trial.state != optuna.trial.TrialState.COMPLETE:
+    for trial in trials:
+        if trial.state != "COMPLETE":
             continue
         analysis = trial.user_attrs.get("backend_sensitivity") or {}
         per_backend = analysis.get("per_backend") or {}
@@ -1675,20 +1696,48 @@ def _backend_specific_best(study: optuna.study.Study, cfg: Config) -> JsonDict:
     return best
 
 
-def _write_pareto_csv(study: optuna.study.Study, poly: PolyMorphSpec, cfg: Config) -> None:
+def _dominates(left: NativeTrial, right: NativeTrial, cfg: Config) -> bool:
+    if left.values is None or right.values is None:
+        return False
+    better_or_equal = True
+    strictly_better = False
+    for idx, objective in enumerate(cfg.objectives):
+        if idx >= len(left.values) or idx >= len(right.values):
+            return False
+        lval = left.values[idx]
+        rval = right.values[idx]
+        if objective.goal == "max":
+            better_or_equal = better_or_equal and lval >= rval
+            strictly_better = strictly_better or lval > rval
+        else:
+            better_or_equal = better_or_equal and lval <= rval
+            strictly_better = strictly_better or lval < rval
+    return better_or_equal and strictly_better
+
+
+def pareto_trials(trials: Sequence[NativeTrial], cfg: Config) -> List[NativeTrial]:
+    completed = [trial for trial in trials if trial.state == "COMPLETE" and trial.values is not None]
+    return [
+        trial for trial in completed
+        if not any(_dominates(other, trial, cfg) for other in completed if other is not trial)
+    ]
+
+
+def _write_pareto_csv(trials: Sequence[NativeTrial], poly: PolyMorphSpec, cfg: Config) -> None:
     if not poly.search.pareto_csv:
         return
+    best_trials = pareto_trials(trials, cfg)
     out_csv = Path(poly.search.pareto_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     metric_names = [obj.metric for obj in cfg.objectives]
     extra_metrics: set[str] = set()
-    for trial in study.best_trials:
+    for trial in best_trials:
         extra_metrics.update((trial.user_attrs.get("metrics") or {}).keys())
     extra_metrics.difference_update(metric_names)
     with open(out_csv, "w", newline="", encoding="utf-8") as fp:
         writer = csv.writer(fp)
         writer.writerow(["trial", *metric_names, "speedup", "transforms", *sorted(extra_metrics)])
-        for trial in study.best_trials:
+        for trial in best_trials:
             if trial.values is None:
                 continue
             metrics = trial.user_attrs.get("metrics", {}) or {}
@@ -1866,7 +1915,7 @@ def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     return 0
 
 
-def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
+def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     require_executable(poly.compiler)
     if not poly.exec_name:
         raise ValueError("polyMorph.exec_name is required for search mode.")
@@ -1957,13 +2006,13 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             print(f"Seeded adaptive tree with {len(retrieved_sequences)} retrieved sequence(s).")
     seed_tree_from_records(tree_state, [*history_records, *evaluation_cache.values()])
     print(
-        "Using adaptive UCT tree search "
+        "Using Monte Carlo tree search "
         f"with {len(tree_state.stats)} seeded prefix statistic(s)."
     )
 
     is_multi = len(cfg.objectives) > 1
 
-    def objective(trial: optuna.Trial) -> float | List[float]:
+    def objective(trial: NativeTrial) -> float | List[float]:
         trial_exec = f"{poly.exec_name}-trial-{trial.number}"
         generated_infix = f"{poly.search.generated_infix}-{trial.number}"
         transformed_app: SyclProjectApp | None = None
@@ -1975,9 +2024,9 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial, trial_app, poly, tree_state, performance_bias)
+            specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias)
             if not specs:
-                raise optuna.TrialPruned("No candidate transformations available for this trial.")
+                raise TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
             transform_signature = sequence_signature(specs)
             trial.set_user_attr("transform_signature", transform_signature)
@@ -1990,7 +2039,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 if status == "failed":
                     tree_state.update(specs, 0.0, "failed")
                     trial.set_user_attr("tree_updated", True)
-                    raise optuna.TrialPruned(str(cached.get("failure", "cached failed evaluation")))
+                    raise TrialPruned(str(cached.get("failure", "cached failed evaluation")))
                 metrics = dict(cached.get("metrics", {}) or {})
                 obj_values = [float(x) for x in cached.get("objectives", [])]
                 if not obj_values:
@@ -2078,7 +2127,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                         },
                     )
                     trial.set_user_attr("tree_updated", True)
-                    raise optuna.TrialPruned(
+                    raise TrialPruned(
                         f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
                         f"{first_value} worse than baseline {baseline_value} "
                         f"by factor {poly.search.early_stop_worse_than}"
@@ -2103,7 +2152,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             if correctness.get("checked"):
                 trial.set_user_attr("correctness", correctness)
                 if not correctness.get("ok", False):
-                    raise optuna.TrialPruned(f"correctness check failed: {correctness}")
+                    raise TrialPruned(f"correctness check failed: {correctness}")
 
             backend_sensitivity: JsonDict = {}
             if poly.search.backend_sensitivity_per_trial:
@@ -2159,8 +2208,10 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             evaluation_cache[cache_key] = record
             append_evaluation_cache(cache_path, record)
             return obj_values if is_multi else value
-        except optuna.TrialPruned as exc:
+        except TrialPruned as exc:
             specs = trial.user_attrs.get("transforms", [])
+            if not specs:
+                raise
             if specs and not trial.user_attrs.get("tree_updated", False):
                 tree_state.update(specs, 0.0, "pruned")
             pruned_feedback = trial.user_attrs.get("first_fidelity_performance_feedback", {})
@@ -2230,33 +2281,58 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 }
                 evaluation_cache[cache_key] = record
                 append_evaluation_cache(cache_path, record)
-            raise optuna.TrialPruned(str(exc))
+            raise TrialPruned(str(exc))
         finally:
             if transformed_app is not None:
                 cleanup_trial_artifacts(transformed_app, generated_infix=generated_infix)
 
-    sampler = optuna.samplers.TPESampler(seed=poly.search.seed)
-    directions = ["minimize" if obj.goal == "min" else "maximize" for obj in cfg.objectives]
-    if not directions:
-        directions = ["minimize"]
-    if is_multi:
-        study = optuna.create_study(directions=directions, sampler=sampler)
-    else:
-        study = optuna.create_study(direction=directions[0], sampler=sampler)
-    study.set_user_attr("baseline_runtime", baseline_value)
-    study.set_user_attr("baseline_metrics", baseline_metrics)
-    study.optimize(
-        objective,
-        n_trials=poly.search.n_trials,
-        timeout=poly.search.timeout,
+    trials: List[NativeTrial] = []
+    start_time = time.monotonic()
+    selection_retries = 0
+    max_selection_retries = max(
+        poly.search.n_trials * 10,
+        int(poly.search.constraints.get("mcts_max_selection_retries", 100)),
     )
+    while len(trials) < poly.search.n_trials:
+        if poly.search.timeout is not None and time.monotonic() - start_time >= poly.search.timeout:
+            print(f"[polyMorph] stopping MCTS search after timeout={poly.search.timeout}s")
+            break
+        if selection_retries >= max_selection_retries:
+            print(
+                "[polyMorph] stopping MCTS search after too many illegal/no-op "
+                f"selection retries ({selection_retries})."
+            )
+            break
+        trial = NativeTrial(number=len(trials))
+        try:
+            result = objective(trial)
+            values = [float(x) for x in result] if isinstance(result, list) else [float(result)]
+            trial.values = values
+            trial.state = "COMPLETE"
+            trials.append(trial)
+            completed_so_far = [t for t in trials if t.state == "COMPLETE"]
+            best_so_far = _pick_representative_trial(completed_so_far, cfg)
+            print(
+                f"[MCTS] Trial {trial.number} finished with value: {values[0]}. "
+                f"Best so far: {(best_so_far.values or [None])[0]}"
+            )
+        except TrialPruned as exc:
+            if not trial.user_attrs.get("transforms"):
+                selection_retries += 1
+                print(f"[MCTS] selection retry {selection_retries}. {exc}")
+                continue
+            trial.state = "PRUNED"
+            trial.set_user_attr("failure", str(exc))
+            trials.append(trial)
+            print(f"[MCTS] Trial {trial.number} pruned. {exc}")
+        except Exception as exc:
+            trial.state = "FAIL"
+            trial.set_user_attr("failure", str(exc))
+            trials.append(trial)
+            print(f"[MCTS] Trial {trial.number} failed. {exc}")
 
-    completed_trials = [
-        trial
-        for trial in study.trials
-        if trial.state == optuna.trial.TrialState.COMPLETE
-    ]
-    trial_csv = write_trial_csv(study, poly)
+    completed_trials = [trial for trial in trials if trial.state == "COMPLETE"]
+    trial_csv = write_trial_csv(trials, poly)
     print(f"Wrote trial CSV: {trial_csv}")
 
     if not completed_trials:
@@ -2278,16 +2354,17 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         return 1
 
     if is_multi:
-        _write_pareto_csv(study, poly, cfg)
-        best_trial = _pick_representative_trial(study.best_trials, cfg)
+        best_trials = pareto_trials(trials, cfg)
+        _write_pareto_csv(trials, poly, cfg)
+        best_trial = _pick_representative_trial(best_trials, cfg)
         best_runtime = best_trial.values[0] if best_trial.values else float("inf")
         best_specs = best_trial.user_attrs.get("transforms", [])
         best_speedup = best_trial.user_attrs.get("speedup", 0.0)
     else:
-        best_trial = study.best_trial
-        best_runtime = study.best_value
+        best_trial = _pick_representative_trial(completed_trials, cfg)
+        best_runtime = best_trial.values[0] if best_trial.values else best_trial.user_attrs.get("runtime")
         best_specs = best_trial.user_attrs.get("transforms", [])
-        best_speedup = _speedup_for_primary(cfg, baseline_value, best_runtime)
+        best_speedup = _speedup_for_primary(cfg, baseline_value, float(best_runtime))
 
     print("\n=== polyMorph search result ===")
     print(f"Baseline objective: {baseline_value}")
@@ -2307,9 +2384,10 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             "best_speedup": best_speedup,
             "best_transforms": best_specs,
             "best_trial_number": best_trial.number,
-            "backend_best_configs": _backend_specific_best(study, cfg),
+            "backend_best_configs": _backend_specific_best(trials, cfg),
         }
         if is_multi:
+            best_trials = pareto_trials(trials, cfg)
             result["pareto_trials"] = [
                 {
                     "trial": trial.number,
@@ -2317,7 +2395,7 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "transforms": trial.user_attrs.get("transforms", []),
                     "metrics": trial.user_attrs.get("metrics", {}),
                 }
-                for trial in study.best_trials
+                for trial in best_trials
             ]
         Path(poly.search.result_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
         print(f"Wrote result JSON: {poly.search.result_json}")
@@ -2350,6 +2428,6 @@ def run_poly_morph(cfg: Config, trials_override: int | None = None) -> int:
 
     source = infer_source(poly)
     with suppress_external_viewers():
-        if poly.optuna_search:
-            return explore_optuna(cfg, poly, source)
+        if poly.mcts_search:
+            return explore_mcts(cfg, poly, source)
         return run_project_mode(cfg, poly, source)

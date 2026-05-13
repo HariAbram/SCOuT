@@ -1,4 +1,4 @@
-# polyMorph Adaptive Tree Search
+# polyMorph Monte Carlo Tree Search
 
 ## Purpose
 

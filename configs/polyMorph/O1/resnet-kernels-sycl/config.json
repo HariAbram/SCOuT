@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O1/resnet-kernels-sycl/Kernel128_winograd.cpp",
     "compiler": "acpp",
     "flags": ["-O1"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/resnet-kernels-search",
     "runtime_args": ["0", "100"],

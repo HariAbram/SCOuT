@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O2/lsqt-sycl/hamiltonian.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/lsqt-search",
     "runtime_args": ["examples/input.txt"],

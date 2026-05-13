@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O3/projectile-sycl/Projectile.cpp",
     "compiler": "acpp",
     "flags": ["-O3"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/projectile-search",
     "runtime_args": ["1000"],

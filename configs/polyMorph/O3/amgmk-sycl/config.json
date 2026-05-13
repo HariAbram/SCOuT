@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O3/amgmk-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O3"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/amgmk-search",
     "runtime_args": [],

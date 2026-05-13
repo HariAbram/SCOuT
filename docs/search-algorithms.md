@@ -55,7 +55,7 @@ Code: [src/searchMethods/anneal_flags.py](/home/hari/git/SCOuT/src/searchMethods
 - Helps escape local minima
 - Useful as a lightweight heuristic alternative
 
-### polyMorph Adaptive Tree Search
+### polyMorph Monte Carlo Tree Search
 
 Code: [src/polyMorph/runner.py](/home/hari/git/SCOuT/src/polyMorph/runner.py)
 
@@ -71,5 +71,5 @@ Code: [src/polyMorph/runner.py](/home/hari/git/SCOuT/src/polyMorph/runner.py)
 - Use wavefront when you want structured flag-combination exploration.
 - Use tabu when you want richer local search over a mixed configuration space.
 - Use annealing when you want a simpler stochastic local search.
-- Use polyMorph adaptive tree search for Tadashi-based loop transformation search.
+- Use polyMorph Monte Carlo tree search for Tadashi-based loop transformation search.
 - Treat beam-tabu as experimental until its config path is cleaned up.

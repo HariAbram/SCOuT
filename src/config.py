@@ -41,7 +41,7 @@ class Objective:
             raise ValueError("objective.goal must be 'min' or 'max'")
         return cls(metric=d.get("metric", "CPI"), goal=goal)
 
-    # Note: better() no longer used because Optuna handles dominance.
+    # Note: better() is retained for callers that compare a single objective.
 
 @dataclasses.dataclass
 class PerfConfig:
@@ -215,7 +215,7 @@ class PolyMorphSearchSpec:
 
     n_trials: int = 20
     repeat: int = 3
-    generated_infix: str = "optuna"
+    generated_infix: str = "mcts"
     seed: int = 0
     timeout: int | None = None
     enumerate_only: bool = False
@@ -263,7 +263,7 @@ class PolyMorphSearchSpec:
         return cls(
             n_trials=int(data.get("n_trials", 20)),
             repeat=int(data.get("repeat", 3)),
-            generated_infix=str(data.get("generated_infix", "optuna")),
+            generated_infix=str(data.get("generated_infix", "mcts")),
             seed=int(data.get("seed", 0)),
             timeout=int(data["timeout"]) if data.get("timeout") is not None else None,
             enumerate_only=bool(data.get("enumerate_only", False)),
@@ -318,7 +318,7 @@ class PolyMorphSpec:
     list_only: bool = False
     save_jscops: Optional[Path] = None
     discover: bool = False
-    optuna_search: bool = False
+    mcts_search: bool = False
     build_system: str = "make"
     build_target: Optional[str] = None
     build_dir: Optional[Path] = None
@@ -356,7 +356,7 @@ class PolyMorphSpec:
             list_only=bool(raw.get("list_only", False)),
             save_jscops=Path(save_jscops_raw).expanduser().resolve() if save_jscops_raw else None,
             discover=bool(raw.get("discover", False)),
-            optuna_search=bool(raw.get("optuna_search", False)),
+            mcts_search=bool(raw.get("mcts_search", False)),
             build_system=build_system,
             build_target=raw.get("build_target"),
             build_dir=Path(build_dir_raw).expanduser().resolve() if build_dir_raw else None,

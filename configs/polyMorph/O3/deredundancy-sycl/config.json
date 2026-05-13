@@ -3,7 +3,7 @@
   "parser": {
     "label": "avg",
     "aggregate": "sum",
-    "run_cwd": "binary_dir"
+    "run_cwd": "workdir"
   },
   "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
   "runs": 1,
@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O3/deredundancy-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O3"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/deredundancy-search",
     "runtime_args": [],

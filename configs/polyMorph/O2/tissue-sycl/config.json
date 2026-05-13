@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O2/tissue-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O2"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/tissue-search",
     "runtime_args": ["32", "100"],

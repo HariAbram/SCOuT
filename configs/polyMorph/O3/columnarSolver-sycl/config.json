@@ -12,7 +12,7 @@
     "source": "test-benchmarks/polyMorph/O3/columnarSolver-sycl/main.cpp",
     "compiler": "acpp",
     "flags": ["-O3"],
-    "optuna_search": true,
+    "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/columnarSolver-search",
     "runtime_args": ["data"],

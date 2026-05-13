@@ -6,9 +6,9 @@ Files:
 - `list_available.json`: exercises `print_available_transformations`
 - `codegen_snapshot.json`: exercises project rebuild, `generated_infix`, `save_jscops`, `build_target`, `build_dir`, and explicit `source`
 - `manual_transforms.json`: exercises explicit `transforms`, `allow_illegal`, `measure`, and `runtime_args`
-- `search_enumerate.json`: exercises Optuna candidate enumeration and most search knobs without running trials
-- `search_run.json`: exercises an actual Optuna run with result export
-- `search_enhanced.json`: enables analytical scoring, static pruning, constraint-aware search, compiler feedback, case retrieval, and multi-objective Pareto export
+- `search_enumerate.json`: exercises MCTS candidate enumeration and most search knobs without running trials
+- `search_run.json`: exercises an actual MCTS run with result export
+- `search_enhanced.json`: enables analytical scoring, static pruning, constraint-aware search, case retrieval, and multi-objective Pareto export
 
 Run examples:
 
