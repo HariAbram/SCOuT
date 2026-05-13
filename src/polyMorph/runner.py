@@ -17,7 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 import optuna
 
-from src.config import Config, PolyMorphSpec
+from src.config import BuildProject, Config, PolyMorphSpec
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
 from src.polyMorph.features import (
     candidate_key,
@@ -503,7 +503,7 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
             app.run_env,
             repeat,
             workdir=app.project_root,
-            project=None,
+            project=BuildProject(dir=app.project_root),
         )
         return {str(k): float(v) for k, v in metrics.items()}
 
