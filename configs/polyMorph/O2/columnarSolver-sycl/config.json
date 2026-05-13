@@ -3,7 +3,7 @@
   "parser": {
     "label": "avg",
     "aggregate": "sum",
-    "run_cwd": "binary_dir"
+    "run_cwd": "project_dir"
   },
   "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
   "runs": 1,
