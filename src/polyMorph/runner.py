@@ -10,6 +10,7 @@ import shutil
 import shlex
 import subprocess
 import stat
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -48,6 +49,16 @@ except Exception as exc:
 
 
 JsonDict = Dict[str, Any]
+
+
+def _ansi(code: str, text: str) -> str:
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _trial_banner(trial_number: int) -> str:
+    return _ansi("1;36", f"\n========== MCTS Trial {trial_number} ==========")
 
 
 class InvalidTransformArgs(RuntimeError):
@@ -2304,6 +2315,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             )
             break
         trial = NativeTrial(number=len(trials))
+        print(_trial_banner(trial.number))
         try:
             result = objective(trial)
             values = [float(x) for x in result] if isinstance(result, list) else [float(result)]
