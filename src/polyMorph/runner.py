@@ -1183,9 +1183,12 @@ class AdaptiveTreeState:
     def get(self, specs: List[JsonDict]) -> PrefixStats:
         return self.stats.setdefault(self.prefix_key(specs), PrefixStats())
 
-    def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
+    def mark_tried(self, specs: List[JsonDict]) -> None:
         if specs:
             self.tried_sequences.add(sequence_signature(specs))
+
+    def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
+        self.mark_tried(specs)
         self.update(specs, reward, status)
 
     def update(self, specs: List[JsonDict], reward: float, status: str) -> None:
@@ -2073,9 +2076,11 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 if not correctness.get("ok", False):
                     raise optuna.TrialPruned(f"correctness check failed: {correctness}")
 
-            backend_sensitivity = collect_backend_sensitivity(transformed_app, poly, cfg)
-            if backend_sensitivity.get("checked"):
-                trial.set_user_attr("backend_sensitivity", backend_sensitivity)
+            backend_sensitivity: JsonDict = {}
+            if poly.search.backend_sensitivity_per_trial:
+                backend_sensitivity = collect_backend_sensitivity(transformed_app, poly, cfg)
+                if backend_sensitivity.get("checked"):
+                    trial.set_user_attr("backend_sensitivity", backend_sensitivity)
 
             speedup = _speedup_for_primary(cfg, baseline_value, value)
             tree_state.update(specs, max(0.0, speedup), "complete")

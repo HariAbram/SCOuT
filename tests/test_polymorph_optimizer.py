@@ -10,7 +10,12 @@ from types import SimpleNamespace
 from contextlib import redirect_stdout
 
 from src.config import PolyMorphSearchSpec
-from src.polyMorph.features import enrich_candidate, sequence_feature_summary, structural_signature
+from src.polyMorph.features import (
+    enrich_candidate,
+    sequence_feature_summary,
+    sequence_signature,
+    structural_signature,
+)
 from src.polyMorph.history import append_history, load_history, retrieve_sequences
 from src.polyMorph.pruning import analytical_score, static_prune_candidate, static_prune_sequence
 from src.polyMorph.runner import (
@@ -66,6 +71,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "block_transforms": [],
                 "backend_sensitivity_masks": ["omp", "cuda"],
                 "backend_sensitivity_repeat": 2,
+                "backend_sensitivity_per_trial": True,
                 "legality_aware_args": False,
                 "correctness_outputs": ["result.txt"],
                 "correctness_tolerance": 1.0e-4,
@@ -90,6 +96,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(spec.block_transforms, [])
         self.assertEqual(spec.backend_sensitivity_masks, ["omp", "cuda"])
         self.assertEqual(spec.backend_sensitivity_repeat, 2)
+        self.assertTrue(spec.backend_sensitivity_per_trial)
         self.assertFalse(spec.legality_aware_args)
         self.assertEqual(spec.correctness_outputs, ["result.txt"])
         self.assertEqual(spec.correctness_tolerance, 1.0e-4)
@@ -266,6 +273,12 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(tree.is_bad_prefix(prefix))
         tree.update(prefix, 0.7, "early_stop")
         self.assertTrue(tree.is_bad_prefix(prefix))
+
+    def test_adaptive_tree_tracks_tried_sequences(self) -> None:
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        prefix = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
+        tree.mark_tried(prefix)
+        self.assertIn(sequence_signature(prefix), tree.tried_sequences)
 
     def test_fuse_candidate_args_are_checked_against_sequence_children(self) -> None:
         node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n")

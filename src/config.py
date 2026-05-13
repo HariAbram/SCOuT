@@ -246,6 +246,7 @@ class PolyMorphSearchSpec:
     constraints: Dict[str, Any] = dataclasses.field(default_factory=dict)
     backend_sensitivity_masks: List[str] = dataclasses.field(default_factory=list)
     backend_sensitivity_repeat: int = 1
+    backend_sensitivity_per_trial: bool = False
     legality_aware_args: bool = True
     correctness_outputs: List[str] = dataclasses.field(default_factory=list)
     correctness_tolerance: float = 1.0e-6
@@ -294,6 +295,7 @@ class PolyMorphSearchSpec:
                 if str(mask).strip()
             ],
             backend_sensitivity_repeat=int(data.get("backend_sensitivity_repeat", 1)),
+            backend_sensitivity_per_trial=bool(data.get("backend_sensitivity_per_trial", False)),
             legality_aware_args=bool(data.get("legality_aware_args", True)),
             correctness_outputs=[str(path) for path in data.get("correctness_outputs", [])],
             correctness_tolerance=float(data.get("correctness_tolerance", 1.0e-6)),

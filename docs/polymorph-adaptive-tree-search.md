@@ -134,8 +134,7 @@ After a sequence is selected, the transformed program is generated, built, and m
 6. compute per-kernel timing deltas against the baseline
 7. classify the regression or improvement pattern
 8. update prefix and pairwise interaction statistics
-9. optionally run a backend-sensitivity measurement across configured masks
-10. append history, cache, and CSV records
+9. append history, cache, and CSV records
 
 The low-fidelity early-stop test uses warmup runs before measuring, so a cold AdaptiveCpp JIT run is not directly compared with the baseline.
 
@@ -160,6 +159,12 @@ The backend-sensitivity check may run additional masks, for example:
 ```
 
 Those runs compare measured objective values across backends. They are diagnostic measurements and are not used as the primary objective unless the selected measurement backend is explicitly configured to do so.
+
+By default, backend sensitivity is measured once for the baseline and stored in the result JSON. To repeat the backend-sensitivity test for every successful transformed trial, explicitly enable:
+
+```json
+"backend_sensitivity_per_trial": true
+```
 
 ## Persistent Records
 

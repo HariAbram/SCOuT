@@ -41,6 +41,7 @@
       "history_jsonl": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-history.jsonl",
       "backend_sensitivity_masks": ["omp", "ocl"],
       "backend_sensitivity_repeat": 2,
+      "backend_sensitivity_per_trial": false,
       "target_backend": "omp",
       "constraints": {
         "max_tile_size": 128,
