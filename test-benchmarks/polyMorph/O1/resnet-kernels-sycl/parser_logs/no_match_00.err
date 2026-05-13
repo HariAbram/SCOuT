@@ -1,1 +1,0 @@
-[;35m[AdaptiveCpp Warning] [0mfrom /home/hari/Desktop/PhD/AdaptiveCpp/src/runtime/ocl/ocl_hardware_manager.cpp:632 @ ocl_hardware_manager(): ocl_hardware_manager: Could not obtain platform list (error code = CL:-1001)
