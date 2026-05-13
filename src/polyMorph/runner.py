@@ -2034,6 +2034,21 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
 
     if not completed_trials:
         print("No successful trials.")
+        if poly.search.result_json:
+            result = {
+                "baseline_runtime": baseline_value,
+                "baseline_metrics": baseline_metrics,
+                "baseline_runtime_feedback": baseline_runtime_feedback,
+                "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
+                "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
+                "target_backend": poly.search.target_backend,
+                "completed_trials": 0,
+                "best_runtime": None,
+                "best_speedup": 0.0,
+                "best_transforms": [],
+            }
+            Path(poly.search.result_json).write_text(json.dumps(result, indent=2), encoding="utf-8")
+            print(f"Wrote result JSON: {poly.search.result_json}")
         return 1
 
     if is_multi:
@@ -2059,8 +2074,10 @@ def explore_optuna(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         result = {
             "baseline_runtime": baseline_value,
             "baseline_metrics": baseline_metrics,
+            "baseline_runtime_feedback": baseline_runtime_feedback,
             "baseline_runtime_feedback_analysis": baseline_runtime_analysis,
             "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
+            "target_backend": poly.search.target_backend,
             "best_runtime": best_runtime,
             "best_speedup": best_speedup,
             "best_transforms": best_specs,

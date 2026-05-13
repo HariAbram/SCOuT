@@ -30,7 +30,6 @@
       "result_json": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-result.json",
       "trial_csv": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-trials.csv",
       "structural_retrieval": true,
-      "search_strategy": "adaptive_tree",
       "cache_evaluations": true,
       "multi_fidelity": true,
       "early_stop_worse_than": 1.15,

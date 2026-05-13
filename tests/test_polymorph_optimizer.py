@@ -61,7 +61,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "runtime_feedback": True,
                 "case_retrieval": True,
                 "structural_retrieval": False,
-                "search_strategy": "beam_optuna",
                 "cache_jsonl": "/tmp/polymorph-cache.jsonl",
                 "cache_evaluations": False,
                 "multi_fidelity": False,
@@ -93,7 +92,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(spec.runtime_feedback)
         self.assertTrue(spec.case_retrieval)
         self.assertFalse(spec.structural_retrieval)
-        self.assertEqual(spec.search_strategy, "adaptive_tree")
         self.assertEqual(spec.cache_jsonl, "/tmp/polymorph-cache.jsonl")
         self.assertFalse(spec.cache_evaluations)
         self.assertFalse(spec.multi_fidelity)
