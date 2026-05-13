@@ -32,6 +32,7 @@ from src.polyMorph.runner import (
     print_candidates,
     select_diverse_top_k,
     suppress_external_viewers,
+    tadashi_compiler_options,
     verify_correctness_outputs,
 )
 
@@ -50,6 +51,17 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.constraint_aware)
         self.assertFalse(spec.case_retrieval)
         self.assertIn("SET_PARALLEL", spec.block_transforms)
+
+    def test_tadashi_options_disable_llvm_names_only_for_scop_population(self) -> None:
+        self.assertEqual(tadashi_compiler_options(["-O2"], False), ["-O2"])
+        self.assertEqual(
+            tadashi_compiler_options(["-O2"], True),
+            ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
+        )
+        self.assertEqual(
+            tadashi_compiler_options(["-O2", "-mllvm", "-polly-use-llvm-names=false"], True),
+            ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
+        )
 
     def test_config_parses_new_options(self) -> None:
         spec = PolyMorphSearchSpec.from_dict(

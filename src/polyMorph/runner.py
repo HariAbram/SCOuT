@@ -153,6 +153,7 @@ class SyclProjectApp(App):
         compiler_executable: str | None = None,
         translator: Any | None = None,
         compiler_options: Sequence[str] | None = None,
+        build_compiler_options: Sequence[str] | None = None,
         run_env: Dict[str, str] | None = None,
         original_source: str | Path | None = None,
         ephemeral: bool = False,
@@ -166,6 +167,11 @@ class SyclProjectApp(App):
         self.runtime_args = list(runtime_args or [])
         self.run_env = dict(run_env or {})
         self.compiler_options = list(compiler_options or [])
+        self.build_compiler_options = (
+            list(build_compiler_options)
+            if build_compiler_options is not None
+            else list(self.compiler_options)
+        )
         self.compiler_executable = compiler_executable
         self.original_source = (
             Path(original_source).resolve() if original_source is not None else Path(source).resolve()
@@ -193,6 +199,7 @@ class SyclProjectApp(App):
             "build_dir": self.build_dir,
             "runtime_args": self.runtime_args,
             "run_env": self.run_env,
+            "build_compiler_options": self.build_compiler_options,
             "original_source": self.original_source,
         }
 
@@ -210,7 +217,7 @@ class SyclProjectApp(App):
             replace_src = str(self.original_source)
 
         if self.build_system == "make":
-            extra_cflags = " ".join(self.compiler_options)
+            extra_cflags = " ".join(self.build_compiler_options)
             cmd = [
                 "make",
                 "-C",
@@ -683,6 +690,7 @@ def collect_backend_sensitivity(
 def inherit_build_settings(dst: SyclProjectApp, src: SyclProjectApp) -> SyclProjectApp:
     dst.compiler_executable = src.compiler_executable
     dst.compiler_options = list(src.compiler_options)
+    dst.build_compiler_options = list(src.build_compiler_options)
     dst.project_root = src.project_root
     dst.build_system = src.build_system
     dst.build_target = src.build_target
@@ -712,6 +720,18 @@ def _cache_path(poly: PolyMorphSpec) -> Path | None:
     if poly.search.result_json:
         return Path(poly.search.result_json).with_suffix(".cache.jsonl")
     return None
+
+
+JSCOP_SAFE_POLLY_OPTIONS = ["-mllvm", "-polly-use-llvm-names=false"]
+
+
+def tadashi_compiler_options(flags: Sequence[str], populate_scops: bool) -> List[str]:
+    options = list(flags)
+    if not populate_scops:
+        return options
+    if any("polly-use-llvm-names" in option for option in options):
+        return options
+    return [*options, *JSCOP_SAFE_POLLY_OPTIONS]
 
 
 def _cache_key(
@@ -1427,7 +1447,8 @@ def make_project_app(
     populate_scops: bool,
 ) -> SyclProjectApp:
     ensure_tadashi_available()
-    compiler_options = list(poly.flags)
+    compiler_options = tadashi_compiler_options(poly.flags, populate_scops)
+    build_compiler_options = list(poly.flags)
     run_env: Dict[str, str] = {}
     if poly.search.target_backend:
         run_env["ACPP_VISIBILITY_MASK"] = str(poly.search.target_backend)
@@ -1442,6 +1463,7 @@ def make_project_app(
         compiler_executable=poly.compiler,
         translator=Polly(poly.compiler) if populate_scops else None,
         compiler_options=compiler_options,
+        build_compiler_options=build_compiler_options,
         run_env=run_env,
         ephemeral=False,
         populate_scops=populate_scops,
