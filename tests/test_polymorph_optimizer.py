@@ -28,6 +28,7 @@ from src.polyMorph.runner import (
     candidate_args_for_node,
     capture_correctness_outputs,
     cleanup_trial_artifacts,
+    is_jscop_filename_export_error,
     load_evaluation_cache,
     print_candidates,
     select_diverse_top_k,
@@ -59,9 +60,22 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
         )
         self.assertEqual(
+            tadashi_compiler_options(["-O2"], True, "main"),
+            ["-O2", "-mllvm", "-polly-only-func=main", "-mllvm", "-polly-use-llvm-names=false"],
+        )
+        self.assertEqual(
             tadashi_compiler_options(["-O2", "-mllvm", "-polly-use-llvm-names=false"], True),
             ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
         )
+
+    def test_detects_jscop_filename_export_error(self) -> None:
+        exc = ValueError(
+            "Something is wrong with `opt` output.\n"
+            "The line that didn't match:\n"
+            "  error opening file for writing!"
+        )
+        self.assertTrue(is_jscop_filename_export_error(exc))
+        self.assertFalse(is_jscop_filename_export_error(ValueError("different opt failure")))
 
     def test_config_parses_new_options(self) -> None:
         spec = PolyMorphSearchSpec.from_dict(
