@@ -7,7 +7,7 @@ CC        ?= acpp
 CXX       ?= $(CC)
 LAUNCHER=
 
-OPTIMIZE  = yes
+OPTIMIZE  = no
 DEBUG     = no
 
 GPU       = no

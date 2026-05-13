@@ -5,7 +5,7 @@
 # Compiler can be set below, or via environment variable
 CC        ?= acpp
 CXX       ?= $(CC)
-OPTIMIZE  = yes
+OPTIMIZE  = no
 DEBUG     = no
 OPENCV    = no
 LAUNCHER  =
