@@ -56,8 +56,7 @@
       "baseline_exec_name": "build/columnarSolver-baseline",
       "history_jsonl": "configs/polyMorph/O3/columnarSolver-sycl/o3-columnarSolver-history.jsonl",
       "result_json": "configs/polyMorph/O3/columnarSolver-sycl/o3-columnarSolver-result.json",
-      "trial_csv": "configs/polyMorph/O3/columnarSolver-sycl/o3-columnarSolver-trials.csv",
-      "polly_only_func": "main"
+      "trial_csv": "configs/polyMorph/O3/columnarSolver-sycl/o3-columnarSolver-trials.csv"
     }
   }
 }

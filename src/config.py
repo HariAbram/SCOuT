@@ -254,7 +254,6 @@ class PolyMorphSearchSpec:
     learned_model: bool = True
     learned_model_min_observations: int = 1
     target_backend: str | None = None
-    polly_only_func: str | None = None
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
@@ -304,7 +303,6 @@ class PolyMorphSearchSpec:
             learned_model=bool(data.get("learned_model", True)),
             learned_model_min_observations=int(data.get("learned_model_min_observations", 1)),
             target_backend=str(data["target_backend"]) if data.get("target_backend") is not None else None,
-            polly_only_func=str(data["polly_only_func"]) if data.get("polly_only_func") is not None else None,
         )
 
 

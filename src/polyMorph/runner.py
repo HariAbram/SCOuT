@@ -723,37 +723,18 @@ def _cache_path(poly: PolyMorphSpec) -> Path | None:
 
 
 JSCOP_SAFE_POLLY_OPTIONS = ["-mllvm", "-polly-use-llvm-names=false"]
-JSCOP_MAIN_ONLY_POLLY_OPTIONS = ["-mllvm", "-polly-only-func=main"]
 
 
 def tadashi_compiler_options(
     flags: Sequence[str],
     populate_scops: bool,
-    polly_only_func: str | None = None,
 ) -> List[str]:
     options = list(flags)
     if not populate_scops:
         return options
-    if polly_only_func and not any("polly-only-func" in option for option in options):
-        options.extend(["-mllvm", f"-polly-only-func={polly_only_func}"])
     if any("polly-use-llvm-names" in option for option in options):
         return options
     return [*options, *JSCOP_SAFE_POLLY_OPTIONS]
-
-
-def with_main_only_jscop_options(options: Sequence[str]) -> List[str]:
-    result = list(options)
-    if any("polly-only-func" in option for option in result):
-        return result
-    return [*result, *JSCOP_MAIN_ONLY_POLLY_OPTIONS]
-
-
-def is_jscop_filename_export_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return (
-        ("something is wrong with `opt` output" in text or "opt output" in text)
-        and "error opening file for writing" in text
-    )
 
 
 def _cache_key(
@@ -1472,42 +1453,28 @@ def make_project_app(
     compiler_options = tadashi_compiler_options(
         poly.flags,
         populate_scops,
-        poly.search.polly_only_func,
     )
     build_compiler_options = list(poly.flags)
     run_env: Dict[str, str] = {}
     if poly.search.target_backend:
         run_env["ACPP_VISIBILITY_MASK"] = str(poly.search.target_backend)
 
-    def create_app(options: Sequence[str]) -> SyclProjectApp:
-        return SyclProjectApp(
-            project_root=poly.project_root,
-            source=source,
-            exec_name=exec_name,
-            build_system=poly.build_system,
-            build_target=poly.build_target,
-            build_dir=poly.build_dir,
-            runtime_args=poly.runtime_args,
-            compiler_executable=poly.compiler,
-            translator=Polly(poly.compiler) if populate_scops else None,
-            compiler_options=options,
-            build_compiler_options=build_compiler_options,
-            run_env=run_env,
-            ephemeral=False,
-            populate_scops=populate_scops,
-        )
-
-    try:
-        return create_app(compiler_options)
-    except ValueError as exc:
-        if not populate_scops or not is_jscop_filename_export_error(exc):
-            raise
-        retry_options = with_main_only_jscop_options(compiler_options)
-        print(
-            "[polyMorph] Polly JScop export hit a long generated filename; "
-            "retrying SCoP extraction with -polly-only-func=main."
-        )
-        return create_app(retry_options)
+    return SyclProjectApp(
+        project_root=poly.project_root,
+        source=source,
+        exec_name=exec_name,
+        build_system=poly.build_system,
+        build_target=poly.build_target,
+        build_dir=poly.build_dir,
+        runtime_args=poly.runtime_args,
+        compiler_executable=poly.compiler,
+        translator=Polly(poly.compiler) if populate_scops else None,
+        compiler_options=compiler_options,
+        build_compiler_options=build_compiler_options,
+        run_env=run_env,
+        ephemeral=False,
+        populate_scops=populate_scops,
+    )
 
 
 def infer_source(poly: PolyMorphSpec) -> Path:
