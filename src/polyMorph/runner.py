@@ -359,10 +359,12 @@ def apply_transforms_to_scops(
         except Exception as exc:
             message = str(exc)
             if "Not valid args" in message:
+                print(f"  invalid: args={tuple(tr_args)} are not valid for {tr_name}")
                 raise InvalidTransformArgs(
                     f"invalid args={tuple(tr_args)} for tr={tr_name} on scop={scop_idx}, node={node_idx}"
                 ) from exc
             first_line = message.splitlines()[0] if message else type(exc).__name__
+            print(f"  invalid: {first_line}")
             raise InvalidTransformArgs(
                 f"{tr_name} is not valid on scop={scop_idx}, node={node_idx}: {first_line}"
             ) from exc
@@ -1042,6 +1044,45 @@ def _node_loop_rank(node: Any) -> int:
     return max(dims) + 1 if dims else 1
 
 
+def _as_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        return len(value)
+    return None
+
+
+def _node_band_member_count(node: Any) -> int | None:
+    if node is None:
+        return None
+    attr_names = [
+        "band_member_count",
+        "band_members",
+        "n_band_members",
+        "member_count",
+        "members",
+        "n_members",
+        "n_member",
+        "dimension",
+        "dim",
+    ]
+    for attr_name in attr_names:
+        if not hasattr(node, attr_name):
+            continue
+        value = getattr(node, attr_name)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        count = _as_positive_int(value)
+        if count is not None:
+            return count
+    return None
+
+
 def _node_param_count(node: Any) -> int:
     yaml_str = str(getattr(node, "yaml_str", "") or "")
     params = {
@@ -1108,6 +1149,10 @@ def candidate_args_for_transform(name: str, poly: PolyMorphSpec, node: Any | Non
     if name == "SET_PARALLEL":
         return [[int(x)] for x in poly.search.scale_factors]
     if name == "SET_LOOP_OPT":
+        member_count = _node_band_member_count(node)
+        if member_count is None:
+            return []
+        loop_indexes = _bounded_indexes(member_count)
         return [[dim, opt] for dim in loop_indexes for opt in [1, 3]]
     return [[]]
 
@@ -1118,13 +1163,35 @@ def candidate_args_for_node(name: str, poly: PolyMorphSpec, node: Any) -> List[L
         return inferred
 
     child_count = _sequence_child_count(node)
-    if name == "FUSE" and child_count >= 2:
+    if name == "FUSE" and _node_is_sequence_like(node) and child_count >= 2:
         return [[idx, idx + 1] for idx in range(child_count - 1)]
 
     return inferred
 
 
+def _node_is_sequence_like(node: Any) -> bool:
+    try:
+        node_type = str(getattr(node, "node_type", ""))
+    except Exception:
+        node_type = ""
+    if "SEQUENCE" in node_type.upper():
+        return True
+    return False
+
+
 def _sequence_child_count(node: Any) -> int:
+    for attr_name in ["sequence_child_count", "child_count", "n_children", "children"]:
+        if not hasattr(node, attr_name):
+            continue
+        value = getattr(node, attr_name)
+        if callable(value):
+            try:
+                value = value()
+            except Exception:
+                continue
+        count = _as_positive_int(value)
+        if count is not None:
+            return count
     yaml_str = str(getattr(node, "yaml_str", "") or "")
     return len(re.findall(r"^\s*-\s+filter:", yaml_str, flags=re.MULTILINE))
 
@@ -1132,6 +1199,8 @@ def _sequence_child_count(node: Any) -> int:
 def candidate_args_invalid_for_node(name: str, args: Sequence[Any], node: Any) -> str | None:
     if name != "FUSE":
         return None
+    if not _node_is_sequence_like(node):
+        return "FUSE requires a sequence schedule node"
     if len(args) != 2:
         return "FUSE requires two child indexes"
     try:

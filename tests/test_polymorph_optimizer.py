@@ -348,13 +348,16 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertIn(sequence_signature(prefix), tree.tried_sequences)
 
     def test_fuse_candidate_args_are_checked_against_sequence_children(self) -> None:
-        node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n")
+        node = SimpleNamespace(node_type="NodeType.SEQUENCE", yaml_str="sequence:\n- filter: A\n- filter: B\n")
         self.assertIsNone(candidate_args_invalid_for_node("FUSE", [0, 1], node))
         self.assertIn("exceed", candidate_args_invalid_for_node("FUSE", [0, 2], node) or "")
         self.assertIsNone(candidate_args_invalid_for_node("TILE_1D", [32], node))
+        band_node = SimpleNamespace(node_type="NodeType.BAND", yaml_str="sequence:\n- filter: A\n- filter: B\n")
+        self.assertIn("sequence", candidate_args_invalid_for_node("FUSE", [0, 1], band_node) or "")
 
     def test_legality_aware_fuse_args_derive_adjacent_children(self) -> None:
-        node = SimpleNamespace(yaml_str="sequence:\n- filter: A\n- filter: B\n- filter: C\n")
+        node = SimpleNamespace(node_type="NodeType.SEQUENCE", yaml_str="sequence:\n- filter: A\n- filter: B\n- filter: C\n")
+        band_node = SimpleNamespace(node_type="NodeType.BAND", yaml_str="sequence:\n- filter: A\n- filter: B\n- filter: C\n")
         poly = SimpleNamespace(
             search=SimpleNamespace(
                 legality_aware_args=True,
@@ -364,9 +367,11 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             )
         )
         self.assertEqual(candidate_args_for_node("FUSE", poly, node), [[0, 1], [1, 2]])
+        self.assertEqual(candidate_args_for_node("FUSE", poly, band_node), [])
 
     def test_transform_args_are_inferred_without_explicit_args(self) -> None:
         node = SimpleNamespace(yaml_str="[p_0, p_1] -> { Stmt[i0, i1] }")
+        band_node = SimpleNamespace(yaml_str="[p_0, p_1] -> { Stmt[i0, i1] }", band_member_count=2)
         poly = SimpleNamespace(
             search=SimpleNamespace(
                 legality_aware_args=True,
@@ -378,7 +383,11 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(candidate_args_for_node("TILE_2D", poly, node), [[8, 8], [16, 16]])
         self.assertIn([1, 1], candidate_args_for_node("FULL_SHIFT_VAR", poly, node))
         self.assertIn([0, 1], candidate_args_for_node("FULL_SHIFT_PARAM", poly, node))
-        self.assertEqual(candidate_args_for_node("SET_LOOP_OPT", poly, node), [[0, 1], [0, 3], [1, 1], [1, 3]])
+        self.assertEqual(candidate_args_for_node("SET_LOOP_OPT", poly, node), [])
+        self.assertEqual(
+            candidate_args_for_node("SET_LOOP_OPT", poly, band_node),
+            [[0, 1], [0, 3], [1, 1], [1, 3]],
+        )
 
     def test_correctness_output_capture_and_numeric_tolerance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
