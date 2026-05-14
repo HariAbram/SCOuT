@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/pitch-search",
-    "runtime_args": ["1000"],
+    "runtime_args": ["50"],
     "search": {
       "n_trials": 5,
       "repeat": 2,

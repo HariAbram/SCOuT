@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/burger-search",
-    "runtime_args": ["8193", "8193", "100"],
+    "runtime_args": ["8193", "8193", "10"],
     "search": {
       "n_trials": 5,
       "repeat": 2,

@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/recursiveGaussian-search",
-    "runtime_args": ["StoneRGB.ppm", "1000"],
+    "runtime_args": ["StoneRGB.ppm", "50"],
     "search": {
       "n_trials": 5,
       "repeat": 2,

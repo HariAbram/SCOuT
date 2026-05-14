@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/tissue-search",
-    "runtime_args": ["32", "100"],
+    "runtime_args": ["32", "10"],
     "search": {
       "n_trials": 5,
       "repeat": 2,

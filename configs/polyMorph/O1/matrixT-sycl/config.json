@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/matrixT-search",
-    "runtime_args": ["16384", "16384", "200"],
+    "runtime_args": ["16384", "16384", "20"],
     "search": {
       "n_trials": 5,
       "repeat": 2,

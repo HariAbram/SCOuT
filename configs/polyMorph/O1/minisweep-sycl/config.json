@@ -15,7 +15,7 @@
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/minisweep-search",
-    "runtime_args": ["--niterations", "100"],
+    "runtime_args": ["--niterations", "10"],
     "search": {
       "n_trials": 5,
       "repeat": 2,
