@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import math
 import json
 import os
@@ -281,6 +282,28 @@ class SyclProjectApp(App):
     def extract_runtime(self, proc: subprocess.CompletedProcess[str]) -> float:
         match = re.search(r"WALLTIME:\s*([0-9]*\.?[0-9]+)", proc.stdout)
         return float(match.group(1)) if match else 0.0
+
+
+def _short_jscop_backup_path(path: Path) -> Path:
+    digest = hashlib.sha256(path.name.encode("utf-8")).hexdigest()[:16]
+    return path.with_name(f"jscop-backup-{digest}.bak")
+
+
+class SafePolly(Polly):
+    def generate_code(self, input_path: str, output_path: Path, options: list[str]) -> Path:
+        original_copy2 = shutil.copy2
+
+        def copy2_with_short_jscop_backup(src: Any, dst: Any, *args: Any, **kwargs: Any) -> Any:
+            dst_path = Path(dst)
+            if dst_path.name.endswith(".jscop.bak") and len(dst_path.name.encode("utf-8")) > 240:
+                dst_path = _short_jscop_backup_path(dst_path)
+            return original_copy2(src, dst_path, *args, **kwargs)
+
+        shutil.copy2 = copy2_with_short_jscop_backup
+        try:
+            return super().generate_code(input_path, output_path, options)
+        finally:
+            shutil.copy2 = original_copy2
 
 
 def enum_from_name(name: str) -> Any:
@@ -1434,6 +1457,7 @@ class AdaptiveTreeState:
     failed_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     disabled_families: set[str] = field(default_factory=set)
+    disabled_scops: set[int] = field(default_factory=set)
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
         return sequence_signature(specs) if specs else "root"
@@ -1522,6 +1546,8 @@ class AdaptiveTreeState:
     def is_blacklisted_candidate(self, candidate: JsonDict) -> bool:
         if _candidate_family(candidate) in self.disabled_families:
             return True
+        if int(candidate.get("scop", -1)) in self.disabled_scops:
+            return True
         stat = self.get([candidate])
         failure_threshold = int(self.constraints.get("candidate_blacklist_failures", 2))
         if failure_threshold <= 0:
@@ -1532,6 +1558,19 @@ class AdaptiveTreeState:
         ):
             return True
         return False
+
+    def disable_scops_from_specs(self, specs: Sequence[JsonDict], reason: str) -> None:
+        new_scops = {
+            int(spec.get("scop", -1))
+            for spec in specs
+            if int(spec.get("scop", -1)) >= 0
+        }
+        new_scops.difference_update(self.disabled_scops)
+        if not new_scops:
+            return
+        self.disabled_scops.update(new_scops)
+        formatted = ", ".join(str(scop) for scop in sorted(new_scops))
+        print(f"[MCTS] disabled SCoP(s) {formatted}: {reason}")
 
     def disable_family_if_screening_unpromising(self, family: str, candidates: Sequence[JsonDict]) -> bool:
         if family in self.disabled_families:
@@ -1610,12 +1649,17 @@ def seed_tree_from_records(tree: AdaptiveTreeState, records: Sequence[JsonDict])
         if not specs:
             continue
         status = str(record.get("status", "complete"))
+        failure = str(record.get("failure", ""))
+        if "File name too long" in failure or "Errno 36" in failure:
+            tree.disable_scops_from_specs(specs, "historic JScop filename too long")
+            tree.mark_existing(specs, 0.0, "failed")
+            continue
         if status == "complete":
             reward = float(record.get("speedup", 0.0) or 0.0)
             tree.mark_existing(specs, reward, "complete")
         else:
-            failure = str(record.get("failure", "")).lower()
-            tree.mark_existing(specs, 0.0, "early_stop" if "early stop" in failure else "failed")
+            lower_failure = failure.lower()
+            tree.mark_existing(specs, 0.0, "early_stop" if "early stop" in lower_failure else "failed")
 
 
 def _candidate_diversity_allowed(specs: List[JsonDict], candidate: JsonDict, constraints: JsonDict) -> bool:
@@ -1638,6 +1682,7 @@ def _sort_tree_candidates(
         candidate
         for candidate in candidates
         if _candidate_family(candidate) not in tree.disabled_families
+        and int(candidate.get("scop", -1)) not in tree.disabled_scops
     ]
     scored = [
         (tree.score_child(chosen, [*chosen, candidate], candidate), candidate)
@@ -1690,6 +1735,13 @@ def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> 
     return max(0.0, _speedup_for_primary(cfg, baseline_value, value))
 
 
+def _is_filename_too_long_error(exc: BaseException) -> bool:
+    if isinstance(exc, OSError) and exc.errno == 36:
+        return True
+    text = str(exc)
+    return "File name too long" in text or "Errno 36" in text
+
+
 def sample_transform_sequence(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
@@ -1718,6 +1770,8 @@ def sample_transform_sequence(
             for candidate in _single_transform_screening_order(initial_candidates, tree):
                 prefix = [candidate]
                 if _candidate_family(candidate) in tree.disabled_families:
+                    continue
+                if int(candidate.get("scop", -1)) in tree.disabled_scops:
                     continue
                 if sequence_signature(prefix) in tree.tried_sequences:
                     continue
@@ -1754,6 +1808,8 @@ def sample_transform_sequence(
         viable: List[JsonDict] = []
         for candidate in current_candidates:
             if _candidate_family(candidate) in tree.disabled_families:
+                continue
+            if int(candidate.get("scop", -1)) in tree.disabled_scops:
                 continue
             exact = _candidate_exact_key(candidate)
             if exact in used_exact:
@@ -1847,7 +1903,7 @@ def make_project_app(
         build_dir=poly.build_dir,
         runtime_args=poly.runtime_args,
         compiler_executable=poly.compiler,
-        translator=Polly(poly.compiler) if populate_scops else None,
+        translator=SafePolly(poly.compiler) if populate_scops else None,
         compiler_options=compiler_options,
         build_compiler_options=build_compiler_options,
         run_env=run_env,
@@ -2644,6 +2700,12 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         except Exception as exc:
             trial.set_user_attr("failure", str(exc))
             specs = trial.user_attrs.get("transforms", [])
+            if specs and _is_filename_too_long_error(exc):
+                tree_state.disable_scops_from_specs(specs, "JScop filename too long")
+                if not trial.user_attrs.get("tree_updated", False):
+                    tree_state.update(specs, 0.0, "failed")
+                    trial.set_user_attr("tree_updated", True)
+                raise CachedSequenceSelected("JScop filename too long; disabled affected SCoP(s)")
             if specs and not trial.user_attrs.get("tree_updated", False):
                 tree_state.update(specs, 0.0, "failed")
             append_history(

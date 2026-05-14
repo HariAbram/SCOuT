@@ -34,6 +34,7 @@ from src.polyMorph.runner import (
     suppress_external_viewers,
     tadashi_compiler_options,
     verify_correctness_outputs,
+    _short_jscop_backup_path,
 )
 
 
@@ -355,6 +356,37 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(tree.is_terminal_evaluated(prefix))
         self.assertFalse(tree.is_terminal_evaluated(child))
         self.assertIn(sequence_signature(prefix), tree.tried_sequences)
+
+    def test_adaptive_tree_disables_scops_after_filename_too_long(self) -> None:
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        specs = [{"scop": 6, "node": 22, "tr": "TILE_1D", "args": [16]}]
+        tree.disable_scops_from_specs(specs, "JScop filename too long")
+        self.assertIn(6, tree.disabled_scops)
+        self.assertTrue(tree.is_blacklisted_candidate(specs[0]))
+
+    def test_long_jscop_backup_path_is_shortened(self) -> None:
+        path = Path("/tmp") / ("x" * 240 + ".jscop.bak")
+        shortened = _short_jscop_backup_path(path)
+        self.assertLess(len(shortened.name.encode("utf-8")), 255)
+        self.assertTrue(shortened.name.startswith("jscop-backup-"))
+
+    def test_seed_tree_disables_historic_filename_too_long_scops(self) -> None:
+        from src.polyMorph.runner import seed_tree_from_records
+
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        specs = [{"scop": 5, "node": 22, "tr": "TILE_1D", "args": [32]}]
+        seed_tree_from_records(
+            tree,
+            [
+                {
+                    "status": "failed",
+                    "transforms": specs,
+                    "failure": "[Errno 36] File name too long: bad.jscop.bak",
+                }
+            ],
+        )
+        self.assertIn(5, tree.disabled_scops)
+        self.assertTrue(tree.is_blacklisted_candidate(specs[0]))
 
     def test_adaptive_tree_disables_fuse_after_enough_screening_failures(self) -> None:
         tree = AdaptiveTreeState(
