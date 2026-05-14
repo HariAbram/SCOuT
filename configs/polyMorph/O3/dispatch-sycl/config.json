@@ -1,1 +1,64 @@
-{"backend": "parser","parser": {"label": "avg","aggregate": "sum","run_cwd": "binary_dir"},"objectives": [{"metric": "sycl_avg_sum_s","goal": "min"}],"runs": 1,"polyMorph": {"project_root": "test-benchmarks/polyMorph/O3/dispatch-sycl","source": "test-benchmarks/polyMorph/O3/dispatch-sycl/main.cpp","compiler": "acpp","flags": ["-O3"],"mcts_search": true,"build_system": "make","exec_name": "build/dispatch-search","runtime_args": [],"search": {"n_trials": 5,"repeat": 2,"seed": 42,"timeout": 600,"max_transforms_per_trial": 5,"tile_sizes": [8,16,32],"scale_factors": [2],"shift_values": [-1,1],"static_pruning": true,"analytical_model": true,"constraint_aware": true,"case_retrieval": true,"structural_retrieval": true,"cache_evaluations": true,"multi_fidelity": true,"early_stop_worse_than": 1.15,"cache_jsonl": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-cache.jsonl","top_k": 100,"retrieval_top_k": 3,"backend_sensitivity_masks": ["omp","ocl"],"backend_sensitivity_repeat": 2,"backend_sensitivity_per_trial": false,"target_backend": "omp","constraints": {"max_tile_size": 128,"max_tile_volume": 16384,"max_abs_shift": 16,"max_same_transform_per_sequence": 1,"preferred_tile_size": 32,"max_predicted_risk": 0.85,"backend_sensitivity_rel_threshold": 0.35,"performance_feedback_bias_weight": 0.35,"early_stop_warmup_runs": 1,"early_stop_measure_runs": 1},"generated_infix": "dispatch","baseline_exec_name": "build/dispatch-baseline","history_jsonl": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-history.jsonl","result_json": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-result.json","trial_csv": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-trials.csv","ablation_enabled": false,"replay_top_k": 0}}}
+{
+  "backend": "parser",
+  "parser": {
+    "label": "avg",
+    "aggregate": "sum",
+    "run_cwd": "binary_dir"
+  },
+  "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
+  "runs": 1,
+  "polyMorph": {
+    "project_root": "test-benchmarks/polyMorph/O3/dispatch-sycl",
+    "source": "test-benchmarks/polyMorph/O3/dispatch-sycl/main.cpp",
+    "compiler": "acpp",
+    "flags": ["-O3"],
+    "mcts_search": true,
+    "build_system": "make",
+    "exec_name": "build/dispatch-search",
+    "runtime_args": [],
+    "search": {
+      "n_trials": 5,
+      "repeat": 2,
+      "seed": 42,
+      "timeout": 600,
+      "max_transforms_per_trial": 5,
+      "tile_sizes": [8, 16, 32],
+      "scale_factors": [2],
+      "shift_values": [-1, 1],
+      "static_pruning": true,
+      "analytical_model": true,
+      "constraint_aware": true,
+      "case_retrieval": true,
+      "structural_retrieval": true,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15,
+      "cache_jsonl": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-cache.jsonl",
+      "top_k": 100,
+      "retrieval_top_k": 3,
+      "backend_sensitivity_masks": ["omp", "ocl"],
+      "backend_sensitivity_repeat": 2,
+      "backend_sensitivity_per_trial": false,
+      "target_backend": "omp",
+      "constraints": {
+        "max_tile_size": 128,
+        "max_tile_volume": 16384,
+        "max_abs_shift": 16,
+        "max_same_transform_per_sequence": 1,
+        "preferred_tile_size": 32,
+        "max_predicted_risk": 0.85,
+        "backend_sensitivity_rel_threshold": 0.35,
+        "performance_feedback_bias_weight": 0.35,
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      },
+      "generated_infix": "dispatch",
+      "baseline_exec_name": "build/dispatch-baseline",
+      "history_jsonl": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-history.jsonl",
+      "result_json": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-result.json",
+      "trial_csv": "configs/polyMorph/O3/dispatch-sycl/o3-dispatch-trials.csv",
+      "ablation_enabled": false,
+      "replay_top_k": 0
+    }
+  }
+}

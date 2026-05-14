@@ -1,1 +1,46 @@
-{"backend": "perf","perf": {"events": ["cycles","instructions"],"core_list": "","objective": {"metric": "CPI","goal": "min"}},"objectives": [{"metric": "CPI","goal": "min"}],"runs": 1,"polyMorph": {"project_root": "test-benchmarks/microSYCL","source": "test-benchmarks/microSYCL/src/main.cpp","compiler": "acpp","flags": ["--acpp-platform=cpu","--acpp-targets=generic","-O3"],"mcts_search": true,"build_system": "make","exec_name": "bin/main-acpp-generic","runtime_args": ["-s","1024","--gemm","-i","3"],"search": {"enumerate_only": true,"n_trials": 8,"repeat": 2,"generated_infix": "enumerate","seed": 7,"max_transforms_per_trial": 5,"tile_sizes": [8,16,32],"scale_factors": [2,4],"shift_values": [-2,-1,1,2],"allow_transforms": ["TILE_1D","SCALE","FULL_SHIFT_VAL","PARTIAL_SHIFT_VAL","FULL_SPLIT","SPLIT","FULL_SHIFT_VAR","PARTIAL_SHIFT_VAR","FULL_SHIFT_PARAM","PARTIAL_SHIFT_PARAM","SET_LOOP_OPT"],"block_transforms": ["SET_LOOP_OPT"],"structural_retrieval": true,"cache_evaluations": true,"multi_fidelity": true,"early_stop_worse_than": 1.15,"constraints": {"early_stop_warmup_runs": 1,"early_stop_measure_runs": 1},"ablation_enabled": false,"replay_top_k": 0}}}
+{
+  "backend": "perf",
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "objective": {
+      "metric": "CPI",
+      "goal": "min"
+    }
+  },
+  "objectives": [{"metric": "CPI", "goal": "min"}],
+  "runs": 1,
+  "polyMorph": {
+    "project_root": "test-benchmarks/microSYCL",
+    "source": "test-benchmarks/microSYCL/src/main.cpp",
+    "compiler": "acpp",
+    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
+    "mcts_search": true,
+    "build_system": "make",
+    "exec_name": "bin/main-acpp-generic",
+    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],
+    "search": {
+      "enumerate_only": true,
+      "n_trials": 8,
+      "repeat": 2,
+      "generated_infix": "enumerate",
+      "seed": 7,
+      "max_transforms_per_trial": 5,
+      "tile_sizes": [8, 16, 32],
+      "scale_factors": [2, 4],
+      "shift_values": [-2, -1, 1, 2],
+      "allow_transforms": ["TILE_1D", "SCALE", "FULL_SHIFT_VAL", "PARTIAL_SHIFT_VAL", "FULL_SPLIT", "SPLIT", "FULL_SHIFT_VAR", "PARTIAL_SHIFT_VAR", "FULL_SHIFT_PARAM", "PARTIAL_SHIFT_PARAM", "SET_LOOP_OPT"],
+      "block_transforms": ["SET_LOOP_OPT"],
+      "structural_retrieval": true,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15,
+      "constraints": {
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      },
+      "ablation_enabled": false,
+      "replay_top_k": 0
+    }
+  }
+}

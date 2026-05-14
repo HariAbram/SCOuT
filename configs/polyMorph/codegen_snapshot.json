@@ -1,10 +1,7 @@
 {
   "backend": "perf",
   "perf": {
-    "events": [
-      "cycles",
-      "instructions"
-    ],
+    "events": ["cycles", "instructions"],
     "core_list": "",
     "objective": {
       "metric": "CPI",

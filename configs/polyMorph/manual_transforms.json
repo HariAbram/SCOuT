@@ -1,1 +1,52 @@
-{"backend": "perf","perf": {"events": ["cycles","instructions"],"core_list": "","objective": {"metric": "CPI","goal": "min"}},"objectives": [{"metric": "CPI","goal": "min"}],"runs": 1,"polyMorph": {"project_root": "test-benchmarks/microSYCL","source": "test-benchmarks/microSYCL/src/main.cpp","compiler": "acpp","flags": ["--acpp-platform=cpu","--acpp-targets=generic","-O3"],"transforms": [{"scop": 0,"node": 0,"tr": "FULL_SPLIT","args": []},{"scop": 0,"node": 1,"tr": "TILE_1D","args": [16]}],"allow_illegal": true,"build_system": "make","exec_name": "bin/main-acpp-generic","generated_infix": "manual","runtime_args": ["-s","1024","--gemm","-i","3"],"measure": true,"search": {"repeat": 2,"structural_retrieval": true,"cache_evaluations": true,"multi_fidelity": true,"early_stop_worse_than": 1.15,"constraints": {"early_stop_warmup_runs": 1,"early_stop_measure_runs": 1},"ablation_enabled": false,"replay_top_k": 0}}}
+{
+  "backend": "perf",
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
+    "objective": {
+      "metric": "CPI",
+      "goal": "min"
+    }
+  },
+  "objectives": [{"metric": "CPI", "goal": "min"}],
+  "runs": 1,
+  "polyMorph": {
+    "project_root": "test-benchmarks/microSYCL",
+    "source": "test-benchmarks/microSYCL/src/main.cpp",
+    "compiler": "acpp",
+    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
+    "transforms": [
+      {
+        "scop": 0,
+        "node": 0,
+        "tr": "FULL_SPLIT",
+        "args": []
+      },
+      {
+        "scop": 0,
+        "node": 1,
+        "tr": "TILE_1D",
+        "args": [16]
+      }
+    ],
+    "allow_illegal": true,
+    "build_system": "make",
+    "exec_name": "bin/main-acpp-generic",
+    "generated_infix": "manual",
+    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],
+    "measure": true,
+    "search": {
+      "repeat": 2,
+      "structural_retrieval": true,
+      "cache_evaluations": true,
+      "multi_fidelity": true,
+      "early_stop_worse_than": 1.15,
+      "constraints": {
+        "early_stop_warmup_runs": 1,
+        "early_stop_measure_runs": 1
+      },
+      "ablation_enabled": false,
+      "replay_top_k": 0
+    }
+  }
+}
