@@ -347,6 +347,15 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         tree.mark_tried(prefix)
         self.assertIn(sequence_signature(prefix), tree.tried_sequences)
 
+    def test_adaptive_tree_tracks_terminal_sequences_separately(self) -> None:
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        prefix = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
+        child = [*prefix, {"scop": 1, "node": 1, "tr": "INTERCHANGE", "args": []}]
+        tree.mark_existing(prefix, 1.1, "complete")
+        self.assertTrue(tree.is_terminal_evaluated(prefix))
+        self.assertFalse(tree.is_terminal_evaluated(child))
+        self.assertIn(sequence_signature(prefix), tree.tried_sequences)
+
     def test_adaptive_tree_disables_fuse_after_enough_screening_failures(self) -> None:
         tree = AdaptiveTreeState(
             constraints={"disable_family_after_failures": 2, "disable_family_failure_fraction": 0.5},

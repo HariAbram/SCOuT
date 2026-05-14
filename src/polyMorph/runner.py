@@ -70,6 +70,10 @@ class TrialPruned(RuntimeError):
     pass
 
 
+class CachedSequenceSelected(TrialPruned):
+    pass
+
+
 @dataclass
 class NativeTrial:
     number: int
@@ -1425,6 +1429,7 @@ class AdaptiveTreeState:
     stats: Dict[str, PrefixStats] = field(default_factory=dict)
     pair_stats: Dict[str, PrefixStats] = field(default_factory=dict)
     tried_sequences: set[str] = field(default_factory=set)
+    evaluated_terminal_sequences: set[str] = field(default_factory=set)
     tried_family_counts: Counter[str] = field(default_factory=Counter)
     failed_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
@@ -1445,7 +1450,15 @@ class AdaptiveTreeState:
 
     def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
         self.mark_tried(specs)
+        self.mark_terminal(specs)
         self.update(specs, reward, status)
+
+    def mark_terminal(self, specs: List[JsonDict]) -> None:
+        if specs:
+            self.evaluated_terminal_sequences.add(sequence_signature(specs))
+
+    def is_terminal_evaluated(self, specs: List[JsonDict]) -> bool:
+        return bool(specs) and sequence_signature(specs) in self.evaluated_terminal_sequences
 
     def update(self, specs: List[JsonDict], reward: float, status: str) -> None:
         if specs:
@@ -1752,7 +1765,11 @@ def sample_transform_sequence(
             next_prefix = [*chosen, candidate]
             if tree.is_bad_prefix(next_prefix):
                 continue
-            if sequence_signature(next_prefix) in tree.tried_sequences and not tree.should_expand(next_prefix):
+            next_is_terminal_repeat = tree.is_terminal_evaluated(next_prefix)
+            next_can_expand = len(next_prefix) < max_transforms and tree.should_expand(next_prefix)
+            if next_is_terminal_repeat and not next_can_expand:
+                continue
+            if sequence_signature(next_prefix) in tree.tried_sequences and not next_can_expand:
                 continue
             if poly.search.constraint_aware:
                 reasons = static_prune_sequence(next_prefix, poly.search.constraints)
@@ -1760,6 +1777,8 @@ def sample_transform_sequence(
                     continue
             viable.append(candidate)
         if not viable:
+            if chosen and tree.is_terminal_evaluated(chosen):
+                raise TrialPruned("terminal sequence already evaluated")
             break
 
         spec = None
@@ -1797,6 +1816,8 @@ def sample_transform_sequence(
         if not tree.should_expand(chosen):
             break
 
+    if chosen and tree.is_terminal_evaluated(chosen):
+        raise TrialPruned("terminal sequence already evaluated")
     return chosen
 
 
@@ -2363,6 +2384,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             trial.set_user_attr("transforms", specs)
             transform_signature = sequence_signature(specs)
             trial.set_user_attr("transform_signature", transform_signature)
+            tree_state.mark_terminal(specs)
 
             cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
             cached = evaluation_cache.get(cache_key)
@@ -2378,7 +2400,8 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 if not obj_values:
                     obj_values = _objective_values_from_metrics(cfg, metrics)
                 speedup = float(cached.get("speedup", _speedup_for_primary(cfg, baseline_value, obj_values[0])) or 0.0)
-                tree_state.update(specs, max(0.0, speedup), "complete")
+                cache_reward_scale = float(poly.search.constraints.get("cache_hit_reward_scale", 0.95))
+                tree_state.update(specs, max(0.0, speedup * cache_reward_scale), "complete")
                 trial.set_user_attr("tree_updated", True)
                 trial.set_user_attr("runtime", obj_values[0])
                 trial.set_user_attr("metrics", metrics)
@@ -2390,7 +2413,9 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 )
                 trial.set_user_attr("backend_sensitivity", cached.get("backend_sensitivity", {}))
                 print(f"Trial {trial.number}: cache hit objective={obj_values[0]}, transforms={specs}")
-                return obj_values if is_multi else obj_values[0]
+                raise CachedSequenceSelected(
+                    f"cached terminal sequence skipped after tree update; objective={obj_values[0]}"
+                )
 
             if _is_stop_sequence(specs):
                 obj_values = _objective_values_from_metrics(cfg, baseline_metrics)
@@ -2574,6 +2599,8 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             evaluation_cache[cache_key] = record
             append_evaluation_cache(cache_path, record)
             return obj_values if is_multi else value
+        except CachedSequenceSelected:
+            raise
         except TrialPruned as exc:
             specs = trial.user_attrs.get("transforms", [])
             if not specs:
@@ -2757,6 +2784,10 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 f"[MCTS] Trial {trial.number} finished with value: {values[0]}. "
                 f"Best so far: {(best_so_far.values or [None])[0]}"
             )
+        except CachedSequenceSelected as exc:
+            selection_retries += 1
+            print(f"[MCTS] cache retry {selection_retries}. {exc}")
+            continue
         except TrialPruned as exc:
             if not trial.user_attrs.get("transforms"):
                 selection_retries += 1

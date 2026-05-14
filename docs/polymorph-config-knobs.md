@@ -155,6 +155,7 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `candidate_blacklist_min_best_speedup` | `0.90` | Candidate is blacklisted only if its best speedup is below this threshold. |
 | `disable_family_after_failures` | `4` | Disable a transform family during screening after this many failed candidates, if the failure fraction threshold is also met. |
 | `disable_family_failure_fraction` | `0.50` | Fraction of visible screening candidates in a family that must fail before the family is disabled. |
+| `cache_hit_reward_scale` | `0.95` | Reward multiplier used when a cached terminal sequence is selected. The tree is updated, but the trial is retried instead of counted as a completed trial. |
 
 ### Multi-Fidelity Early Stopping
 
