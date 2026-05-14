@@ -91,6 +91,8 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "learned_model": False,
                 "learned_model_min_observations": 2,
                 "target_backend": "cuda",
+                "ablation_enabled": False,
+                "replay_top_k": 3,
             }
         )
         self.assertTrue(spec.static_pruning)
@@ -116,6 +118,8 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.learned_model)
         self.assertEqual(spec.learned_model_min_observations, 2)
         self.assertEqual(spec.target_backend, "cuda")
+        self.assertFalse(spec.ablation_enabled)
+        self.assertEqual(spec.replay_top_k, 3)
 
     def test_enrich_score_and_prune_candidate(self) -> None:
         candidate = {"scop": 0, "node": 1, "tr": "TILE_2D", "args": [16, 32]}
@@ -133,6 +137,57 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         )
         reasons = static_prune_candidate(candidate, {"max_tile_size": 128})
         self.assertTrue(any("max_tile_size" in reason for reason in reasons))
+
+    def test_analytical_score_uses_scop_classification(self) -> None:
+        memory_heavy = enrich_candidate(
+            {
+                "scop": 0,
+                "node": 1,
+                "tr": "TILE_2D",
+                "args": [32, 32],
+                "scop_classification": {
+                    "labels": ["band", "2d_loop", "memory_heavy_hint"],
+                    "loop_rank": 2,
+                    "sequence_child_count": 0,
+                },
+            },
+            DummyNode(),
+        )
+        shallow = enrich_candidate(
+            {
+                "scop": 0,
+                "node": 1,
+                "tr": "TILE_2D",
+                "args": [32, 32],
+                "scop_classification": {
+                    "labels": ["band", "1d_loop", "small_scop"],
+                    "loop_rank": 1,
+                    "sequence_child_count": 0,
+                },
+            },
+            DummyNode(),
+        )
+        good = analytical_score(memory_heavy, {"preferred_tile_size": 32})
+        bad = analytical_score(shallow, {"preferred_tile_size": 32})
+        self.assertGreater(good["score"], bad["score"])
+        self.assertGreater(bad["risk"], good["risk"])
+
+    def test_static_pruning_uses_scop_classification(self) -> None:
+        candidate = enrich_candidate(
+            {
+                "scop": 0,
+                "node": 1,
+                "tr": "INTERCHANGE",
+                "args": [],
+                "scop_classification": {
+                    "labels": ["band", "1d_loop"],
+                    "loop_rank": 1,
+                },
+            },
+            DummyNode(),
+        )
+        reasons = static_prune_candidate(candidate, {})
+        self.assertTrue(any("loop_rank" in reason for reason in reasons))
 
     def test_sequence_pruning_allows_same_transform_on_different_scopes(self) -> None:
         reasons = static_prune_sequence(
