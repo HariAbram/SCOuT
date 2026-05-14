@@ -80,6 +80,8 @@ The policy balances:
 
 Before deeper sequences are explored, the search performs a short single-transform screening phase. During this phase each trial contains one legal transformation. The resulting measurements provide low-cost estimates of individual transformation quality and prevent longer sequences from being built around transformations that are already poor in isolation.
 
+The search also includes a `STOP` action. This action records the no-transformation baseline as a valid tree outcome, allowing the search to represent the case where no Tadashi transformation is preferable for a kernel.
+
 ## Prefix Pruning
 
 A prefix is considered unpromising when it has enough observations and no sufficiently good result. The default decision rule is:
@@ -99,6 +101,8 @@ and best_reward(P) < 1.0:
 ```
 
 These rules prevent the search from repeatedly extending a transformation prefix that is already known to be slower than the baseline.
+
+Individual candidates are also blacklisted when repeated pruned, failed, or early-stopped observations indicate that the same `(scop, node, transform, args)` is consistently unproductive. The default blacklist threshold is controlled by `candidate_blacklist_failures`.
 
 ## Sequence Construction
 
@@ -175,7 +179,9 @@ The search writes several classes of records:
 - cache JSONL: reusable evaluation results keyed by source, sequence, and configuration
 - result JSON: baseline metrics, backend-sensitivity analysis, best result, and backend-specific summaries
 
-History and cache records are used to seed future prefix statistics. Thus previous failures and improvements affect later search runs over similar kernels.
+History and cache records are used to seed future prefix statistics. Thus previous failures and improvements affect later search runs over similar kernels. Cache keys include the configured `target_backend`, so measurements from different backend masks are not reused interchangeably.
+
+When ablation is enabled, the best sequence is replayed after search together with variants that remove one transform at a time and single-transform variants. These records are stored under `ablation_results` in the result JSON. Setting `replay_top_k` replays the top completed trial sequences and stores them under `replay_results`.
 
 ## Important Parameters
 
@@ -190,7 +196,9 @@ The following constraint keys control the adaptive tree behavior:
 "tree_exploration": 0.8,
 "tree_unvisited_bonus": 1.0,
 "tree_failure_penalty": 0.25,
-"tree_max_transforms_per_scop": 1
+"tree_max_transforms_per_scop": 1,
+"candidate_blacklist_failures": 2,
+"mcts_include_stop_action": true
 ```
 
 These parameters are optional. If omitted, the implementation uses internal defaults.

@@ -779,6 +779,7 @@ def _cache_key(
             "runtime_args": poly.runtime_args,
             "objectives": [(obj.metric, obj.goal) for obj in cfg.objectives],
             "backend": cfg.backend,
+            "target_backend": poly.search.target_backend,
             "multi_fidelity": poly.search.multi_fidelity,
             "early_stop_worse_than": poly.search.early_stop_worse_than,
             "repeat": poly.search.repeat,
@@ -885,6 +886,21 @@ def _compact_transform_specs(specs: List[JsonDict]) -> List[JsonDict]:
         }
         for spec in specs
     ]
+
+
+def _stop_spec() -> JsonDict:
+    return {
+        "scop": -1,
+        "node": -1,
+        "tr": "STOP",
+        "args": [],
+        "source_info": {},
+        "scop_classification": {"labels": ["no_transform"]},
+    }
+
+
+def _is_stop_sequence(specs: Sequence[JsonDict]) -> bool:
+    return len(specs) == 1 and str(specs[0].get("tr", "")) == "STOP"
 
 
 def load_evaluation_cache(path: Path | None) -> Dict[str, JsonDict]:
@@ -1088,6 +1104,61 @@ def candidate_args_invalid_for_node(name: str, args: Sequence[Any], node: Any) -
     return None
 
 
+def _best_effort_attr(obj: Any, names: Sequence[str]) -> str | None:
+    for name in names:
+        value = getattr(obj, name, None)
+        if value is None:
+            continue
+        text = str(value)
+        if text and text != "<unknown>":
+            return text
+    return None
+
+
+def _classify_node(node: Any, available_count: int) -> JsonDict:
+    yaml_str = str(getattr(node, "yaml_str", "") or "")
+    loop_rank = _node_loop_rank(node)
+    child_count = _sequence_child_count(node)
+    access_count = len(re.findall(r"\[[^\]]+\]", yaml_str))
+    statement_count = len(set(re.findall(r"\bStmt\w*", yaml_str)))
+    labels: List[str] = []
+    if child_count:
+        labels.append("sequence")
+    else:
+        labels.append("band")
+    if loop_rank <= 1:
+        labels.append("1d_loop")
+    elif loop_rank == 2:
+        labels.append("2d_loop")
+    else:
+        labels.append("deep_loop")
+    if len(yaml_str) < 700:
+        labels.append("small_scop")
+    if access_count >= 4:
+        labels.append("memory_heavy_hint")
+    if available_count <= 3:
+        labels.append("limited_transform_space")
+    return {
+        "labels": labels,
+        "loop_rank": loop_rank,
+        "sequence_child_count": child_count,
+        "statement_count": statement_count,
+        "access_hint_count": access_count,
+        "yaml_bytes": len(yaml_str.encode("utf-8")),
+    }
+
+
+def _candidate_source_info(source: Path, scop: Any, node: Any) -> JsonDict:
+    return {
+        "source": str(source),
+        "function": _best_effort_attr(
+            scop,
+            ["function_name", "function", "name", "func_name"],
+        ),
+        "node_type": str(getattr(node, "node_type", "")),
+    }
+
+
 def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
@@ -1112,6 +1183,8 @@ def enumerate_transform_candidates(
                         "node": node_idx,
                         "tr": name,
                         "args": list(args),
+                        "source_info": _candidate_source_info(app.original_source, scop, node),
+                        "scop_classification": _classify_node(node, len(available)),
                     }
                     if candidate_pipeline:
                         candidate = enrich_candidate(candidate, node)
@@ -1290,6 +1363,18 @@ class AdaptiveTreeState:
             return True
         return False
 
+    def is_blacklisted_candidate(self, candidate: JsonDict) -> bool:
+        stat = self.get([candidate])
+        failure_threshold = int(self.constraints.get("candidate_blacklist_failures", 2))
+        if failure_threshold <= 0:
+            return False
+        failures = stat.failed_count + stat.pruned_count + stat.early_stop_count
+        if failures >= failure_threshold and stat.best_reward < float(
+            self.constraints.get("candidate_blacklist_min_best_speedup", 0.90)
+        ):
+            return True
+        return False
+
     def should_expand(self, specs: List[JsonDict]) -> bool:
         if not specs:
             return True
@@ -1384,6 +1469,12 @@ def sample_transform_sequence(
     if not initial_candidates:
         return []
 
+    if bool(poly.search.constraints.get("mcts_include_stop_action", True)):
+        stop = [_stop_spec()]
+        if sequence_signature(stop) not in tree.tried_sequences:
+            tree.mark_tried(stop)
+            return stop
+
     if bool(poly.search.constraints.get("single_transform_screening", True)):
         limit = int(poly.search.constraints.get("single_transform_screening_limit", 0) or 0)
         if limit <= 0:
@@ -1392,6 +1483,8 @@ def sample_transform_sequence(
             for candidate in _sort_tree_candidates(initial_candidates, tree, []):
                 prefix = [candidate]
                 if sequence_signature(prefix) in tree.tried_sequences:
+                    continue
+                if tree.is_blacklisted_candidate(candidate):
                     continue
                 if tree.is_bad_prefix(prefix):
                     continue
@@ -1421,6 +1514,8 @@ def sample_transform_sequence(
         for candidate in current_candidates:
             exact = _candidate_exact_key(candidate)
             if exact in used_exact:
+                continue
+            if tree.is_blacklisted_candidate(candidate):
                 continue
             if not _candidate_diversity_allowed(chosen, candidate, poly.search.constraints):
                 continue
@@ -2070,6 +2165,39 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 print(f"Trial {trial.number}: cache hit objective={obj_values[0]}, transforms={specs}")
                 return obj_values if is_multi else obj_values[0]
 
+            if _is_stop_sequence(specs):
+                obj_values = _objective_values_from_metrics(cfg, baseline_metrics)
+                value = obj_values[0]
+                speedup = _speedup_for_primary(cfg, baseline_value, value)
+                tree_state.update(specs, max(0.0, speedup), "complete")
+                trial.set_user_attr("tree_updated", True)
+                trial.set_user_attr("runtime", value)
+                trial.set_user_attr("metrics", baseline_metrics)
+                trial.set_user_attr("speedup", speedup)
+                trial.set_user_attr("correctness", {"checked": False, "reason": "baseline stop action"})
+                record = {
+                    "key": cache_key,
+                    "status": "complete",
+                    "source": str(source),
+                    "source_hash": source_hash,
+                    "structural_signature": source_structural_signature,
+                    "sequence_features": sequence_feature_summary(specs),
+                    "target_backend": poly.search.target_backend,
+                    "transform_signature": transform_signature,
+                    "transforms": specs,
+                    "metrics": baseline_metrics,
+                    "objectives": obj_values,
+                    "speedup": speedup,
+                    "performance_feedback_analysis": {"stop_action": True},
+                    "backend_sensitivity": baseline_backend_sensitivity,
+                    "correctness": {"checked": False, "reason": "baseline stop action"},
+                }
+                evaluation_cache[cache_key] = record
+                append_evaluation_cache(cache_path, record)
+                append_history(poly.search.history_jsonl, record)
+                print(f"Trial {trial.number}: STOP action objective={value}, speedup={speedup}")
+                return obj_values if is_multi else value
+
             transformed_app = trial_app.generate_code(
                 alt_infix=generated_infix,
                 ephemeral=False,
@@ -2297,6 +2425,80 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             if transformed_app is not None:
                 cleanup_trial_artifacts(transformed_app, generated_infix=generated_infix)
 
+    def evaluate_sequence_for_analysis(specs: List[JsonDict], label: str) -> JsonDict:
+        cache_key = _cache_key(source_hash=source_hash, specs=specs, poly=poly, cfg=cfg)
+        cached = evaluation_cache.get(cache_key)
+        if cached and cached.get("status") == "complete":
+            return {**cached, "analysis_label": label, "cache_hit": True}
+        if _is_stop_sequence(specs):
+            obj_values = _objective_values_from_metrics(cfg, baseline_metrics)
+            return {
+                "analysis_label": label,
+                "status": "complete",
+                "cache_hit": False,
+                "target_backend": poly.search.target_backend,
+                "transforms": specs,
+                "metrics": baseline_metrics,
+                "objectives": obj_values,
+                "speedup": _speedup_for_primary(cfg, baseline_value, obj_values[0]),
+            }
+
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "-", label).strip("-") or "analysis"
+        generated_infix = f"{poly.search.generated_infix}-{safe_label}"
+        analysis_app: SyclProjectApp | None = None
+        try:
+            app = make_project_app(
+                poly=poly,
+                source=source,
+                exec_name=f"{poly.exec_name}-{safe_label}",
+                populate_scops=True,
+            )
+            apply_transforms_to_scops(app.scops, specs, legality_cb=lambda: app.legal)
+            if not poly.allow_illegal and not app.legal:
+                raise TrialPruned("analysis sequence is not legal")
+            analysis_app = app.generate_code(
+                alt_infix=generated_infix,
+                ephemeral=False,
+                populate_scops=False,
+                ensure_legality=not poly.allow_illegal,
+            )
+            analysis_app = inherit_build_settings(analysis_app, app)
+            analysis_app.exec_name = f"{poly.exec_name}-{safe_label}"
+            build_app_or_raise(analysis_app)
+            metrics = measure_metrics_or_raise(analysis_app, poly.search.repeat, cfg)
+            obj_values = _objective_values_from_metrics(cfg, metrics)
+            speedup = _speedup_for_primary(cfg, baseline_value, obj_values[0])
+            record = {
+                "key": cache_key,
+                "analysis_label": label,
+                "status": "complete",
+                "cache_hit": False,
+                "source": str(source),
+                "source_hash": source_hash,
+                "structural_signature": source_structural_signature,
+                "sequence_features": sequence_feature_summary(specs),
+                "target_backend": poly.search.target_backend,
+                "transform_signature": sequence_signature(specs),
+                "transforms": specs,
+                "metrics": metrics,
+                "objectives": obj_values,
+                "speedup": speedup,
+            }
+            evaluation_cache[cache_key] = record
+            append_evaluation_cache(cache_path, record)
+            return record
+        except Exception as exc:
+            return {
+                "analysis_label": label,
+                "status": "failed",
+                "target_backend": poly.search.target_backend,
+                "transforms": specs,
+                "failure": str(exc),
+            }
+        finally:
+            if analysis_app is not None:
+                cleanup_trial_artifacts(analysis_app, generated_infix=generated_infix)
+
     trials: List[NativeTrial] = []
     start_time = time.monotonic()
     selection_retries = 0
@@ -2385,6 +2587,40 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     print("Best transforms:")
     print(json.dumps(best_specs, indent=2))
 
+    ablation_results: List[JsonDict] = []
+    if poly.search.ablation_enabled and best_specs and not _is_stop_sequence(best_specs):
+        seen_analysis: set[str] = set()
+        analysis_sequences: List[tuple[str, List[JsonDict]]] = [("best_full", list(best_specs))]
+        if len(best_specs) > 1:
+            for idx in range(len(best_specs)):
+                reduced = [spec for pos, spec in enumerate(best_specs) if pos != idx]
+                if reduced:
+                    analysis_sequences.append((f"best_minus_{idx}", reduced))
+        for idx, spec in enumerate(best_specs):
+            analysis_sequences.append((f"best_single_{idx}", [spec]))
+        for label, specs in analysis_sequences:
+            sig = sequence_signature(specs)
+            if sig in seen_analysis:
+                continue
+            seen_analysis.add(sig)
+            print(f"[analysis] replaying {label}")
+            ablation_results.append(evaluate_sequence_for_analysis(specs, label))
+
+    replay_results: List[JsonDict] = []
+    if poly.search.replay_top_k > 0:
+        ranked_trials = sorted(
+            completed_trials,
+            key=lambda trial: trial.values[0] if trial.values else float("inf"),
+            reverse=(cfg.objectives[0].goal == "max" if cfg.objectives else False),
+        )
+        for trial in ranked_trials[: poly.search.replay_top_k]:
+            specs = list(trial.user_attrs.get("transforms", []) or [])
+            if not specs:
+                continue
+            label = f"replay_trial_{trial.number}"
+            print(f"[analysis] replaying {label}")
+            replay_results.append(evaluate_sequence_for_analysis(specs, label))
+
     if poly.search.result_json:
         result = {
             "baseline_runtime": baseline_value,
@@ -2397,6 +2633,8 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             "best_transforms": best_specs,
             "best_trial_number": best_trial.number,
             "backend_best_configs": _backend_specific_best(trials, cfg),
+            "ablation_results": ablation_results,
+            "replay_results": replay_results,
         }
         if is_multi:
             best_trials = pareto_trials(trials, cfg)
