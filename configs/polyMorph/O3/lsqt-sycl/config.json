@@ -20,7 +20,7 @@
       "n_trials": 5,
       "repeat": 2,
       "seed": 42,
-      "timeout": 600,
+      "timeout": 1800,
       "max_transforms_per_trial": 5,
       "tile_sizes": [8, 16, 32],
       "scale_factors": [2],
