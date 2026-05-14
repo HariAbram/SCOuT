@@ -92,10 +92,53 @@ def compact_transform_sequence(transforms: Any, max_items: int = 3) -> list[str]
 
 
 def config_dirs(root: Path) -> list[Path]:
-    base = root / "configs" / "polyMorph"
-    if not base.exists():
-        return []
-    return sorted(path.parent for path in base.rglob("config.json"))
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+
+    def add_dir(path: Path) -> None:
+        cfg_dir = path.resolve()
+        if cfg_dir not in seen:
+            seen.add(cfg_dir)
+            candidates.append(cfg_dir)
+
+    def add_output_dirs(base: Path) -> None:
+        if not base.exists():
+            return
+        if base.is_file():
+            if (
+                base.name.endswith("-result.json")
+                or base.name.endswith("-trials.csv")
+                or base.name.endswith("-history.jsonl")
+            ):
+                add_dir(base.parent)
+            return
+        for pattern in ["*-result.json", "*-trials.csv", "*-history.jsonl"]:
+            for path in base.rglob(pattern):
+                add_dir(path.parent)
+
+    def add_config_dirs(base: Path) -> None:
+        if not base.exists():
+            return
+        if base.is_file() and base.name == "config.json":
+            add_dir(base.parent)
+            return
+        if not base.is_dir():
+            return
+        direct = base / "config.json"
+        if direct.exists():
+            add_dir(base)
+        for path in base.rglob("config.json"):
+            add_dir(path.parent)
+
+    def add_base(base: Path) -> None:
+        if not base.exists():
+            return
+        add_config_dirs(base)
+        add_output_dirs(base)
+
+    add_base(root)
+    add_base(root / "configs" / "polyMorph")
+    return sorted(candidates)
 
 
 def opt_and_benchmark(config_dir: Path) -> tuple[str, str]:
