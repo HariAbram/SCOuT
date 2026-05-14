@@ -12,6 +12,7 @@ import subprocess
 import stat
 import sys
 import time
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -917,6 +918,35 @@ def _is_stop_sequence(specs: Sequence[JsonDict]) -> bool:
     return len(specs) == 1 and str(specs[0].get("tr", "")) == "STOP"
 
 
+def _transform_family(name: str) -> str:
+    upper = str(name).upper()
+    if upper == "STOP":
+        return "STOP"
+    if upper.startswith("TILE"):
+        return "TILE"
+    if upper == "INTERCHANGE":
+        return "INTERCHANGE"
+    if "FUSE" in upper:
+        return "FUSE"
+    if "SPLIT" in upper or upper == "SCALE":
+        return "SPLIT"
+    if "SHIFT" in upper:
+        return "SHIFT"
+    if upper in {"SET_LOOP_OPT", "SET_PARALLEL"}:
+        return "PARALLEL_HINT"
+    return upper or "OTHER"
+
+
+def _candidate_family(candidate: JsonDict) -> str:
+    return _transform_family(str(candidate.get("tr", "")))
+
+
+def _format_family_counts(counts: Counter[str]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{family}:{count}" for family, count in sorted(counts.items()))
+
+
 def load_evaluation_cache(path: Path | None) -> Dict[str, JsonDict]:
     if path is None or not path.exists():
         return {}
@@ -1177,8 +1207,12 @@ def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
     performance_bias: Dict[str, JsonDict] | None = None,
+    *,
+    print_family_summary: bool = False,
 ) -> List[JsonDict]:
     candidates: List[JsonDict] = []
+    available_family_counts: Counter[str] = Counter()
+    kept_family_counts: Counter[str] = Counter()
     candidate_pipeline = _candidate_pipeline_enabled(poly)
     performance_bias = performance_bias or {}
     for scop_idx, scop in enumerate(app.scops):
@@ -1189,6 +1223,8 @@ def enumerate_transform_candidates(
                 if not transform_allowed(name, poly):
                     continue
                 for args in candidate_args_for_node(name, poly, node):
+                    family = _transform_family(name)
+                    available_family_counts[family] += 1
                     invalid_reason = candidate_args_invalid_for_node(name, args, node)
                     if invalid_reason:
                         continue
@@ -1220,8 +1256,16 @@ def enumerate_transform_candidates(
                         if candidate["prune_reasons"]:
                             continue
                     candidates.append(candidate)
+                    kept_family_counts[_candidate_family(candidate)] += 1
     if candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
         candidates = select_diverse_top_k(candidates, poly.search.top_k)
+        kept_family_counts = Counter(_candidate_family(candidate) for candidate in candidates)
+    if print_family_summary and bool(poly.search.constraints.get("print_candidate_family_counts", True)):
+        print(
+            "Candidate family counts: "
+            f"available={_format_family_counts(available_family_counts)}; "
+            f"kept={_format_family_counts(kept_family_counts)}"
+        )
     return candidates
 
 
@@ -1312,6 +1356,7 @@ class AdaptiveTreeState:
     stats: Dict[str, PrefixStats] = field(default_factory=dict)
     pair_stats: Dict[str, PrefixStats] = field(default_factory=dict)
     tried_sequences: set[str] = field(default_factory=set)
+    tried_family_counts: Counter[str] = field(default_factory=Counter)
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
         return sequence_signature(specs) if specs else "root"
@@ -1321,7 +1366,10 @@ class AdaptiveTreeState:
 
     def mark_tried(self, specs: List[JsonDict]) -> None:
         if specs:
-            self.tried_sequences.add(sequence_signature(specs))
+            signature = sequence_signature(specs)
+            if signature not in self.tried_sequences:
+                self.tried_sequences.add(signature)
+                self.tried_family_counts[_candidate_family(specs[0])] += 1
 
     def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
         self.mark_tried(specs)
@@ -1409,6 +1457,8 @@ class AdaptiveTreeState:
         stat = self.get(child)
         prior_score, neg_risk = candidate_rank_key(candidate)
         prior = 0.35 * prior_score + 0.15 * max(0.0, 1.0 + neg_risk)
+        if self.tried_family_counts[_candidate_family(candidate)] == 0:
+            prior += float(self.constraints.get("tree_family_novelty_bonus", 0.20))
         if parent:
             pair_key = stable_json_hash([
                 _compact_transform_specs([parent[-1]])[0],
@@ -1469,6 +1519,45 @@ def _sort_tree_candidates(
     return [candidate for _, candidate in scored]
 
 
+def _single_transform_screening_order(
+    candidates: List[JsonDict],
+    tree: AdaptiveTreeState,
+) -> List[JsonDict]:
+    ranked = _sort_tree_candidates(candidates, tree, [])
+    per_family = int(tree.constraints.get("screening_per_family", 2))
+    if per_family <= 0:
+        return ranked
+
+    grouped: Dict[str, List[JsonDict]] = {}
+    for candidate in ranked:
+        grouped.setdefault(_candidate_family(candidate), []).append(candidate)
+    family_order = sorted(
+        grouped,
+        key=lambda family: candidate_rank_key(grouped[family][0]),
+        reverse=True,
+    )
+
+    ordered: List[JsonDict] = []
+    seen: set[tuple[int, int, str, tuple[Any, ...]]] = set()
+    for round_idx in range(per_family):
+        for family in family_order:
+            if tree.tried_family_counts[family] > round_idx:
+                continue
+            group = grouped[family]
+            if round_idx >= len(group):
+                continue
+            candidate = group[round_idx]
+            seen.add(_candidate_exact_key(candidate))
+            ordered.append(candidate)
+
+    for candidate in ranked:
+        exact = _candidate_exact_key(candidate)
+        if exact in seen:
+            continue
+        ordered.append(candidate)
+    return ordered
+
+
 def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> float:
     return max(0.0, _speedup_for_primary(cfg, baseline_value, value))
 
@@ -1498,7 +1587,7 @@ def sample_transform_sequence(
         if limit <= 0:
             limit = min(16, len(initial_candidates))
         if tree.get([]).visits < limit:
-            for candidate in _sort_tree_candidates(initial_candidates, tree, []):
+            for candidate in _single_transform_screening_order(initial_candidates, tree):
                 prefix = [candidate]
                 if sequence_signature(prefix) in tree.tried_sequences:
                     continue
@@ -2068,7 +2157,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         exec_name=poly.exec_name,
         populate_scops=True,
     )
-    candidates = enumerate_transform_candidates(enum_app, poly)
+    candidates = enumerate_transform_candidates(enum_app, poly, print_family_summary=True)
     print_candidates(candidates, verbose=poly.search.enumerate_only)
 
     if not candidates:

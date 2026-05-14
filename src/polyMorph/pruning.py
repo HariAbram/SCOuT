@@ -122,24 +122,24 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
         preferred = float(constraints.get("preferred_tile_size", 32))
         if max_tile_size:
             distance = abs(max_tile_size - preferred) / max(preferred, 1.0)
-            score += max(0.0, 0.25 - 0.15 * distance)
+            score += max(0.0, 0.14 - 0.08 * distance)
             reasons.append("tile size close to preferred cache/vector heuristic")
         if loop_rank and tile_rank > loop_rank:
             score -= 0.35
             risk += 0.35
             reasons.append(f"tile rank {tile_rank} exceeds classified loop_rank={loop_rank}")
         elif loop_rank >= 2 and tile_rank >= 2:
-            score += 0.08
+            score += 0.04
             reasons.append("multi-dimensional tile matches loop nest rank")
         elif loop_rank <= 1 and tile_rank == 1:
-            score += 0.03
+            score += 0.02
             reasons.append("1D tile matches 1D loop classification")
         if "small_scop" in labels:
             score -= 0.10
             risk += 0.08
             reasons.append("small SCoP may not amortize tiling overhead")
         if "memory_heavy_hint" in labels:
-            score += 0.10
+            score += 0.05
             reasons.append("memory-heavy SCoP may benefit from locality tiling")
         if tile_volume > float(constraints.get("large_tile_volume", 4096)):
             risk += 0.25
