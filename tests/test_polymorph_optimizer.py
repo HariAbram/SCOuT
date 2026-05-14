@@ -347,6 +347,24 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         tree.mark_tried(prefix)
         self.assertIn(sequence_signature(prefix), tree.tried_sequences)
 
+    def test_adaptive_tree_disables_fuse_after_enough_screening_failures(self) -> None:
+        tree = AdaptiveTreeState(
+            constraints={"disable_family_after_failures": 2, "disable_family_failure_fraction": 0.5},
+            rng=__import__("random").Random(0),
+        )
+        candidates = [
+            {"scop": 0, "node": 2, "tr": "FUSE", "args": [0, 1]},
+            {"scop": 0, "node": 2, "tr": "FUSE", "args": [1, 2]},
+            {"scop": 1, "node": 2, "tr": "FUSE", "args": [0, 1]},
+            {"scop": 1, "node": 2, "tr": "FUSE", "args": [1, 2]},
+        ]
+        tree.mark_existing([candidates[0]], 0.0, "failed")
+        self.assertFalse(tree.disable_family_if_screening_unpromising("FUSE", candidates))
+        tree.mark_existing([candidates[1]], 0.0, "failed")
+        self.assertTrue(tree.disable_family_if_screening_unpromising("FUSE", candidates))
+        self.assertIn("FUSE", tree.disabled_families)
+        self.assertTrue(tree.is_blacklisted_candidate(candidates[0]))
+
     def test_fuse_candidate_args_are_checked_against_sequence_children(self) -> None:
         node = SimpleNamespace(node_type="NodeType.SEQUENCE", yaml_str="sequence:\n- filter: A\n- filter: B\n")
         self.assertIsNone(candidate_args_invalid_for_node("FUSE", [0, 1], node))

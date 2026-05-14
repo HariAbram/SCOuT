@@ -1426,6 +1426,9 @@ class AdaptiveTreeState:
     pair_stats: Dict[str, PrefixStats] = field(default_factory=dict)
     tried_sequences: set[str] = field(default_factory=set)
     tried_family_counts: Counter[str] = field(default_factory=Counter)
+    failed_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
+    successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
+    disabled_families: set[str] = field(default_factory=set)
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
         return sequence_signature(specs) if specs else "root"
@@ -1445,6 +1448,15 @@ class AdaptiveTreeState:
         self.update(specs, reward, status)
 
     def update(self, specs: List[JsonDict], reward: float, status: str) -> None:
+        if specs:
+            first = specs[0]
+            family = _candidate_family(first)
+            signature = sequence_signature([first])
+            if status == "complete":
+                self.successful_family_candidates.setdefault(family, set()).add(signature)
+            elif status == "failed":
+                self.failed_family_candidates.setdefault(family, set()).add(signature)
+
         root = self.get([])
         root.visits += 1
         root.total_reward += reward
@@ -1495,6 +1507,8 @@ class AdaptiveTreeState:
         return False
 
     def is_blacklisted_candidate(self, candidate: JsonDict) -> bool:
+        if _candidate_family(candidate) in self.disabled_families:
+            return True
         stat = self.get([candidate])
         failure_threshold = int(self.constraints.get("candidate_blacklist_failures", 2))
         if failure_threshold <= 0:
@@ -1503,6 +1517,33 @@ class AdaptiveTreeState:
         if failures >= failure_threshold and stat.best_reward < float(
             self.constraints.get("candidate_blacklist_min_best_speedup", 0.90)
         ):
+            return True
+        return False
+
+    def disable_family_if_screening_unpromising(self, family: str, candidates: Sequence[JsonDict]) -> bool:
+        if family in self.disabled_families:
+            return False
+        enabled = {
+            sequence_signature([candidate])
+            for candidate in candidates
+            if _candidate_family(candidate) == family
+        }
+        if not enabled:
+            return False
+        failed = self.failed_family_candidates.get(family, set())
+        successful = self.successful_family_candidates.get(family, set())
+        relevant_failures = enabled.intersection(failed)
+        relevant_successes = enabled.intersection(successful)
+        min_failures = int(self.constraints.get("disable_family_after_failures", 4))
+        fail_fraction = float(self.constraints.get("disable_family_failure_fraction", 0.50))
+        enough_failures = len(relevant_failures) >= max(1, min_failures)
+        enough_fraction = len(relevant_failures) / max(len(enabled), 1) >= fail_fraction
+        if enough_failures and enough_fraction and not relevant_successes:
+            self.disabled_families.add(family)
+            print(
+                f"[MCTS] disabled {family} after "
+                f"{len(relevant_failures)}/{len(enabled)} screening candidates failed"
+            )
             return True
         return False
 
@@ -1580,6 +1621,11 @@ def _sort_tree_candidates(
     tree: AdaptiveTreeState,
     chosen: List[JsonDict],
 ) -> List[JsonDict]:
+    candidates = [
+        candidate
+        for candidate in candidates
+        if _candidate_family(candidate) not in tree.disabled_families
+    ]
     scored = [
         (tree.score_child(chosen, [*chosen, candidate], candidate), candidate)
         for candidate in candidates
@@ -1658,6 +1704,8 @@ def sample_transform_sequence(
         if tree.get([]).visits < limit:
             for candidate in _single_transform_screening_order(initial_candidates, tree):
                 prefix = [candidate]
+                if _candidate_family(candidate) in tree.disabled_families:
+                    continue
                 if sequence_signature(prefix) in tree.tried_sequences:
                     continue
                 if tree.is_blacklisted_candidate(candidate):
@@ -1672,6 +1720,8 @@ def sample_transform_sequence(
                     )
                 except InvalidTransformArgs as exc:
                     tree.mark_existing(prefix, 0.0, "failed")
+                    if _candidate_family(candidate) == "FUSE":
+                        tree.disable_family_if_screening_unpromising("FUSE", initial_candidates)
                     continue
                 except Exception as exc:
                     mark_failed_and_prune(prefix, str(exc))
@@ -1690,6 +1740,8 @@ def sample_transform_sequence(
 
         viable: List[JsonDict] = []
         for candidate in current_candidates:
+            if _candidate_family(candidate) in tree.disabled_families:
+                continue
             exact = _candidate_exact_key(candidate)
             if exact in used_exact:
                 continue
