@@ -371,9 +371,16 @@ def apply_transforms_to_scops(
                 f"{tr_name} returned False on scop={scop_idx}, node={node_idx}"
             )
 
-        available = getattr(node, "available_transformations", [])
-        names = [getattr(item, "name", str(item)) for item in available]
-        print(f"  current node type: {getattr(node, 'node_type', '<unknown>')}")
+        try:
+            available = getattr(node, "available_transformations", [])
+            names = [getattr(item, "name", str(item)) for item in available]
+        except Exception as exc:
+            names = [f"<unavailable: {exc}>"]
+        try:
+            node_type = getattr(node, "node_type", "<unknown>")
+        except Exception as exc:
+            node_type = f"<invalid: {exc}>"
+        print(f"  current node type: {node_type}")
         print(f"  currently available: {names}")
 
         if legality_cb is not None:
@@ -382,6 +389,13 @@ def apply_transforms_to_scops(
                 print(f"  legal()={legal}")
             except Exception as exc:
                 print(f"  legality check failed: {exc}")
+
+
+def app_is_legal(app: SyclProjectApp) -> bool:
+    try:
+        return bool(app.legal)
+    except Exception:
+        return False
 
 
 def copy_jscops_from_translator(translator: Any, dst_dir: Path) -> None:
@@ -1465,6 +1479,10 @@ def sample_transform_sequence(
     tree: AdaptiveTreeState,
     performance_bias: Dict[str, JsonDict] | None = None,
 ) -> List[JsonDict]:
+    def mark_failed_and_prune(prefix: List[JsonDict], message: str) -> None:
+        tree.mark_existing(prefix, 0.0, "failed")
+        raise TrialPruned(message)
+
     initial_candidates = enumerate_transform_candidates(app, poly, performance_bias)
     if not initial_candidates:
         return []
@@ -1492,13 +1510,15 @@ def sample_transform_sequence(
                     apply_transforms_to_scops(
                         app.scops,
                         prefix,
-                        legality_cb=lambda: app.legal,
+                        legality_cb=lambda: app_is_legal(app),
                     )
-                except InvalidTransformArgs:
-                    continue
-                if not poly.allow_illegal and not app.legal:
+                except InvalidTransformArgs as exc:
                     tree.mark_existing(prefix, 0.0, "failed")
-                    raise TrialPruned("Illegal transformed schedule")
+                    continue
+                except Exception as exc:
+                    mark_failed_and_prune(prefix, str(exc))
+                if not poly.allow_illegal and not app_is_legal(app):
+                    mark_failed_and_prune(prefix, "Illegal transformed schedule")
                 tree.mark_tried(prefix)
                 return prefix
 
@@ -1539,15 +1559,16 @@ def sample_transform_sequence(
                 apply_transforms_to_scops(
                     app.scops,
                     [candidate],
-                    legality_cb=lambda: app.legal,
+                    legality_cb=lambda: app_is_legal(app),
                 )
-                if not poly.allow_illegal and not app.legal:
-                    tree.mark_existing([*chosen, candidate], 0.0, "failed")
-                    last_invalid = InvalidTransformArgs("Illegal transformed schedule")
-                    raise TrialPruned("Illegal transformed schedule")
+                if not poly.allow_illegal and not app_is_legal(app):
+                    mark_failed_and_prune([*chosen, candidate], "Illegal transformed schedule")
             except InvalidTransformArgs as exc:
+                tree.mark_existing([*chosen, candidate], 0.0, "failed")
                 last_invalid = exc
                 continue
+            except Exception as exc:
+                mark_failed_and_prune([*chosen, candidate], str(exc))
             spec = candidate
             break
         if spec is None:
@@ -1555,8 +1576,8 @@ def sample_transform_sequence(
         chosen.append(spec)
         used_exact.add(_candidate_exact_key(spec))
 
-        if not poly.allow_illegal and not app.legal:
-            raise TrialPruned("Illegal transformed schedule")
+        if not poly.allow_illegal and not app_is_legal(app):
+            mark_failed_and_prune(chosen, "Illegal transformed schedule")
 
         if poly.search.constraint_aware:
             reasons = static_prune_sequence(chosen, poly.search.constraints)
@@ -1967,15 +1988,11 @@ def run_project_mode(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         return 0
 
     if poly.transforms:
-        apply_transforms_to_scops(app.scops, poly.transforms, legality_cb=lambda: app.legal)
+        apply_transforms_to_scops(app.scops, poly.transforms, legality_cb=lambda: app_is_legal(app))
     else:
         print("\nNo transforms were provided; project will be rebuilt around unchanged source.")
 
-    try:
-        final_legal = app.legal
-    except Exception as exc:
-        print(f"Final legality check failed: {exc}")
-        final_legal = False
+    final_legal = app_is_legal(app)
 
     print(f"\nFinal legality: {final_legal}")
     if not final_legal and not poly.allow_illegal:
@@ -2453,8 +2470,8 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 exec_name=f"{poly.exec_name}-{safe_label}",
                 populate_scops=True,
             )
-            apply_transforms_to_scops(app.scops, specs, legality_cb=lambda: app.legal)
-            if not poly.allow_illegal and not app.legal:
+            apply_transforms_to_scops(app.scops, specs, legality_cb=lambda: app_is_legal(app))
+            if not poly.allow_illegal and not app_is_legal(app):
                 raise TrialPruned("analysis sequence is not legal")
             analysis_app = app.generate_code(
                 alt_infix=generated_infix,
