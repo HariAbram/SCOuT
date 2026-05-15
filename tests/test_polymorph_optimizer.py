@@ -35,6 +35,7 @@ from src.polyMorph.runner import (
     tadashi_compiler_options,
     verify_correctness_outputs,
     _short_jscop_backup_path,
+    _sort_tree_candidates,
 )
 
 
@@ -356,6 +357,22 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertTrue(tree.is_terminal_evaluated(prefix))
         self.assertFalse(tree.is_terminal_evaluated(child))
         self.assertIn(sequence_signature(prefix), tree.tried_sequences)
+
+    def test_adaptive_tree_saturates_terminal_repeats(self) -> None:
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        prefix = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
+        tree.mark_existing(prefix, 1.1, "complete")
+        tree.mark_terminal_repeat(prefix)
+        self.assertTrue(tree.is_saturated(prefix))
+        self.assertEqual(tree.terminal_repeat_counts[sequence_signature(prefix)], 1)
+
+    def test_saturated_prefixes_are_not_ranked_for_selection(self) -> None:
+        tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))
+        saturated = {"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}
+        other = {"scop": 1, "node": 1, "tr": "INTERCHANGE", "args": []}
+        tree.mark_saturated([saturated], "test")
+        ranked = _sort_tree_candidates([saturated, other], tree, [])
+        self.assertEqual(ranked, [other])
 
     def test_adaptive_tree_disables_scops_after_filename_too_long(self) -> None:
         tree = AdaptiveTreeState(constraints={}, rng=__import__("random").Random(0))

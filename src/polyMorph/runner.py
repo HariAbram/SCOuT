@@ -1453,6 +1453,8 @@ class AdaptiveTreeState:
     pair_stats: Dict[str, PrefixStats] = field(default_factory=dict)
     tried_sequences: set[str] = field(default_factory=set)
     evaluated_terminal_sequences: set[str] = field(default_factory=set)
+    saturated_prefixes: set[str] = field(default_factory=set)
+    terminal_repeat_counts: Counter[str] = field(default_factory=Counter)
     tried_family_counts: Counter[str] = field(default_factory=Counter)
     failed_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
@@ -1483,6 +1485,26 @@ class AdaptiveTreeState:
 
     def is_terminal_evaluated(self, specs: List[JsonDict]) -> bool:
         return bool(specs) and sequence_signature(specs) in self.evaluated_terminal_sequences
+
+    def mark_saturated(self, specs: List[JsonDict], reason: str | None = None) -> None:
+        if not specs:
+            return
+        signature = sequence_signature(specs)
+        if signature in self.saturated_prefixes:
+            return
+        self.saturated_prefixes.add(signature)
+        if reason:
+            print(f"[MCTS] saturated prefix after {reason}: {len(specs)} transform(s)")
+
+    def mark_terminal_repeat(self, specs: List[JsonDict]) -> None:
+        if not specs:
+            return
+        signature = sequence_signature(specs)
+        self.terminal_repeat_counts[signature] += 1
+        self.mark_saturated(specs, "terminal repeat")
+
+    def is_saturated(self, specs: List[JsonDict]) -> bool:
+        return bool(specs) and sequence_signature(specs) in self.saturated_prefixes
 
     def update(self, specs: List[JsonDict], reward: float, status: str) -> None:
         if specs:
@@ -1617,6 +1639,8 @@ class AdaptiveTreeState:
     ) -> float:
         parent_visits = max(1, self.get(parent).visits)
         stat = self.get(child)
+        if self.is_saturated(child):
+            return -1.0e9
         prior_score, neg_risk = candidate_rank_key(candidate)
         prior = 0.35 * prior_score + 0.15 * max(0.0, 1.0 + neg_risk)
         if self.tried_family_counts[_candidate_family(candidate)] == 0:
@@ -1683,6 +1707,7 @@ def _sort_tree_candidates(
         for candidate in candidates
         if _candidate_family(candidate) not in tree.disabled_families
         and int(candidate.get("scop", -1)) not in tree.disabled_scops
+        and not tree.is_saturated([*chosen, candidate])
     ]
     scored = [
         (tree.score_child(chosen, [*chosen, candidate], candidate), candidate)
@@ -1775,6 +1800,8 @@ def sample_transform_sequence(
                     continue
                 if sequence_signature(prefix) in tree.tried_sequences:
                     continue
+                if tree.is_saturated(prefix):
+                    continue
                 if tree.is_blacklisted_candidate(candidate):
                     continue
                 if tree.is_bad_prefix(prefix):
@@ -1819,6 +1846,8 @@ def sample_transform_sequence(
             if not _candidate_diversity_allowed(chosen, candidate, poly.search.constraints):
                 continue
             next_prefix = [*chosen, candidate]
+            if tree.is_saturated(next_prefix):
+                continue
             if tree.is_bad_prefix(next_prefix):
                 continue
             next_is_terminal_repeat = tree.is_terminal_evaluated(next_prefix)
@@ -1834,6 +1863,7 @@ def sample_transform_sequence(
             viable.append(candidate)
         if not viable:
             if chosen and tree.is_terminal_evaluated(chosen):
+                tree.mark_terminal_repeat(chosen)
                 raise TrialPruned("terminal sequence already evaluated")
             break
 
@@ -1873,6 +1903,7 @@ def sample_transform_sequence(
             break
 
     if chosen and tree.is_terminal_evaluated(chosen):
+        tree.mark_terminal_repeat(chosen)
         raise TrialPruned("terminal sequence already evaluated")
     return chosen
 
@@ -2449,6 +2480,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 trial.set_user_attr("cache_hit", True)
                 if status == "failed":
                     tree_state.update(specs, 0.0, "failed")
+                    tree_state.mark_saturated(specs, "cached failed terminal")
                     trial.set_user_attr("tree_updated", True)
                     raise TrialPruned(str(cached.get("failure", "cached failed evaluation")))
                 metrics = dict(cached.get("metrics", {}) or {})
@@ -2458,6 +2490,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 speedup = float(cached.get("speedup", _speedup_for_primary(cfg, baseline_value, obj_values[0])) or 0.0)
                 cache_reward_scale = float(poly.search.constraints.get("cache_hit_reward_scale", 0.95))
                 tree_state.update(specs, max(0.0, speedup * cache_reward_scale), "complete")
+                tree_state.mark_saturated(specs, "cache hit")
                 trial.set_user_attr("tree_updated", True)
                 trial.set_user_attr("runtime", obj_values[0])
                 trial.set_user_attr("metrics", metrics)
