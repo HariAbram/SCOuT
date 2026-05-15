@@ -71,7 +71,12 @@
         "backend_sensitivity_rel_threshold": 0.35,
         "performance_feedback_bias_weight": 0.35,
         "early_stop_warmup_runs": 1,
-        "early_stop_measure_runs": 1
+        "early_stop_measure_runs": 1,
+        "hot_kernel_filter": false,
+        "hot_kernel_top_k": 3,
+        "hot_kernel_min_fraction": 0.0,
+        "hot_kernel_min_scops": 1,
+        "hot_kernel_scop_mapping": "ordinal"
       },
       "generated_infix": "columnarSolver",
       "baseline_exec_name": "build/columnarSolver-baseline",

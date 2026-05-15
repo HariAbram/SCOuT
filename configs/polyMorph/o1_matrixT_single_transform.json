@@ -38,7 +38,12 @@
       "early_stop_worse_than": 1.15,
       "constraints": {
         "early_stop_warmup_runs": 1,
-        "early_stop_measure_runs": 1
+        "early_stop_measure_runs": 1,
+        "hot_kernel_filter": false,
+        "hot_kernel_top_k": 3,
+        "hot_kernel_min_fraction": 0.0,
+        "hot_kernel_min_scops": 1,
+        "hot_kernel_scop_mapping": "ordinal"
       },
       "ablation_enabled": false,
       "replay_top_k": 0

@@ -157,6 +157,16 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `disable_family_failure_fraction` | `0.50` | Fraction of visible screening candidates in a family that must fail before the family is disabled. |
 | `cache_hit_reward_scale` | `0.95` | Reward multiplier used when a cached terminal sequence is selected. The tree is updated, but the trial is retried instead of counted as a completed trial. |
 
+### Hot-Kernel Filtering
+
+| Key | Default | Meaning |
+|---|---:|---|
+| `hot_kernel_filter` | `true` | Use baseline per-kernel timing to focus candidate SCoPs on the hottest kernels. The filter automatically disables itself when only one kernel is measured or no reliable SCoP mapping can be inferred. |
+| `hot_kernel_top_k` | `3` | Number of hottest kernels to keep. |
+| `hot_kernel_min_fraction` | `0.0` | If greater than zero, include additional kernels until this fraction of total kernel time is covered. |
+| `hot_kernel_min_scops` | `1` | Disable the filter if fewer than this many SCoPs would remain. |
+| `hot_kernel_scop_mapping` | `ordinal` | Heuristic SCoP-to-kernel mapping. `ordinal` uses one-based SCoP order when plausible, otherwise buckets SCoPs across kernel IDs. `one_based` maps `scop + 1`; `zero_based` maps `scop`. |
+
 ### Multi-Fidelity Early Stopping
 
 | Key | Default | Meaning |

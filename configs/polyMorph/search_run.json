@@ -1,24 +1,42 @@
 {
   "backend": "perf",
   "perf": {
-    "events": ["cycles", "instructions"],
+    "events": [
+      "cycles",
+      "instructions"
+    ],
     "core_list": "",
     "objective": {
       "metric": "CPI",
       "goal": "min"
     }
   },
-  "objectives": [{"metric": "CPI", "goal": "min"}],
+  "objectives": [
+    {
+      "metric": "CPI",
+      "goal": "min"
+    }
+  ],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/microSYCL",
     "source": "test-benchmarks/microSYCL/src/main.cpp",
     "compiler": "acpp",
-    "flags": ["--acpp-platform=cpu", "--acpp-targets=generic", "-O3"],
+    "flags": [
+      "--acpp-platform=cpu",
+      "--acpp-targets=generic",
+      "-O3"
+    ],
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "bin/main-acpp-generic",
-    "runtime_args": ["-s", "1024", "--gemm", "-i", "3"],
+    "runtime_args": [
+      "-s",
+      "1024",
+      "--gemm",
+      "-i",
+      "3"
+    ],
     "search": {
       "n_trials": 5,
       "repeat": 2,
@@ -27,9 +45,17 @@
       "timeout": 600,
       "baseline_exec_name": "bin/main-acpp-generic-baseline",
       "max_transforms_per_trial": 5,
-      "tile_sizes": [16, 32],
-      "scale_factors": [2],
-      "shift_values": [-1, 1],
+      "tile_sizes": [
+        16,
+        32
+      ],
+      "scale_factors": [
+        2
+      ],
+      "shift_values": [
+        -1,
+        1
+      ],
       "result_json": "/tmp/scout-polymorph/search_result.json",
       "structural_retrieval": true,
       "cache_evaluations": true,
@@ -37,7 +63,12 @@
       "early_stop_worse_than": 1.15,
       "constraints": {
         "early_stop_warmup_runs": 1,
-        "early_stop_measure_runs": 1
+        "early_stop_measure_runs": 1,
+        "hot_kernel_filter": false,
+        "hot_kernel_top_k": 3,
+        "hot_kernel_min_fraction": 0.0,
+        "hot_kernel_min_scops": 1,
+        "hot_kernel_scop_mapping": "ordinal"
       },
       "cache_jsonl": "/tmp/scout-polymorph/search_result.cache.jsonl",
       "ablation_enabled": false,

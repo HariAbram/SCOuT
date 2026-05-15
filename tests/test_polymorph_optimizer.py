@@ -23,6 +23,8 @@ from src.polyMorph.runner import (
     analyze_kernel_timing_deltas,
     append_evaluation_cache,
     apply_learned_model_to_candidates,
+    apply_hot_kernel_filter_to_candidates,
+    build_hot_kernel_filter,
     build_learned_candidate_model,
     candidate_args_invalid_for_node,
     candidate_args_for_node,
@@ -380,6 +382,30 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         tree.disable_scops_from_specs(specs, "JScop filename too long")
         self.assertIn(6, tree.disabled_scops)
         self.assertTrue(tree.is_blacklisted_candidate(specs[0]))
+
+    def test_hot_kernel_filter_keeps_scops_mapped_to_hot_kernels(self) -> None:
+        candidates = [
+            {"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]},
+            {"scop": 1, "node": 1, "tr": "TILE_1D", "args": [32]},
+            {"scop": 2, "node": 1, "tr": "TILE_1D", "args": [32]},
+        ]
+        metrics = {
+            "sycl_kernel_1_avg_s": 1.0,
+            "sycl_kernel_2_avg_s": 5.0,
+            "sycl_kernel_3_avg_s": 0.5,
+        }
+        hot_filter = build_hot_kernel_filter(candidates, metrics, {"hot_kernel_top_k": 1})
+        self.assertTrue(hot_filter.enabled)
+        self.assertEqual(hot_filter.hot_kernels, [2])
+        self.assertEqual(hot_filter.allowed_scops, {1})
+        filtered = apply_hot_kernel_filter_to_candidates(candidates, hot_filter)
+        self.assertEqual([candidate["scop"] for candidate in filtered], [1])
+        self.assertEqual(filtered[0]["source_info"]["suspected_kernel"], 2)
+
+    def test_hot_kernel_filter_disables_when_only_one_kernel_is_measured(self) -> None:
+        candidates = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
+        hot_filter = build_hot_kernel_filter(candidates, {"sycl_kernel_1_avg_s": 1.0}, {})
+        self.assertFalse(hot_filter.enabled)
 
     def test_long_jscop_backup_path_is_shortened(self) -> None:
         path = Path("/tmp") / ("x" * 240 + ".jscop.bak")

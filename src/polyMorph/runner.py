@@ -76,6 +76,28 @@ class CachedSequenceSelected(TrialPruned):
 
 
 @dataclass
+class HotKernelFilter:
+    enabled: bool = False
+    hot_kernels: List[int] = field(default_factory=list)
+    allowed_scops: set[int] = field(default_factory=set)
+    kernel_by_scop: Dict[int, int] = field(default_factory=dict)
+    total_kernel_time: float = 0.0
+    selected_kernel_time: float = 0.0
+
+    @property
+    def coverage(self) -> float:
+        if self.total_kernel_time <= 0.0:
+            return 0.0
+        return self.selected_kernel_time / self.total_kernel_time
+
+    def allows(self, candidate: JsonDict) -> bool:
+        if not self.enabled:
+            return True
+        scop = int(candidate.get("scop", -1))
+        return scop in self.allowed_scops
+
+
+@dataclass
 class NativeTrial:
     number: int
     state: str = "RUNNING"
@@ -976,6 +998,93 @@ def _format_family_counts(counts: Counter[str]) -> str:
     return ", ".join(f"{family}:{count}" for family, count in sorted(counts.items()))
 
 
+def _hot_kernel_metrics(metrics: Dict[str, float]) -> list[tuple[int, float]]:
+    return sorted(
+        ((kernel_id, runtime) for kernel_id, runtime in _kernel_metrics(metrics).items() if runtime > 0.0),
+        key=lambda item: item[1],
+        reverse=True,
+    )
+
+
+def build_hot_kernel_filter(
+    candidates: Sequence[JsonDict],
+    baseline_metrics: Dict[str, float],
+    constraints: JsonDict,
+) -> HotKernelFilter:
+    if not bool(constraints.get("hot_kernel_filter", True)):
+        return HotKernelFilter()
+    kernel_times = _hot_kernel_metrics(baseline_metrics)
+    scop_ids = sorted({
+        int(candidate.get("scop", -1))
+        for candidate in candidates
+        if int(candidate.get("scop", -1)) >= 0
+    })
+    if len(kernel_times) <= 1 or not scop_ids:
+        return HotKernelFilter()
+
+    top_k = int(constraints.get("hot_kernel_top_k", 3) or 3)
+    top_k = max(1, min(top_k, len(kernel_times)))
+    min_fraction = float(constraints.get("hot_kernel_min_fraction", 0.0) or 0.0)
+    total_time = sum(runtime for _, runtime in kernel_times)
+    selected: list[tuple[int, float]] = []
+    selected_time = 0.0
+    for kernel_id, runtime in kernel_times:
+        if len(selected) < top_k or (min_fraction > 0.0 and selected_time / total_time < min_fraction):
+            selected.append((kernel_id, runtime))
+            selected_time += runtime
+            continue
+        break
+    hot_ids = [kernel_id for kernel_id, _ in selected]
+
+    kernel_ids = sorted(kernel_id for kernel_id, _ in kernel_times)
+    max_kernel_id = max(kernel_ids)
+    mapping_mode = str(constraints.get("hot_kernel_scop_mapping", "ordinal"))
+    kernel_by_scop: Dict[int, int] = {}
+    if mapping_mode == "one_based" or (mapping_mode == "ordinal" and max_kernel_id >= max(scop_ids) + 1):
+        kernel_by_scop = {scop: scop + 1 for scop in scop_ids}
+    elif mapping_mode == "zero_based":
+        kernel_by_scop = {scop: scop for scop in scop_ids}
+    else:
+        for idx, scop in enumerate(scop_ids):
+            bucket = min(int(idx * len(kernel_ids) / max(len(scop_ids), 1)), len(kernel_ids) - 1)
+            kernel_by_scop[scop] = kernel_ids[bucket]
+
+    hot_set = set(hot_ids)
+    allowed_scops = {scop for scop, kernel_id in kernel_by_scop.items() if kernel_id in hot_set}
+    min_allowed = int(constraints.get("hot_kernel_min_scops", 1) or 1)
+    if len(allowed_scops) < min_allowed:
+        return HotKernelFilter()
+    return HotKernelFilter(
+        enabled=True,
+        hot_kernels=hot_ids,
+        allowed_scops=allowed_scops,
+        kernel_by_scop=kernel_by_scop,
+        total_kernel_time=total_time,
+        selected_kernel_time=selected_time,
+    )
+
+
+def apply_hot_kernel_filter_to_candidates(
+    candidates: Sequence[JsonDict],
+    hot_filter: HotKernelFilter,
+) -> List[JsonDict]:
+    if not hot_filter.enabled:
+        return list(candidates)
+    filtered: List[JsonDict] = []
+    for candidate in candidates:
+        if not hot_filter.allows(candidate):
+            continue
+        scop = int(candidate.get("scop", -1))
+        suspected_kernel = hot_filter.kernel_by_scop.get(scop)
+        candidate.setdefault("source_info", {})["suspected_kernel"] = suspected_kernel
+        candidate.setdefault("scop_classification", {})["hot_kernel_filter"] = {
+            "matched": True,
+            "suspected_kernel": suspected_kernel,
+        }
+        filtered.append(candidate)
+    return filtered
+
+
 def load_evaluation_cache(path: Path | None) -> Dict[str, JsonDict]:
     if path is None or not path.exists():
         return {}
@@ -1303,8 +1412,10 @@ def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
     performance_bias: Dict[str, JsonDict] | None = None,
+    hot_filter: HotKernelFilter | None = None,
     *,
     print_family_summary: bool = False,
+    apply_top_k: bool = True,
 ) -> List[JsonDict]:
     candidates: List[JsonDict] = []
     available_family_counts: Counter[str] = Counter()
@@ -1334,6 +1445,13 @@ def enumerate_transform_candidates(
                     }
                     if candidate_pipeline:
                         candidate = enrich_candidate(candidate, node)
+                        if hot_filter and hot_filter.enabled:
+                            suspected_kernel = hot_filter.kernel_by_scop.get(scop_idx)
+                            candidate.setdefault("source_info", {})["suspected_kernel"] = suspected_kernel
+                            candidate.setdefault("scop_classification", {})["hot_kernel_filter"] = {
+                                "matched": scop_idx in hot_filter.allowed_scops,
+                                "suspected_kernel": suspected_kernel,
+                            }
                         if poly.search.analytical_model:
                             prediction = analytical_score(candidate, poly.search.constraints)
                             candidate["predictions"].update(prediction)
@@ -1351,9 +1469,11 @@ def enumerate_transform_candidates(
                             candidate["prune_reasons"].extend(reasons)
                         if candidate["prune_reasons"]:
                             continue
+                    if hot_filter and not hot_filter.allows(candidate):
+                        continue
                     candidates.append(candidate)
                     kept_family_counts[_candidate_family(candidate)] += 1
-    if candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
+    if apply_top_k and candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
         candidates = select_diverse_top_k(candidates, poly.search.top_k)
         kept_family_counts = Counter(_candidate_family(candidate) for candidate in candidates)
     if print_family_summary and bool(poly.search.constraints.get("print_candidate_family_counts", True)):
@@ -1772,12 +1892,13 @@ def sample_transform_sequence(
     poly: PolyMorphSpec,
     tree: AdaptiveTreeState,
     performance_bias: Dict[str, JsonDict] | None = None,
+    hot_filter: HotKernelFilter | None = None,
 ) -> List[JsonDict]:
     def mark_failed_and_prune(prefix: List[JsonDict], message: str) -> None:
         tree.mark_existing(prefix, 0.0, "failed")
         raise TrialPruned(message)
 
-    initial_candidates = enumerate_transform_candidates(app, poly, performance_bias)
+    initial_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
     if not initial_candidates:
         return []
 
@@ -1828,7 +1949,7 @@ def sample_transform_sequence(
     chosen: List[JsonDict] = []
     used_exact: set[tuple[int, int, str, tuple[Any, ...]]] = set()
     for _pos in range(max_transforms):
-        current_candidates = enumerate_transform_candidates(app, poly, performance_bias)
+        current_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
         if not current_candidates:
             break
 
@@ -2386,7 +2507,26 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         exec_name=poly.exec_name,
         populate_scops=True,
     )
-    candidates = enumerate_transform_candidates(enum_app, poly, print_family_summary=True)
+    all_candidates = enumerate_transform_candidates(enum_app, poly, apply_top_k=False)
+    hot_kernel_filter = build_hot_kernel_filter(all_candidates, baseline_metrics, poly.search.constraints)
+    if hot_kernel_filter.enabled:
+        candidates = enumerate_transform_candidates(
+            enum_app,
+            poly,
+            hot_filter=hot_kernel_filter,
+            print_family_summary=True,
+        )
+        print(
+            "Hot-kernel candidate filter: "
+            f"kernels={hot_kernel_filter.hot_kernels}, "
+            f"allowed_scops={sorted(hot_kernel_filter.allowed_scops)}, "
+            f"coverage={hot_kernel_filter.coverage:.3f}, "
+            f"candidates={len(all_candidates)}->{len(candidates)}"
+        )
+    else:
+        candidates = enumerate_transform_candidates(enum_app, poly, print_family_summary=True)
+        if bool(poly.search.constraints.get("hot_kernel_filter", True)):
+            print("Hot-kernel candidate filter: disabled automatically; no reliable multi-kernel timing/SCoP map.")
     print_candidates(candidates, verbose=poly.search.enumerate_only)
 
     if not candidates:
@@ -2465,7 +2605,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias)
+            specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias, hot_kernel_filter)
             if not specs:
                 raise TrialPruned("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
