@@ -1,23 +1,34 @@
 {
   "backend": "parser",
   "parser": {
-    "label": "avg",
+    "label": "sum",
     "aggregate": "sum",
     "run_cwd": "binary_dir"
   },
-  "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
+  "objectives": [
+    {
+      "metric": "sycl_sum_sum_s",
+      "goal": "min"
+    }
+  ],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O1/matrixT-sycl",
     "source": "test-benchmarks/polyMorph/O1/matrixT-sycl/main.cpp",
     "compiler": "acpp",
-    "flags": ["-O1"],
+    "flags": [
+      "-O1"
+    ],
     "transforms": [],
     "allow_illegal": true,
     "build_system": "make",
     "exec_name": "build/matrixT-single-transform",
     "generated_infix": "matrixT-manual",
-    "runtime_args": ["1024", "1024", "50"],
+    "runtime_args": [
+      "1024",
+      "1024",
+      "50"
+    ],
     "measure": false,
     "search": {
       "repeat": 1,

@@ -40,6 +40,26 @@ The plotting script generates:
 
 It requires `matplotlib`.
 
+## Plot Search Trees
+
+Draw one MCTS prefix tree per benchmark. Nodes are transform prefixes; color shows
+observed speedup and labels include the prefix rank.
+
+```bash
+python3 post_processing/plot_polymorph_tree.py --root configs/polyMorph/O1/gmm-sycl
+```
+
+Useful options:
+
+```bash
+python3 post_processing/plot_polymorph_tree.py --root configs/polyMorph --benchmark matrixT --max-prefixes 60
+python3 post_processing/plot_polymorph_tree.py --root configs/polyMorph/O1 --metric mean_speedup --format svg
+python3 post_processing/plot_polymorph_tree.py --root configs/polyMorph/O1/ace-sycl --label-mode table --label-top 12
+python3 post_processing/plot_polymorph_tree.py --root configs/polyMorph/O1/ace-sycl --label-mode compact
+```
+
+Figures are written under `post_processing/figures/search_trees` by default.
+
 ## Clean Search Outputs
 
 Dry run:

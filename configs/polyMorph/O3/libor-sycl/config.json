@@ -1,30 +1,48 @@
 {
   "backend": "parser",
   "parser": {
-    "label": "avg",
+    "label": "sum",
     "aggregate": "sum",
     "run_cwd": "binary_dir"
   },
-  "objectives": [{"metric": "sycl_avg_sum_s", "goal": "min"}],
+  "objectives": [
+    {
+      "metric": "sycl_sum_sum_s",
+      "goal": "min"
+    }
+  ],
   "runs": 1,
   "polyMorph": {
     "project_root": "test-benchmarks/polyMorph/O3/libor-sycl",
     "source": "test-benchmarks/polyMorph/O3/libor-sycl/main.cpp",
     "compiler": "acpp",
-    "flags": ["-O3"],
+    "flags": [
+      "-O3"
+    ],
     "mcts_search": true,
     "build_system": "make",
     "exec_name": "build/libor-search",
-    "runtime_args": ["10"],
+    "runtime_args": [
+      "10"
+    ],
     "search": {
       "n_trials": 5,
       "repeat": 2,
       "seed": 42,
       "timeout": 1800,
       "max_transforms_per_trial": 5,
-      "tile_sizes": [8, 16, 32],
-      "scale_factors": [2],
-      "shift_values": [-1, 1],
+      "tile_sizes": [
+        8,
+        16,
+        32
+      ],
+      "scale_factors": [
+        2
+      ],
+      "shift_values": [
+        -1,
+        1
+      ],
       "static_pruning": true,
       "analytical_model": true,
       "constraint_aware": true,
@@ -36,7 +54,10 @@
       "cache_jsonl": "configs/polyMorph/O3/libor-sycl/o3-libor-cache.jsonl",
       "top_k": 100,
       "retrieval_top_k": 3,
-      "backend_sensitivity_masks": ["omp", "ocl"],
+      "backend_sensitivity_masks": [
+        "omp",
+        "ocl"
+      ],
       "backend_sensitivity_repeat": 2,
       "backend_sensitivity_per_trial": false,
       "target_backend": "omp",
