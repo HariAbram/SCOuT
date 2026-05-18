@@ -254,8 +254,8 @@ float findBestGraph(sycl::queue &q, float *D_localscore, int *D_resP,
       total = C(posN, 4) + C(posN, 3) + C(posN, 2) + posN + 1;
       blocknum = total / (256 * WORKLOAD) + 1;
 
-      q.memset(D_resP, 0, blocknum * 4 * sizeof(int));
-      q.memset(D_Score, -999999.f, blocknum * sizeof(float));
+      q.fill(D_resP, -1, blocknum * 4);
+      q.fill(D_Score, -999999.f, blocknum);
       q.memcpy(D_parent, orders[node], NODE_N * sizeof(bool));
 
       const int sizePerNode = sizepernode;
@@ -433,7 +433,9 @@ float findBestGraph(sycl::queue &q, float *D_localscore, int *D_resP,
     if (bestls > -99999999.f) {
 
       for (i = 0; i < bestpN; i++) {
-        if (bestparent[i] < node)
+        if (bestparent[i] < 0)
+          continue;
+        if (bestparent[i] <= node)
           graph[node][bestparent[i] - 1] = 1;
         else
           graph[node][bestparent[i]] = 1;
