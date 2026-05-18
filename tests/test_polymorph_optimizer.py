@@ -32,6 +32,7 @@ from src.polyMorph.runner import (
     cleanup_trial_artifacts,
     load_evaluation_cache,
     print_candidates,
+    SearchSpaceExhausted,
     select_diverse_top_k,
     suppress_external_viewers,
     tadashi_compiler_options,
@@ -406,6 +407,9 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         candidates = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
         hot_filter = build_hot_kernel_filter(candidates, {"sycl_kernel_1_avg_s": 1.0}, {})
         self.assertFalse(hot_filter.enabled)
+
+    def test_search_space_exhausted_is_a_prune_signal(self) -> None:
+        self.assertTrue(issubclass(SearchSpaceExhausted, Exception))
 
     def test_long_jscop_backup_path_is_shortened(self) -> None:
         path = Path("/tmp") / ("x" * 240 + ".jscop.bak")

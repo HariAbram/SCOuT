@@ -75,6 +75,10 @@ class CachedSequenceSelected(TrialPruned):
     pass
 
 
+class SearchSpaceExhausted(TrialPruned):
+    pass
+
+
 @dataclass
 class HotKernelFilter:
     enabled: bool = False
@@ -1900,7 +1904,7 @@ def sample_transform_sequence(
 
     initial_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
     if not initial_candidates:
-        return []
+        raise SearchSpaceExhausted("No candidate transformations available for this trial.")
 
     if bool(poly.search.constraints.get("mcts_include_stop_action", True)):
         stop = [_stop_spec()]
@@ -1951,6 +1955,8 @@ def sample_transform_sequence(
     for _pos in range(max_transforms):
         current_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
         if not current_candidates:
+            if not chosen:
+                raise SearchSpaceExhausted("No candidate transformations available for this trial.")
             break
 
         viable: List[JsonDict] = []
@@ -1986,6 +1992,8 @@ def sample_transform_sequence(
             if chosen and tree.is_terminal_evaluated(chosen):
                 tree.mark_terminal_repeat(chosen)
                 raise TrialPruned("terminal sequence already evaluated")
+            if not chosen:
+                raise SearchSpaceExhausted("No viable candidate transformations remain.")
             break
 
         spec = None
@@ -2607,7 +2615,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         try:
             specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias, hot_kernel_filter)
             if not specs:
-                raise TrialPruned("No candidate transformations available for this trial.")
+                raise SearchSpaceExhausted("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
             transform_signature = sequence_signature(specs)
             trial.set_user_attr("transform_signature", transform_signature)
@@ -3023,6 +3031,9 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             selection_retries += 1
             print(f"[MCTS] cache retry {selection_retries}. {exc}")
             continue
+        except SearchSpaceExhausted as exc:
+            print(f"[MCTS] stopping search: {exc}")
+            break
         except TrialPruned as exc:
             if not trial.user_attrs.get("transforms"):
                 selection_retries += 1
