@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from src.config import BuildProject, Config, PolyMorphSpec
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
+from src.misc import clear_acpp_runtime_cache
 from src.polyMorph.features import (
     candidate_key,
     enrich_candidate,
@@ -593,7 +594,13 @@ def _primary_metric_name(cfg: Config | None) -> str:
     return "runtime"
 
 
-def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | None = None) -> Dict[str, float]:
+def measure_metrics_or_raise(
+    app: SyclProjectApp,
+    repeat: int,
+    cfg: Config | None = None,
+    *,
+    clear_runtime_cache: bool = True,
+) -> Dict[str, float]:
     if not app.output_binary.exists():
         build_app_or_raise(app)
 
@@ -608,19 +615,34 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
             repeat,
             workdir=app.project_root,
             project=BuildProject(dir=app.project_root),
+            clear_runtime_cache=clear_runtime_cache,
         )
         return {str(k): float(v) for k, v in metrics.items()}
 
     if cfg is not None and cfg.backend == "perf":
         if cfg.perf is None:
             raise RuntimeError("Perf backend selected, but perf config is missing.")
-        metrics = measure_perf(cfg.perf, app.output_binary, app.runtime_args, app.run_env, repeat)
+        metrics = measure_perf(
+            cfg.perf,
+            app.output_binary,
+            app.runtime_args,
+            app.run_env,
+            repeat,
+            clear_runtime_cache=clear_runtime_cache,
+        )
         return {str(k): float(v) for k, v in metrics.items()}
 
     if cfg is not None and cfg.backend == "likwid":
         if cfg.likwid is None:
             raise RuntimeError("LIKWID backend selected, but likwid config is missing.")
-        metrics = measure_likwid(cfg.likwid, app.output_binary, app.runtime_args, app.run_env, repeat)
+        metrics = measure_likwid(
+            cfg.likwid,
+            app.output_binary,
+            app.runtime_args,
+            app.run_env,
+            repeat,
+            clear_runtime_cache=clear_runtime_cache,
+        )
         return {str(k): float(v) for k, v in metrics.items()}
 
     values: List[float] = []
@@ -2462,21 +2484,34 @@ def validate_candidate_against_baseline(
         f"[validation] {label}: warmups={warmups}, repeats={repeats}, "
         f"trial={trial_number}"
     )
-    for _ in range(warmups):
-        measure_metrics_or_raise(baseline_app, 1, cfg)
-        if candidate_app is not None:
-            measure_metrics_or_raise(candidate_app, 1, cfg)
+    try:
+        for _ in range(warmups):
+            measure_metrics_or_raise(baseline_app, 1, cfg, clear_runtime_cache=False)
+            if candidate_app is not None:
+                measure_metrics_or_raise(candidate_app, 1, cfg, clear_runtime_cache=False)
 
-    for round_idx in range(repeats):
-        baseline_metrics = measure_metrics_or_raise(baseline_app, 1, cfg)
-        baseline_samples.append(_objective_values_from_metrics(cfg, baseline_metrics)[0])
-        if candidate_app is None:
-            candidate_samples.append(baseline_samples[-1])
-        else:
-            candidate_metrics = measure_metrics_or_raise(candidate_app, 1, cfg)
-            candidate_samples.append(_objective_values_from_metrics(cfg, candidate_metrics)[0])
-        if (round_idx + 1) % max(1, min(5, repeats)) == 0:
-            print(f"[validation] {label}: completed {round_idx + 1}/{repeats} round(s)")
+        for round_idx in range(repeats):
+            baseline_metrics = measure_metrics_or_raise(
+                baseline_app,
+                1,
+                cfg,
+                clear_runtime_cache=False,
+            )
+            baseline_samples.append(_objective_values_from_metrics(cfg, baseline_metrics)[0])
+            if candidate_app is None:
+                candidate_samples.append(baseline_samples[-1])
+            else:
+                candidate_metrics = measure_metrics_or_raise(
+                    candidate_app,
+                    1,
+                    cfg,
+                    clear_runtime_cache=False,
+                )
+                candidate_samples.append(_objective_values_from_metrics(cfg, candidate_metrics)[0])
+            if (round_idx + 1) % max(1, min(5, repeats)) == 0:
+                print(f"[validation] {label}: completed {round_idx + 1}/{repeats} round(s)")
+    finally:
+        clear_acpp_runtime_cache()
 
     baseline_stats = _sample_stats(baseline_samples)
     candidate_stats = _sample_stats(candidate_samples)
@@ -3281,8 +3316,24 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             )
             if baseline_resample_interval and len(completed_so_far) % baseline_resample_interval == 0:
                 print(f"[baseline] resampling after {len(completed_so_far)} completed trial(s)")
-                sample_metrics = measure_metrics_or_raise(baseline_app, 1, cfg)
-                sample_value = _objective_values_from_metrics(cfg, sample_metrics)[0]
+                try:
+                    warmups = max(1, int(poly.search.final_validation_warmup_runs))
+                    for _ in range(warmups):
+                        measure_metrics_or_raise(
+                            baseline_app,
+                            1,
+                            cfg,
+                            clear_runtime_cache=False,
+                        )
+                    sample_metrics = measure_metrics_or_raise(
+                        baseline_app,
+                        1,
+                        cfg,
+                        clear_runtime_cache=False,
+                    )
+                    sample_value = _objective_values_from_metrics(cfg, sample_metrics)[0]
+                finally:
+                    clear_acpp_runtime_cache()
                 drift = (
                     (sample_value - baseline_value) / baseline_value
                     if baseline_value else 0.0

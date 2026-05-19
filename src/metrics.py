@@ -53,7 +53,15 @@ def perf_parse(stderr: str, events: Sequence[str]) -> MetricDict:
         accum["CPI"] = accum["cycles"] / accum["instructions"]
     return accum
 
-def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: EnvMap, runs: int = 1) -> MetricDict:
+def measure_perf(
+    cfg: PerfConfig,
+    bin_path: Path,
+    prog_args: List[str],
+    env: EnvMap,
+    runs: int = 1,
+    *,
+    clear_runtime_cache: bool = True,
+) -> MetricDict:
     meas_runs = max(1, runs)
     total_runs = cfg.warmup_runs + meas_runs
     buckets: Dict[str, List[Number]] = {e: [] for e in cfg.events + ["CPI"]}
@@ -74,7 +82,8 @@ def measure_perf(cfg: PerfConfig, bin_path: Path, prog_args: List[str], env: Env
             if k in data:
                 v_list.append(data[k])
     
-    clear_acpp_runtime_cache()
+    if clear_runtime_cache:
+        clear_acpp_runtime_cache()
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
@@ -152,7 +161,15 @@ def likwid_parse(out: str, specs: Sequence[MetricSpec]) -> MetricDict:
 
     return result
 
-def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env: EnvMap, runs: int = 1) -> MetricDict:
+def measure_likwid(
+    cfg: LikwidConfig,
+    bin_path: Path,
+    prog_args: List[str],
+    env: EnvMap,
+    runs: int = 1,
+    *,
+    clear_runtime_cache: bool = True,
+) -> MetricDict:
     specs   = cfg.metrics
     buckets: Dict[str, List[Number]] = {s.name: [] for s in specs}
     for s in specs:
@@ -185,7 +202,8 @@ def measure_likwid(cfg: LikwidConfig, bin_path: Path, prog_args: List[str], env:
             if k in buckets:
                 buckets[k].append(v)
 
-    clear_acpp_runtime_cache()
+    if clear_runtime_cache:
+        clear_acpp_runtime_cache()
     return {k: mean(v) for k, v in buckets.items() if v}
 
 
@@ -221,6 +239,8 @@ def measure_parser_sycl(
     runs: int,
     workdir: Optional[Path] = None,
     project: Optional[BuildProject] = None,
+    *,
+    clear_runtime_cache: bool = True,
 ) -> MetricDict:
     """
     Runs the binary like perf/likwid (taskset/prefix, controlled cwd),
@@ -323,5 +343,6 @@ def measure_parser_sycl(
     if all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
         mets["sycl_iters"] = float(iterations_seen[0])
 
-    clear_acpp_runtime_cache()
+    if clear_runtime_cache:
+        clear_acpp_runtime_cache()
     return mets
