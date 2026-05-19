@@ -30,7 +30,7 @@
       "repeat": 2,
       "seed": 42,
       "timeout": 1800,
-      "max_transforms_per_trial": 5,
+      "max_transforms_per_trial": 3,
       "tile_sizes": [
         8,
         16,
@@ -52,7 +52,7 @@
       "multi_fidelity": true,
       "early_stop_worse_than": 1.15,
       "cache_jsonl": "configs/polyMorph/O2/columnarSolver-sycl/o2-columnarSolver-cache.jsonl",
-      "top_k": 100,
+      "top_k": 50,
       "retrieval_top_k": 3,
       "backend_sensitivity_masks": [
         "omp",
@@ -76,7 +76,10 @@
         "hot_kernel_top_k": 3,
         "hot_kernel_min_fraction": 0.0,
         "hot_kernel_min_scops": 1,
-        "hot_kernel_scop_mapping": "ordinal"
+        "hot_kernel_scop_mapping": "ordinal",
+        "tree_exploration": 1.2,
+        "tree_family_novelty_bonus": 0.35,
+        "tree_sequence_novelty_bonus": 0.1
       },
       "generated_infix": "columnarSolver",
       "baseline_exec_name": "build/columnarSolver-baseline",
@@ -86,9 +89,9 @@
       "ablation_enabled": false,
       "replay_top_k": 0,
       "final_validation_enabled": true,
-      "final_validation_repeats": 5,
+      "final_validation_repeats": 3,
       "final_validation_warmup_runs": 1,
-      "final_validation_top_k": 5,
+      "final_validation_top_k": 3,
       "final_validation_min_speedup": 1.0,
       "final_validation_noise_factor": 2.0,
       "baseline_resample_interval": 10
