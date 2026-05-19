@@ -256,6 +256,13 @@ class PolyMorphSearchSpec:
     target_backend: str | None = None
     ablation_enabled: bool = True
     replay_top_k: int = 0
+    final_validation_enabled: bool = True
+    final_validation_repeats: int = 20
+    final_validation_warmup_runs: int = 1
+    final_validation_top_k: int = 3
+    final_validation_min_speedup: float = 1.0
+    final_validation_noise_factor: float = 2.0
+    baseline_resample_interval: int = 0
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any] | None) -> "PolyMorphSearchSpec":
@@ -307,6 +314,13 @@ class PolyMorphSearchSpec:
             target_backend=str(data["target_backend"]) if data.get("target_backend") is not None else None,
             ablation_enabled=bool(data.get("ablation_enabled", True)),
             replay_top_k=int(data.get("replay_top_k", 0)),
+            final_validation_enabled=bool(data.get("final_validation_enabled", True)),
+            final_validation_repeats=int(data.get("final_validation_repeats", 20)),
+            final_validation_warmup_runs=int(data.get("final_validation_warmup_runs", 1)),
+            final_validation_top_k=int(data.get("final_validation_top_k", 3)),
+            final_validation_min_speedup=float(data.get("final_validation_min_speedup", 1.0)),
+            final_validation_noise_factor=float(data.get("final_validation_noise_factor", 2.0)),
+            baseline_resample_interval=int(data.get("baseline_resample_interval", 0)),
         )
 
 

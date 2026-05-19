@@ -49,6 +49,12 @@ def backend_text(summary: BenchmarkSummary) -> str:
     return marker
 
 
+def significance_text(summary: BenchmarkSummary) -> str:
+    if summary.validated_significant is None:
+        return "-"
+    return "yes" if summary.validated_significant else "no"
+
+
 def summary_rows(summaries: list[BenchmarkSummary]) -> list[list[str]]:
     rows = []
     for item in summaries:
@@ -59,6 +65,8 @@ def summary_rows(summaries: list[BenchmarkSummary]) -> list[list[str]]:
                 format_float(item.baseline, 6),
                 format_float(item.best, 6),
                 format_float(item.speedup, 3),
+                format_float(item.validated_speedup, 3),
+                significance_text(item),
                 str(item.best_trial) if item.best_trial is not None else "-",
                 status_text(item),
                 backend_text(item),
@@ -89,17 +97,29 @@ def aggregate_rows(summaries: list[BenchmarkSummary]) -> list[list[str]]:
     rows = []
     for opt_level, items in sorted(by_opt.items()):
         speedups = [item.speedup for item in items if item.speedup is not None]
+        validated_speedups = [
+            item.validated_speedup
+            for item in items
+            if item.validated_speedup is not None
+        ]
         completed = sum(item.completed_trials for item in items)
         pruned = sum(item.pruned_trials for item in items)
         failed = sum(item.failed_trials for item in items)
         avg_speedup = sum(speedups) / len(speedups) if speedups else None
+        avg_validated = (
+            sum(validated_speedups) / len(validated_speedups)
+            if validated_speedups else None
+        )
         best = max(speedups) if speedups else None
+        significant = sum(1 for item in items if item.validated_significant is True)
         rows.append(
             [
                 opt_level,
                 str(len(items)),
                 format_float(avg_speedup, 3),
+                format_float(avg_validated, 3),
                 format_float(best, 3),
+                str(significant),
                 str(completed),
                 str(pruned),
                 str(failed),
@@ -131,13 +151,35 @@ def main() -> int:
 
     print("polyMorph Search Summary")
     print(table(
-        ["Opt", "Benchmark", "Baseline", "Best", "Speedup", "BestTrial", "Trials", "Backend", "Best transforms"],
+        [
+            "Opt",
+            "Benchmark",
+            "Baseline",
+            "Best",
+            "SearchSpeedup",
+            "ValidSpeedup",
+            "Significant",
+            "BestTrial",
+            "Trials",
+            "Backend",
+            "Best transforms",
+        ],
         summary_rows(summaries),
     ))
 
     print("\nAggregate By Optimization Level")
     print(table(
-        ["Opt", "Benchmarks", "AvgSpeedup", "BestSpeedup", "Complete", "Pruned", "Failed"],
+        [
+            "Opt",
+            "Benchmarks",
+            "AvgSearch",
+            "AvgValid",
+            "BestSearch",
+            "Significant",
+            "Complete",
+            "Pruned",
+            "Failed",
+        ],
         aggregate_rows(summaries),
     ))
 

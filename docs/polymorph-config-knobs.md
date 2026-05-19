@@ -105,6 +105,13 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `correctness_required` | `true` | If `true`, missing correctness output files fail the trial. |
 | `ablation_enabled` | `true` | Replay the best sequence and remove-one-transform variants after search. |
 | `replay_top_k` | `0` | Replay the top-k completed trials after search. |
+| `final_validation_enabled` | `true` | After search, rebuild the best/top candidates and remeasure them against repeated baseline samples. |
+| `final_validation_repeats` | `20` | Number of interleaved baseline/candidate measurement rounds per validated candidate. |
+| `final_validation_warmup_runs` | `1` | Warmup runs for baseline and candidate before final validation samples are collected. |
+| `final_validation_top_k` | `3` | Number of unique top search candidates to validate. |
+| `final_validation_min_speedup` | `1.0` | Minimum validated speedup required before a result can be marked significant. |
+| `final_validation_noise_factor` | `2.0` | Require speedup to exceed `1 + noise_factor * max(baseline_rsd, candidate_rsd)`. |
+| `baseline_resample_interval` | `0` | If greater than zero, remeasure the baseline after this many completed trials and store drift samples. |
 
 ## `search.constraints` Fields
 
@@ -224,6 +231,7 @@ Most polyMorph benchmark configs use the parser backend to read `[SYCL][avg]` or
   "backend_sensitivity_per_trial": false,
   "ablation_enabled": false,
   "replay_top_k": 0,
+  "final_validation_enabled": false,
   "constraints": {
     "single_transform_screening_limit": 8,
     "mcts_max_selection_retries": 50
@@ -244,6 +252,9 @@ Most polyMorph benchmark configs use the parser backend to read `[SYCL][avg]` or
   "learned_model": true,
   "cache_evaluations": true,
   "case_retrieval": true,
+  "final_validation_enabled": true,
+  "final_validation_repeats": 20,
+  "final_validation_top_k": 3,
   "constraints": {
     "single_transform_screening_limit": 16,
     "screening_per_family": 2,

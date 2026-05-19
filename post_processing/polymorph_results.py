@@ -23,6 +23,8 @@ class BenchmarkSummary:
     baseline: float | None = None
     best: float | None = None
     speedup: float | None = None
+    validated_speedup: float | None = None
+    validated_significant: bool | None = None
     best_trial: int | None = None
     target_backend: str = ""
     backend_sensitive: bool | None = None
@@ -161,6 +163,9 @@ def load_result(summary: BenchmarkSummary) -> None:
     summary.baseline = safe_float(data.get("baseline_runtime"))
     summary.best = safe_float(data.get("best_runtime"))
     summary.speedup = safe_float(data.get("best_speedup"))
+    summary.validated_speedup = safe_float(data.get("validated_best_speedup"))
+    if data.get("validated_best_significant") is not None:
+        summary.validated_significant = bool(data.get("validated_best_significant"))
     summary.best_trial = safe_int(data.get("best_trial_number"))
     summary.target_backend = str(data.get("target_backend") or "")
     sensitivity = data.get("baseline_backend_sensitivity")

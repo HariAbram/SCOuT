@@ -17,6 +17,7 @@ from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from statistics import mean, median, stdev
 from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 
 from src.config import BuildProject, Config, PolyMorphSpec
@@ -640,6 +641,69 @@ def measure_metrics_or_raise(app: SyclProjectApp, repeat: int, cfg: Config | Non
             )
         values.append(value)
     return {"runtime": sum(values) / len(values)}
+
+
+def _objective_is_better(cfg: Config, left: float, right: float) -> bool:
+    goal = cfg.objectives[0].goal if cfg.objectives else "min"
+    return left > right if goal == "max" else left < right
+
+
+def _objective_ratio_for_validation(cfg: Config, baseline_value: float, candidate_value: float) -> float:
+    return _speedup_for_primary(cfg, baseline_value, candidate_value)
+
+
+def _sample_stats(values: Sequence[float]) -> JsonDict:
+    samples = [float(value) for value in values]
+    if not samples:
+        return {
+            "count": 0,
+            "mean": None,
+            "median": None,
+            "stdev": None,
+            "rsd": None,
+            "min": None,
+            "max": None,
+        }
+    avg = mean(samples)
+    sd = stdev(samples) if len(samples) > 1 else 0.0
+    return {
+        "count": len(samples),
+        "mean": avg,
+        "median": median(samples),
+        "stdev": sd,
+        "rsd": (sd / abs(avg)) if avg else 0.0,
+        "min": min(samples),
+        "max": max(samples),
+    }
+
+
+def _validation_reliability(
+    cfg: Config,
+    baseline_stats: JsonDict,
+    candidate_stats: JsonDict,
+    *,
+    min_speedup: float,
+    noise_factor: float,
+) -> JsonDict:
+    baseline_median = baseline_stats.get("median")
+    candidate_median = candidate_stats.get("median")
+    if baseline_median is None or candidate_median is None:
+        return {"checked": False, "significant": False, "reason": "missing samples"}
+    speedup = _objective_ratio_for_validation(cfg, float(baseline_median), float(candidate_median))
+    baseline_rsd = float(baseline_stats.get("rsd") or 0.0)
+    candidate_rsd = float(candidate_stats.get("rsd") or 0.0)
+    noise_floor = max(baseline_rsd, candidate_rsd) * max(noise_factor, 0.0)
+    required_speedup = max(float(min_speedup), 1.0 + noise_floor)
+    significant = speedup >= required_speedup
+    return {
+        "checked": True,
+        "significant": significant,
+        "speedup": speedup,
+        "required_speedup": required_speedup,
+        "noise_floor": noise_floor,
+        "baseline_rsd": baseline_rsd,
+        "candidate_rsd": candidate_rsd,
+    }
 
 
 def _app_run_cwd(app: SyclProjectApp, cfg: Config | None) -> Path:
@@ -2327,6 +2391,192 @@ def _write_pareto_csv(trials: Sequence[NativeTrial], poly: PolyMorphSpec, cfg: C
     print(f"Wrote Pareto CSV: {out_csv}")
 
 
+def _unique_completed_trials_by_sequence(trials: Sequence[NativeTrial], cfg: Config, limit: int) -> List[NativeTrial]:
+    completed = [trial for trial in trials if trial.state == "COMPLETE" and trial.values is not None]
+    reverse = cfg.objectives[0].goal == "max" if cfg.objectives else False
+    ranked = sorted(completed, key=lambda trial: trial.values[0], reverse=reverse)
+    selected: List[NativeTrial] = []
+    seen: set[str] = set()
+    for trial in ranked:
+        specs = list(trial.user_attrs.get("transforms", []) or [])
+        if not specs:
+            continue
+        sig = sequence_signature(specs)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        selected.append(trial)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _build_validation_app_for_sequence(
+    *,
+    poly: PolyMorphSpec,
+    source: Path,
+    specs: List[JsonDict],
+    label: str,
+) -> SyclProjectApp | None:
+    if _is_stop_sequence(specs):
+        return None
+    app = make_project_app(
+        poly=poly,
+        source=source,
+        exec_name=f"{poly.exec_name}-{label}",
+        populate_scops=True,
+    )
+    apply_transforms_to_scops(app.scops, specs, legality_cb=lambda: app_is_legal(app))
+    if not poly.allow_illegal and not app_is_legal(app):
+        raise TrialPruned("validation sequence is not legal")
+    validation_app = app.generate_code(
+        alt_infix=f"{poly.search.generated_infix}-{label}",
+        ephemeral=False,
+        populate_scops=False,
+        ensure_legality=not poly.allow_illegal,
+    )
+    validation_app = inherit_build_settings(validation_app, app)
+    validation_app.exec_name = f"{poly.exec_name}-{label}"
+    build_app_or_raise(validation_app)
+    return validation_app
+
+
+def validate_candidate_against_baseline(
+    *,
+    cfg: Config,
+    poly: PolyMorphSpec,
+    baseline_app: SyclProjectApp,
+    baseline_value: float,
+    candidate_app: SyclProjectApp | None,
+    specs: List[JsonDict],
+    trial_number: int,
+    label: str,
+) -> JsonDict:
+    repeats = max(1, int(poly.search.final_validation_repeats))
+    warmups = max(0, int(poly.search.final_validation_warmup_runs))
+    metric_name = _primary_metric_name(cfg)
+    baseline_samples: List[float] = []
+    candidate_samples: List[float] = []
+
+    print(
+        f"[validation] {label}: warmups={warmups}, repeats={repeats}, "
+        f"trial={trial_number}"
+    )
+    for _ in range(warmups):
+        measure_metrics_or_raise(baseline_app, 1, cfg)
+        if candidate_app is not None:
+            measure_metrics_or_raise(candidate_app, 1, cfg)
+
+    for round_idx in range(repeats):
+        baseline_metrics = measure_metrics_or_raise(baseline_app, 1, cfg)
+        baseline_samples.append(_objective_values_from_metrics(cfg, baseline_metrics)[0])
+        if candidate_app is None:
+            candidate_samples.append(baseline_samples[-1])
+        else:
+            candidate_metrics = measure_metrics_or_raise(candidate_app, 1, cfg)
+            candidate_samples.append(_objective_values_from_metrics(cfg, candidate_metrics)[0])
+        if (round_idx + 1) % max(1, min(5, repeats)) == 0:
+            print(f"[validation] {label}: completed {round_idx + 1}/{repeats} round(s)")
+
+    baseline_stats = _sample_stats(baseline_samples)
+    candidate_stats = _sample_stats(candidate_samples)
+    reliability = _validation_reliability(
+        cfg,
+        baseline_stats,
+        candidate_stats,
+        min_speedup=poly.search.final_validation_min_speedup,
+        noise_factor=poly.search.final_validation_noise_factor,
+    )
+    validated_baseline = float(baseline_stats["median"])
+    validated_candidate = float(candidate_stats["median"])
+    speedup = _objective_ratio_for_validation(cfg, validated_baseline, validated_candidate)
+    return {
+        "label": label,
+        "trial": trial_number,
+        "metric": metric_name,
+        "target_backend": poly.search.target_backend,
+        "search_baseline": baseline_value,
+        "baseline": baseline_stats,
+        "candidate": candidate_stats,
+        "validated_speedup": speedup,
+        "significance": reliability,
+        "transforms": specs,
+    }
+
+
+def run_final_validation(
+    *,
+    cfg: Config,
+    poly: PolyMorphSpec,
+    source: Path,
+    baseline_app: SyclProjectApp,
+    baseline_value: float,
+    trials: Sequence[NativeTrial],
+) -> JsonDict:
+    if not poly.search.final_validation_enabled:
+        return {"enabled": False, "results": []}
+    top_k = max(1, int(poly.search.final_validation_top_k))
+    selected_trials = _unique_completed_trials_by_sequence(trials, cfg, top_k)
+    if not selected_trials:
+        return {"enabled": True, "results": [], "reason": "no completed trials"}
+
+    results: List[JsonDict] = []
+    for rank, trial in enumerate(selected_trials, start=1):
+        specs = list(trial.user_attrs.get("transforms", []) or [])
+        label = f"validate-rank-{rank}-trial-{trial.number}"
+        validation_app: SyclProjectApp | None = None
+        try:
+            validation_app = _build_validation_app_for_sequence(
+                poly=poly,
+                source=source,
+                specs=specs,
+                label=label,
+            )
+            results.append(
+                validate_candidate_against_baseline(
+                    cfg=cfg,
+                    poly=poly,
+                    baseline_app=baseline_app,
+                    baseline_value=baseline_value,
+                    candidate_app=validation_app,
+                    specs=specs,
+                    trial_number=trial.number,
+                    label=label,
+                )
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "label": label,
+                    "trial": trial.number,
+                    "status": "failed",
+                    "failure": str(exc),
+                    "transforms": specs,
+                }
+            )
+        finally:
+            if validation_app is not None:
+                cleanup_trial_artifacts(
+                    validation_app,
+                    generated_infix=f"{poly.search.generated_infix}-{label}",
+                )
+
+    successful = [result for result in results if result.get("validated_speedup") is not None]
+    best_validated = None
+    if successful:
+        best_validated = max(successful, key=lambda item: float(item.get("validated_speedup", 0.0) or 0.0))
+    return {
+        "enabled": True,
+        "repeats": max(1, int(poly.search.final_validation_repeats)),
+        "warmup_runs": max(0, int(poly.search.final_validation_warmup_runs)),
+        "top_k": top_k,
+        "min_speedup": poly.search.final_validation_min_speedup,
+        "noise_factor": poly.search.final_validation_noise_factor,
+        "results": results,
+        "best": best_validated,
+    }
+
+
 def _candidate_pipeline_enabled(poly: PolyMorphSpec) -> bool:
     return any(
         [
@@ -2600,6 +2850,8 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     )
 
     is_multi = len(cfg.objectives) > 1
+    baseline_resample_interval = max(0, int(poly.search.baseline_resample_interval))
+    baseline_resamples: List[JsonDict] = []
 
     def objective(trial: NativeTrial) -> float | List[float]:
         trial_exec = f"{poly.exec_name}-trial-{trial.number}"
@@ -3027,6 +3279,23 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 f"[MCTS] Trial {trial.number} finished with value: {values[0]}. "
                 f"Best so far: {(best_so_far.values or [None])[0]}"
             )
+            if baseline_resample_interval and len(completed_so_far) % baseline_resample_interval == 0:
+                print(f"[baseline] resampling after {len(completed_so_far)} completed trial(s)")
+                sample_metrics = measure_metrics_or_raise(baseline_app, 1, cfg)
+                sample_value = _objective_values_from_metrics(cfg, sample_metrics)[0]
+                drift = (
+                    (sample_value - baseline_value) / baseline_value
+                    if baseline_value else 0.0
+                )
+                baseline_resamples.append(
+                    {
+                        "after_completed_trials": len(completed_so_far),
+                        "metrics": sample_metrics,
+                        "objective": sample_value,
+                        "relative_drift": drift,
+                    }
+                )
+                print(f"[baseline] objective={sample_value}, relative_drift={drift:.3f}")
         except CachedSequenceSelected as exc:
             selection_retries += 1
             print(f"[MCTS] cache retry {selection_retries}. {exc}")
@@ -3059,6 +3328,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             result = {
                 "baseline_runtime": baseline_value,
                 "baseline_metrics": baseline_metrics,
+                "baseline_resamples": baseline_resamples,
                 "baseline_backend_sensitivity": baseline_backend_sensitivity,
                 "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
                 "target_backend": poly.search.target_backend,
@@ -3125,10 +3395,34 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             print(f"[analysis] replaying {label}")
             replay_results.append(evaluate_sequence_for_analysis(specs, label))
 
+    final_validation: JsonDict = {}
+    if poly.search.final_validation_enabled:
+        print("\n=== Final validation ===")
+        final_validation = run_final_validation(
+            cfg=cfg,
+            poly=poly,
+            source=source,
+            baseline_app=baseline_app,
+            baseline_value=baseline_value,
+            trials=completed_trials,
+        )
+        validated_best = final_validation.get("best") if isinstance(final_validation, dict) else None
+        if isinstance(validated_best, dict):
+            print(
+                "Validated best speedup: "
+                f"{float(validated_best.get('validated_speedup', 0.0) or 0.0):.3f} "
+                f"(trial {validated_best.get('trial')}, "
+                f"significant={((validated_best.get('significance') or {}).get('significant'))})"
+            )
+    else:
+        final_validation = {"enabled": False, "results": []}
+
     if poly.search.result_json:
+        validated_best = final_validation.get("best") if isinstance(final_validation, dict) else None
         result = {
             "baseline_runtime": baseline_value,
             "baseline_metrics": baseline_metrics,
+            "baseline_resamples": baseline_resamples,
             "baseline_backend_sensitivity": baseline_backend_sensitivity,
             "baseline_correctness_outputs": sorted(baseline_correctness_outputs),
             "target_backend": poly.search.target_backend,
@@ -3136,9 +3430,20 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             "best_speedup": best_speedup,
             "best_transforms": best_specs,
             "best_trial_number": best_trial.number,
+            "validated_best_speedup": (
+                validated_best.get("validated_speedup")
+                if isinstance(validated_best, dict)
+                else None
+            ),
+            "validated_best_significant": (
+                (validated_best.get("significance") or {}).get("significant")
+                if isinstance(validated_best, dict)
+                else None
+            ),
             "backend_best_configs": _backend_specific_best(trials, cfg),
             "ablation_results": ablation_results,
             "replay_results": replay_results,
+            "final_validation": final_validation,
         }
         if is_multi:
             best_trials = pareto_trials(trials, cfg)

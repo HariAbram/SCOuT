@@ -86,7 +86,14 @@
       "result_json": "configs/polyMorph/O2/burger-sycl/o2-burger-result.json",
       "trial_csv": "configs/polyMorph/O2/burger-sycl/o2-burger-trials.csv",
       "ablation_enabled": false,
-      "replay_top_k": 0
+      "replay_top_k": 0,
+      "final_validation_enabled": true,
+      "final_validation_repeats": 5,
+      "final_validation_warmup_runs": 1,
+      "final_validation_top_k": 5,
+      "final_validation_min_speedup": 1.0,
+      "final_validation_noise_factor": 2.0,
+      "baseline_resample_interval": 10
     }
   }
 }
