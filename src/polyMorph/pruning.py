@@ -114,13 +114,40 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
     reasons: List[str] = []
     loop_rank = int(classification.get("loop_rank", 0) or 0)
     sequence_child_count = int(classification.get("sequence_child_count", 0) or 0)
+    pluto_max_distance = float(features.get("pluto_max_distance", 0.0) or 0.0)
+    pluto_distance_sum = float(features.get("pluto_distance_sum", 0.0) or 0.0)
+    pluto_reuse_pairs = int(features.get("pluto_reuse_pair_count", 0) or 0)
+    pluto_carried_dims = int(features.get("pluto_carried_dims", 0) or 0)
+    pluto_by_dim = [
+        float(value)
+        for value in (features.get("pluto_distance_by_dim", []) or [])
+        if isinstance(value, (int, float))
+    ]
+    pluto_enabled = bool(constraints.get("pluto_cost_model", True))
+    pluto_weight = float(constraints.get("pluto_cost_weight", 1.0) or 1.0)
 
     if features.get("is_tile"):
         tile_volume = float(features.get("tile_volume", 0.0) or 0.0)
         max_tile_size = float(features.get("max_tile_size", 0.0) or 0.0)
         tile_rank = int(features.get("numeric_arg_count", 0) or 0)
         preferred = float(constraints.get("preferred_tile_size", 32))
-        if max_tile_size:
+        if pluto_enabled and pluto_reuse_pairs > 0 and max_tile_size > 0:
+            covered_distance = min(1.0, max_tile_size / max(pluto_max_distance + 1.0, 1.0))
+            rank_coverage = min(tile_rank, max(pluto_carried_dims, 1)) / max(pluto_carried_dims, 1)
+            pluto_bonus = min(0.22, 0.08 + 0.10 * covered_distance + 0.06 * rank_coverage)
+            score += pluto_weight * pluto_bonus
+            reasons.append(
+                "Pluto-style tiling prior: tile bounds estimated affine reuse/dependence distance"
+            )
+            if tile_rank < pluto_carried_dims:
+                risk += 0.08
+                reasons.append(
+                    f"tile rank {tile_rank} covers fewer carried dimensions than Pluto estimate {pluto_carried_dims}"
+                )
+            if max_tile_size > 0 and pluto_max_distance > 0 and max_tile_size > preferred * 2:
+                risk += 0.05
+                reasons.append("tile size exceeds preferred size despite Pluto distance coverage")
+        elif max_tile_size:
             distance = abs(max_tile_size - preferred) / max(preferred, 1.0)
             score += max(0.0, 0.14 - 0.08 * distance)
             reasons.append("tile size close to preferred cache/vector heuristic")
@@ -147,9 +174,25 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
 
     if features.get("is_interchange"):
         if loop_rank >= 2:
-            score += 0.16
+            if pluto_enabled and len(pluto_by_dim) >= 2 and max(pluto_by_dim) > 0:
+                outer_distance = pluto_by_dim[0]
+                inner_distance = pluto_by_dim[-1]
+                if outer_distance > inner_distance:
+                    score += pluto_weight * 0.20
+                    risk += 0.06
+                    reasons.append(
+                        "Pluto-style interchange prior: larger estimated distance is carried by an outer dimension"
+                    )
+                else:
+                    score += 0.06
+                    risk += 0.10
+                    reasons.append(
+                        "interchange has limited Pluto distance-reduction opportunity"
+                    )
+            else:
+                score += 0.16
+                reasons.append("interchange matches multi-dimensional loop nest")
             risk += 0.08
-            reasons.append("interchange matches multi-dimensional loop nest")
         else:
             score -= 0.20
             risk += 0.20
@@ -160,6 +203,9 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
             score += 0.14
             risk += 0.12
             reasons.append("sequence SCoP has adjacent children that may benefit from fusion")
+            if pluto_enabled and pluto_reuse_pairs > 0:
+                score += min(0.08, 0.02 * pluto_reuse_pairs)
+                reasons.append("Pluto-style fusion prior: repeated affine accesses indicate reuse across statements")
         else:
             score -= 0.18
             risk += 0.20
@@ -178,6 +224,11 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
     if features.get("is_shift"):
         score -= 0.02
         risk += min(0.25, 0.02 * float(features.get("max_abs_shift", 0.0)))
+        if pluto_enabled and pluto_max_distance > 0:
+            shift = float(features.get("max_abs_shift", 0.0) or 0.0)
+            if 0 < shift <= pluto_max_distance:
+                score += min(0.06, 0.02 * shift)
+                reasons.append("Pluto-style shift prior: shift magnitude is within estimated dependence distance")
         if "small_scop" in labels:
             score -= 0.03
             risk += 0.03
@@ -196,6 +247,10 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
     if loop_hints and access_hints / loop_hints > 2.0:
         risk += 0.05
         reasons.append("memory-access-heavy loop summary")
+    if pluto_enabled and pluto_reuse_pairs > 0:
+        reasons.append(
+            f"Pluto distance summary: max={pluto_max_distance:.1f}, sum={pluto_distance_sum:.1f}, pairs={pluto_reuse_pairs}"
+        )
 
     return {
         "score": max(0.0, min(1.0, score)),

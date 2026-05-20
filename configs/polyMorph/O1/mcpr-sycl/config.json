@@ -35,7 +35,9 @@
       "tile_sizes": [
         8,
         16,
-        32
+        32,
+        64,
+        128
       ],
       "scale_factors": [
         2
@@ -80,7 +82,9 @@
         "hot_kernel_scop_mapping": "ordinal",
         "tree_exploration": 1.2,
         "tree_family_novelty_bonus": 0.35,
-        "tree_sequence_novelty_bonus": 0.1
+        "tree_sequence_novelty_bonus": 0.1,
+        "pluto_cost_model": true,
+        "pluto_cost_weight": 1.0
       },
       "generated_infix": "mcpr",
       "baseline_exec_name": "build/mcpr-baseline",

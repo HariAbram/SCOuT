@@ -48,6 +48,12 @@ class DummyNode:
     available_transformations = []
 
 
+class PlutoNode:
+    node_type = "band"
+    yaml_str = "schedule: [i0, i1]\nread: A[i0, i1]\nread: A[i0 + 4, i1]\nwrite: B[i0, i1]\n"
+    available_transformations = []
+
+
 class PolyMorphOptimizerTests(unittest.TestCase):
     def test_config_defaults_keep_new_features_disabled(self) -> None:
         spec = PolyMorphSearchSpec.from_dict({})
@@ -176,6 +182,29 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         bad = analytical_score(shallow, {"preferred_tile_size": 32})
         self.assertGreater(good["score"], bad["score"])
         self.assertGreater(bad["risk"], good["risk"])
+
+    def test_analytical_score_uses_simplified_pluto_distance(self) -> None:
+        candidate = enrich_candidate(
+            {
+                "scop": 0,
+                "node": 1,
+                "tr": "TILE_2D",
+                "args": [8, 8],
+                "scop_classification": {
+                    "labels": ["band", "2d_loop", "memory_heavy_hint"],
+                    "loop_rank": 2,
+                    "sequence_child_count": 0,
+                },
+            },
+            PlutoNode(),
+        )
+        prediction = analytical_score(candidate, {"preferred_tile_size": 32})
+        features = candidate["features"]
+        self.assertEqual(features["pluto_max_distance"], 4.0)
+        self.assertGreater(features["pluto_reuse_pair_count"], 0)
+        self.assertTrue(
+            any("Pluto-style tiling prior" in reason for reason in prediction["reasons"])
+        )
 
     def test_static_pruning_uses_scop_classification(self) -> None:
         candidate = enrich_candidate(

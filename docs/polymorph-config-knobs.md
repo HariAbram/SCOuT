@@ -73,7 +73,7 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `baseline_exec_name` | `null` | Baseline executable path. If omitted, derives from `exec_name`. |
 | `enumerate_only` | `false` | Enumerate candidate transformations and exit before search. |
 | `max_transforms_per_trial` | `1` | Maximum transformation sequence length in a trial. |
-| `tile_sizes` | `[8, 16, 32, 64]` | Candidate tile sizes used to infer `TILE_1D`, `TILE_2D`, and `TILE_3D` arguments. |
+| `tile_sizes` | `[8, 16, 32, 64, 128]` | Candidate tile sizes used to infer `TILE_1D`, `TILE_2D`, and `TILE_3D` arguments. |
 | `scale_factors` | `[2]` | Candidate scale/split factors where supported. |
 | `shift_values` | `[-2, -1, 1, 2]` | Candidate shift offsets for shift transformations. |
 | `allow_transforms` | `null` | Optional allow-list of Tadashi transform names. If present, only these transforms are considered. |
@@ -136,6 +136,8 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | Key | Default | Meaning |
 |---|---:|---|
 | `preferred_tile_size` | `32` | Tile size favored by the analytical model. |
+| `pluto_cost_model` | `true` | Use the simplified Pluto-style affine reuse/dependence-distance prior when scoring candidates. |
+| `pluto_cost_weight` | `1.0` | Multiplier for the simplified Pluto-style prior. |
 | `large_tile_volume` | `4096` | Tile volume above which register/cache pressure risk increases. |
 | `max_predicted_risk` | unset | If set, prune candidates whose predicted risk is higher. |
 | `min_predicted_score` | unset | If set, prune candidates whose predicted score is lower. |

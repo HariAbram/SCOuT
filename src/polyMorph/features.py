@@ -35,6 +35,7 @@ def node_features(scop_idx: int, node_idx: int, node: Any) -> JsonDict:
     available = getattr(node, "available_transformations", []) or []
     available_names = [getattr(item, "name", str(item)) for item in available]
     node_type = str(getattr(node, "node_type", "<unknown>"))
+    pluto_cost = simplified_pluto_cost_features(yaml_text)
 
     return {
         "scop": scop_idx,
@@ -47,6 +48,7 @@ def node_features(scop_idx: int, node_idx: int, node: Any) -> JsonDict:
         "loop_hint_count": _count_yaml_items(yaml_text, ["for", "loop", "schedule", "band"]),
         "statement_hint_count": _count_yaml_items(yaml_text, ["statement", "stmt", "domain"]),
         "access_hint_count": _count_yaml_items(yaml_text, ["read", "write", "access", "array"]),
+        **pluto_cost,
     }
 
 
@@ -199,3 +201,126 @@ def _product(values: List[float]) -> float:
     for value in values:
         result *= value
     return result
+
+
+_ACCESS_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\[([^\]]+)\]")
+_LOOP_VAR_RE = re.compile(r"\bi(\d+)\b")
+_INT_RE = re.compile(r"(?<![A-Za-z_])[-+]?\d+(?![A-Za-z_])")
+
+
+def _split_indices(text: str) -> List[str]:
+    parts: List[str] = []
+    current: List[str] = []
+    depth = 0
+    for char in text:
+        if char in "([{":
+            depth += 1
+        elif char in ")]}" and depth > 0:
+            depth -= 1
+        if char == "," and depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(char)
+    tail = "".join(current).strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _affine_signature(expr: str, loop_rank: int) -> tuple[tuple[int, ...], int]:
+    normalized = expr.replace("-", "+-")
+    coeffs = [0 for _ in range(loop_rank)]
+    for match in _LOOP_VAR_RE.finditer(expr):
+        dim = int(match.group(1))
+        if dim >= loop_rank:
+            continue
+        prefix = expr[: match.start()]
+        sign = -1 if prefix.rstrip().endswith("-") else 1
+        coeffs[dim] += sign
+    constant = 0
+    for raw in _INT_RE.findall(normalized):
+        try:
+            constant += int(raw)
+        except ValueError:
+            continue
+    return tuple(coeffs), constant
+
+
+def simplified_pluto_cost_features(yaml_text: str) -> JsonDict:
+    """Estimate local affine reuse/dependence distances from access text.
+
+    This is intentionally conservative: without exact dependence analysis, we
+    only compare repeated accesses to the same array and summarize constant
+    offset distances across loop dimensions. The resulting quantities are used
+    as a Pluto-inspired prior, not as a legality proof.
+    """
+    dims = {int(match.group(1)) for match in _LOOP_VAR_RE.finditer(yaml_text)}
+    loop_rank = max(dims) + 1 if dims else 0
+    if loop_rank <= 0:
+        return {
+            "pluto_loop_rank": 0,
+            "pluto_access_count": 0,
+            "pluto_reuse_pair_count": 0,
+            "pluto_max_distance": 0.0,
+            "pluto_distance_sum": 0.0,
+            "pluto_distance_by_dim": [],
+            "pluto_carried_dims": 0,
+            "pluto_reduction_opportunity": 0.0,
+        }
+
+    accesses: Dict[str, List[List[tuple[tuple[int, ...], int]]]] = {}
+    for array_name, indices_text in _ACCESS_RE.findall(yaml_text):
+        index_exprs = _split_indices(indices_text)
+        if not index_exprs:
+            continue
+        signatures = [_affine_signature(expr, loop_rank) for expr in index_exprs]
+        accesses.setdefault(array_name, []).append(signatures)
+
+    distance_by_dim = [0 for _ in range(loop_rank)]
+    reuse_pairs = 0
+    distance_sum = 0
+    max_distance = 0
+    for refs in accesses.values():
+        if len(refs) < 2:
+            continue
+        for left_idx in range(len(refs)):
+            for right_idx in range(left_idx + 1, len(refs)):
+                left = refs[left_idx]
+                right = refs[right_idx]
+                for l_sig, r_sig in zip(left, right):
+                    l_coeffs, l_const = l_sig
+                    r_coeffs, r_const = r_sig
+                    if l_coeffs != r_coeffs:
+                        distance = 2
+                    else:
+                        distance = abs(l_const - r_const)
+                    if distance <= 0:
+                        continue
+                    reuse_pairs += 1
+                    distance_sum += distance
+                    max_distance = max(max_distance, distance)
+                    active_dims = [idx for idx, coeff in enumerate(l_coeffs) if coeff]
+                    if active_dims:
+                        for dim in active_dims:
+                            distance_by_dim[dim] = max(distance_by_dim[dim], distance)
+                    else:
+                        distance_by_dim[0] = max(distance_by_dim[0], distance)
+
+    carried_dims = sum(1 for distance in distance_by_dim if distance > 0)
+    reduction_opportunity = (
+        max_distance * max(1, carried_dims) + 0.25 * distance_sum
+        if reuse_pairs else 0.0
+    )
+    return {
+        "pluto_loop_rank": loop_rank,
+        "pluto_access_count": sum(len(refs) for refs in accesses.values()),
+        "pluto_reuse_pair_count": reuse_pairs,
+        "pluto_max_distance": float(max_distance),
+        "pluto_distance_sum": float(distance_sum),
+        "pluto_distance_by_dim": [float(distance) for distance in distance_by_dim],
+        "pluto_carried_dims": carried_dims,
+        "pluto_reduction_opportunity": float(reduction_opportunity),
+    }
