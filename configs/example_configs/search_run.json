@@ -55,7 +55,7 @@
       "result_json": "/tmp/scout-polymorph/search_result.json",
       "structural_retrieval": true,
       "cache_evaluations": true,
-      "multi_fidelity": true,
+      "multi_fidelity": false,
       "early_stop_worse_than": 1.15,
       "constraints": {
         "early_stop_warmup_runs": 1,
@@ -71,7 +71,9 @@
       },
       "cache_jsonl": "/tmp/scout-polymorph/search_result.cache.jsonl",
       "ablation_enabled": false,
-      "replay_top_k": 0
+      "replay_top_k": 0,
+      "trial_warmup_runs": 1,
+      "target_backend": "ocl"
     }
   }
 }

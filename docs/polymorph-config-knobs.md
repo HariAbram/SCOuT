@@ -92,7 +92,7 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `result_json` | `null` | Path for final result summary. |
 | `trial_csv` | `null` | Path for per-trial CSV output. |
 | `pareto_csv` | `null` | Path for Pareto output in multi-objective mode. |
-| `multi_fidelity` | `true` | Run a low-fidelity measurement before full repeat and prune clearly poor candidates. |
+| `multi_fidelity` | `false` | Run a low-fidelity measurement before full repeat and prune clearly poor candidates. When disabled, `trial_warmup_runs` still warms transformed binaries before measurement. |
 | `early_stop_worse_than` | `1.15` | Low-fidelity candidate is pruned if it is worse than the baseline by this factor. |
 | `target_backend` | `null` | If set, runs baseline and trials with `ACPP_VISIBILITY_MASK=<target_backend>`. |
 | `backend_sensitivity_masks` | `[]` | Backend masks to compare for sensitivity analysis, for example `["omp", "ocl"]`. |
@@ -106,6 +106,7 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `final_validation_enabled` | `true` | After search, rebuild the best/top candidates and remeasure them against repeated baseline samples. |
 | `final_validation_repeats` | `20` | Number of interleaved baseline/candidate measurement rounds per validated candidate. |
 | `final_validation_warmup_runs` | `1` | Warmup runs for baseline and candidate before final validation samples are collected. |
+| `trial_warmup_runs` | `final_validation_warmup_runs` | Warmup executions for each transformed trial before the full measured repeat. This is independent of `multi_fidelity`. |
 | `final_validation_top_k` | `3` | Number of unique top search candidates to validate. |
 | `final_validation_min_speedup` | `1.0` | Minimum validated speedup required before a result can be marked significant. |
 | `final_validation_noise_factor` | `2.0` | Require speedup to exceed `1 + noise_factor * max(baseline_rsd, candidate_rsd)`. |

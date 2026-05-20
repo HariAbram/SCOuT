@@ -235,7 +235,7 @@ class PolyMorphSearchSpec:
     structural_retrieval: bool = True
     cache_jsonl: str | None = None
     cache_evaluations: bool = True
-    multi_fidelity: bool = True
+    multi_fidelity: bool = False
     early_stop_worse_than: float = 1.15
     top_k: int | None = None
     retrieval_top_k: int = 3
@@ -257,6 +257,7 @@ class PolyMorphSearchSpec:
     final_validation_enabled: bool = True
     final_validation_repeats: int = 20
     final_validation_warmup_runs: int = 1
+    trial_warmup_runs: int = 1
     final_validation_top_k: int = 3
     final_validation_min_speedup: float = 1.0
     final_validation_noise_factor: float = 2.0
@@ -288,7 +289,7 @@ class PolyMorphSearchSpec:
             structural_retrieval=bool(data.get("structural_retrieval", True)),
             cache_jsonl=data.get("cache_jsonl"),
             cache_evaluations=bool(data.get("cache_evaluations", True)),
-            multi_fidelity=bool(data.get("multi_fidelity", True)),
+            multi_fidelity=bool(data.get("multi_fidelity", False)),
             early_stop_worse_than=float(data.get("early_stop_worse_than", 1.15)),
             top_k=int(data["top_k"]) if data.get("top_k") is not None else None,
             retrieval_top_k=int(data.get("retrieval_top_k", 3)),
@@ -313,6 +314,7 @@ class PolyMorphSearchSpec:
             final_validation_enabled=bool(data.get("final_validation_enabled", True)),
             final_validation_repeats=int(data.get("final_validation_repeats", 20)),
             final_validation_warmup_runs=int(data.get("final_validation_warmup_runs", 1)),
+            trial_warmup_runs=int(data.get("trial_warmup_runs", data.get("final_validation_warmup_runs", 1))),
             final_validation_top_k=int(data.get("final_validation_top_k", 3)),
             final_validation_min_speedup=float(data.get("final_validation_min_speedup", 1.0)),
             final_validation_noise_factor=float(data.get("final_validation_noise_factor", 2.0)),

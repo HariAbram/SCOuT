@@ -62,7 +62,7 @@
       "case_retrieval": true,
       "structural_retrieval": true,
       "cache_evaluations": true,
-      "multi_fidelity": true,
+      "multi_fidelity": false,
       "early_stop_worse_than": 1.15,
       "cache_jsonl": "/tmp/scout-polymorph/history.cache.jsonl",
       "top_k": 20,
@@ -77,7 +77,7 @@
       ],
       "backend_sensitivity_repeat": 2,
       "backend_sensitivity_per_trial": false,
-      "target_backend": "omp",
+      "target_backend": "ocl",
       "constraints": {
         "max_tile_size": 128,
         "max_tile_volume": 16384,
@@ -96,7 +96,8 @@
         "baseline_warmup_runs": 1
       },
       "ablation_enabled": false,
-      "replay_top_k": 0
+      "replay_top_k": 0,
+      "trial_warmup_runs": 1
     }
   }
 }

@@ -69,7 +69,7 @@
       ],
       "structural_retrieval": true,
       "cache_evaluations": true,
-      "multi_fidelity": true,
+      "multi_fidelity": false,
       "early_stop_worse_than": 1.15,
       "constraints": {
         "early_stop_warmup_runs": 1,
@@ -84,7 +84,9 @@
         "baseline_warmup_runs": 1
       },
       "ablation_enabled": false,
-      "replay_top_k": 0
+      "replay_top_k": 0,
+      "trial_warmup_runs": 1,
+      "target_backend": "ocl"
     }
   }
 }

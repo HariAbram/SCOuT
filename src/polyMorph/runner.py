@@ -683,6 +683,35 @@ def measure_metrics_with_warmup_or_raise(
         clear_acpp_runtime_cache()
 
 
+def run_app_warmups_or_raise(app: SyclProjectApp, warmup_runs: int, cfg: Config | None = None) -> None:
+    warmup_runs = max(0, int(warmup_runs))
+    if warmup_runs <= 0:
+        return
+    if not app.output_binary.exists():
+        build_app_or_raise(app)
+
+    env = {**os.environ, **app.run_env}
+    cwd: Path | None = None
+    cmd: List[str] = []
+    if cfg is not None and cfg.backend == "parser" and cfg.parser is not None:
+        if cfg.parser.prefix:
+            cmd.extend(cfg.parser.prefix)
+        if cfg.parser.core_list:
+            cmd.extend(["taskset", "-c", cfg.parser.core_list])
+        cwd = app.project_root if cfg.parser.run_cwd in {"workdir", "project_dir"} else app.output_binary.parent
+    cmd.append(str(app.output_binary))
+    cmd.extend(app.runtime_args)
+
+    for idx in range(warmup_runs):
+        proc = _run(cmd, cwd=cwd, env=env)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"Warmup run {idx + 1}/{warmup_runs} failed\n"
+                f"stdout:\n{proc.stdout}\n"
+                f"stderr:\n{proc.stderr}\n"
+            )
+
+
 def _objective_is_better(cfg: Config, left: float, right: float) -> bool:
     goal = cfg.objectives[0].goal if cfg.objectives else "min"
     return left > right if goal == "max" else left < right
@@ -3285,6 +3314,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             build_app_or_raise(transformed_app)
 
             try:
+                trial_already_warmed = False
                 if poly.search.multi_fidelity and poly.search.repeat > 1:
                     early_stop_warmups = int(
                         poly.search.constraints.get("early_stop_warmup_runs", 1)
@@ -3300,6 +3330,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                             cfg,
                             clear_runtime_cache=False,
                         )
+                    trial_already_warmed = early_stop_warmups > 0 or early_stop_runs > 0
                     first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
                     first_kernel_analysis = analyze_kernel_timing_deltas(
                         baseline_metrics,
@@ -3349,6 +3380,13 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                             f"by factor {poly.search.early_stop_worse_than}"
                         )
 
+                trial_warmups = max(0, int(poly.search.trial_warmup_runs))
+                if trial_warmups and not trial_already_warmed:
+                    run_app_warmups_or_raise(transformed_app, trial_warmups, cfg)
+                    trial.set_user_attr("trial_warmup_runs", trial_warmups)
+                else:
+                    trial.set_user_attr("trial_warmup_runs", 0)
+
                 metrics = measure_metrics_or_raise(
                     transformed_app,
                     poly.search.repeat,
@@ -3392,6 +3430,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
             trial.set_user_attr("metrics", metrics)
             trial.set_user_attr("speedup", speedup)
             print(f"Trial {trial.number}: objective={value}, speedup={speedup}, transforms={specs}")
+            measured_trial_warmups = int(trial.user_attrs.get("trial_warmup_runs", 0) or 0)
             append_history(
                 poly.search.history_jsonl,
                 {
@@ -3406,6 +3445,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                     "metrics": metrics,
                     "objectives": obj_values,
                     "speedup": speedup,
+                    "trial_warmup_runs": measured_trial_warmups,
                     "performance_feedback_analysis": performance_feedback_analysis,
                     "backend_sensitivity": backend_sensitivity,
                     "correctness": correctness,
@@ -3424,6 +3464,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 "metrics": metrics,
                 "objectives": obj_values,
                 "speedup": speedup,
+                "trial_warmup_runs": measured_trial_warmups,
                 "performance_feedback_analysis": performance_feedback_analysis,
                 "backend_sensitivity": backend_sensitivity,
                 "correctness": correctness,
