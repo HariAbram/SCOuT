@@ -79,7 +79,14 @@
         "pluto_cost_weight": 1.0,
         "preferred_tile_size_fallback_weight": 0.0,
         "tree_tile_size_novelty_bonus": 0.35,
-        "baseline_warmup_runs": 1
+        "baseline_warmup_runs": 1,
+        "compound_actions_enabled": true,
+        "compound_beam_width": 20,
+        "compound_beam_depth": 3,
+        "compound_beam_measure_top_k": 10,
+        "compound_beam_branching": 24,
+        "pluto_stream_pair_weight": 0.15,
+        "max_transforms_per_scop": 3
       },
       "generated_infix": "libor",
       "baseline_exec_name": "build/libor-baseline",

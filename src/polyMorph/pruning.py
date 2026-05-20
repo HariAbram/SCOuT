@@ -117,6 +117,10 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
     pluto_max_distance = float(features.get("pluto_max_distance", 0.0) or 0.0)
     pluto_distance_sum = float(features.get("pluto_distance_sum", 0.0) or 0.0)
     pluto_reuse_pairs = int(features.get("pluto_reuse_pair_count", 0) or 0)
+    pluto_exact_pairs = int(features.get("pluto_exact_reuse_pair_count", pluto_reuse_pairs) or 0)
+    pluto_stream_pairs = int(features.get("pluto_stream_pair_count", 0) or 0)
+    stream_pair_weight = max(0.0, min(1.0, float(constraints.get("pluto_stream_pair_weight", 0.15))))
+    pluto_effective_pairs = float(pluto_exact_pairs) + stream_pair_weight * float(pluto_stream_pairs)
     pluto_carried_dims = int(features.get("pluto_carried_dims", 0) or 0)
     pluto_by_dim = [
         float(value)
@@ -131,14 +135,21 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
         max_tile_size = float(features.get("max_tile_size", 0.0) or 0.0)
         tile_rank = int(features.get("numeric_arg_count", 0) or 0)
         preferred = float(constraints.get("preferred_tile_size", 32))
-        if pluto_enabled and pluto_reuse_pairs > 0 and max_tile_size > 0:
+        if pluto_enabled and pluto_effective_pairs > 0.0 and max_tile_size > 0:
             covered_distance = min(1.0, max_tile_size / max(pluto_max_distance + 1.0, 1.0))
             rank_coverage = min(tile_rank, max(pluto_carried_dims, 1)) / max(pluto_carried_dims, 1)
-            pluto_bonus = min(0.22, 0.08 + 0.10 * covered_distance + 0.06 * rank_coverage)
+            confidence = min(1.0, pluto_effective_pairs / max(float(pluto_reuse_pairs), 1.0))
+            pluto_bonus = confidence * min(0.22, 0.08 + 0.10 * covered_distance + 0.06 * rank_coverage)
             score += pluto_weight * pluto_bonus
-            reasons.append(
-                "Pluto-style tiling prior: tile bounds estimated affine reuse/dependence distance"
-            )
+            if pluto_exact_pairs > 0:
+                reasons.append(
+                    "Pluto-style tiling prior: tile bounds estimated affine reuse/dependence distance"
+                )
+            else:
+                risk += 0.06
+                reasons.append(
+                    "weak Pluto tiling prior: only stream-shaped access pairs were found"
+                )
             if tile_rank < pluto_carried_dims:
                 risk += 0.08
                 reasons.append(
@@ -214,8 +225,8 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
             score += 0.14
             risk += 0.12
             reasons.append("sequence SCoP has adjacent children that may benefit from fusion")
-            if pluto_enabled and pluto_reuse_pairs > 0:
-                score += min(0.08, 0.02 * pluto_reuse_pairs)
+            if pluto_enabled and pluto_exact_pairs > 0:
+                score += min(0.08, 0.02 * pluto_exact_pairs)
                 reasons.append("Pluto-style fusion prior: repeated affine accesses indicate reuse across statements")
         else:
             score -= 0.18
@@ -258,9 +269,10 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
     if loop_hints and access_hints / loop_hints > 2.0:
         risk += 0.05
         reasons.append("memory-access-heavy loop summary")
-    if pluto_enabled and pluto_reuse_pairs > 0:
+    if pluto_enabled and pluto_effective_pairs > 0:
         reasons.append(
-            f"Pluto distance summary: max={pluto_max_distance:.1f}, sum={pluto_distance_sum:.1f}, pairs={pluto_reuse_pairs}"
+            f"Pluto distance summary: max={pluto_max_distance:.1f}, sum={pluto_distance_sum:.1f}, "
+            f"exact_pairs={pluto_exact_pairs}, stream_pairs={pluto_stream_pairs}, effective_pairs={pluto_effective_pairs:.1f}"
         )
 
     return {

@@ -63,7 +63,7 @@
         "max_tile_volume": 16384,
         "max_abs_shift": 16,
         "max_same_transform_per_sequence": 1,
-        "max_transforms_per_scop": 1,
+        "max_transforms_per_scop": 3,
         "preferred_tile_size": 32,
         "max_predicted_risk": 0.85,
         "backend_sensitivity_rel_threshold": 0.35,
@@ -82,7 +82,13 @@
         "pluto_cost_weight": 1.0,
         "preferred_tile_size_fallback_weight": 0.0,
         "tree_tile_size_novelty_bonus": 0.35,
-        "baseline_warmup_runs": 1
+        "baseline_warmup_runs": 1,
+        "compound_actions_enabled": true,
+        "compound_beam_width": 20,
+        "compound_beam_depth": 3,
+        "compound_beam_measure_top_k": 10,
+        "compound_beam_branching": 24,
+        "pluto_stream_pair_weight": 0.15
       },
       "generated_infix": "gmm",
       "baseline_exec_name": "build/gmm-baseline",

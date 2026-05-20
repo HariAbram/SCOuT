@@ -392,6 +392,8 @@ def apply_transforms_to_scops(
     scops: List[Any],
     specs: List[JsonDict],
     legality_cb: Callable[[], Any] | None = None,
+    *,
+    verbose: bool = True,
 ) -> None:
     for idx, spec in enumerate(specs):
         try:
@@ -405,48 +407,55 @@ def apply_transforms_to_scops(
         node = scops[scop_idx].schedule_tree[node_idx]
         tr = enum_from_name(tr_name)
 
-        print(
-            f"Applying transform #{idx}: "
-            f"scop={scop_idx}, node={node_idx}, tr={tr_name}, args={tr_args}"
-        )
+        if verbose:
+            print(
+                f"Applying transform #{idx}: "
+                f"scop={scop_idx}, node={node_idx}, tr={tr_name}, args={tr_args}"
+            )
         try:
             ok = node.transform(tr, *tr_args)
         except Exception as exc:
             message = str(exc)
             if "Not valid args" in message:
-                print(f"  invalid: args={tuple(tr_args)} are not valid for {tr_name}")
+                if verbose:
+                    print(f"  invalid: args={tuple(tr_args)} are not valid for {tr_name}")
                 raise InvalidTransformArgs(
                     f"invalid args={tuple(tr_args)} for tr={tr_name} on scop={scop_idx}, node={node_idx}"
                 ) from exc
             first_line = message.splitlines()[0] if message else type(exc).__name__
-            print(f"  invalid: {first_line}")
+            if verbose:
+                print(f"  invalid: {first_line}")
             raise InvalidTransformArgs(
                 f"{tr_name} is not valid on scop={scop_idx}, node={node_idx}: {first_line}"
             ) from exc
-        print(f"  result={ok}")
+        if verbose:
+            print(f"  result={ok}")
         if not ok:
             raise InvalidTransformArgs(
                 f"{tr_name} returned False on scop={scop_idx}, node={node_idx}"
             )
 
-        try:
-            available = getattr(node, "available_transformations", [])
-            names = [getattr(item, "name", str(item)) for item in available]
-        except Exception as exc:
-            names = [f"<unavailable: {exc}>"]
-        try:
-            node_type = getattr(node, "node_type", "<unknown>")
-        except Exception as exc:
-            node_type = f"<invalid: {exc}>"
-        print(f"  current node type: {node_type}")
-        print(f"  currently available: {names}")
+        if verbose:
+            try:
+                available = getattr(node, "available_transformations", [])
+                names = [getattr(item, "name", str(item)) for item in available]
+            except Exception as exc:
+                names = [f"<unavailable: {exc}>"]
+            try:
+                node_type = getattr(node, "node_type", "<unknown>")
+            except Exception as exc:
+                node_type = f"<invalid: {exc}>"
+            print(f"  current node type: {node_type}")
+            print(f"  currently available: {names}")
 
         if legality_cb is not None:
             try:
                 legal = legality_cb()
-                print(f"  legal()={legal}")
+                if verbose:
+                    print(f"  legal()={legal}")
             except Exception as exc:
-                print(f"  legality check failed: {exc}")
+                if verbose:
+                    print(f"  legality check failed: {exc}")
 
 
 def app_is_legal(app: SyclProjectApp) -> bool:
@@ -1930,6 +1939,8 @@ class AdaptiveTreeState:
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     disabled_families: set[str] = field(default_factory=set)
     disabled_scops: set[int] = field(default_factory=set)
+    compound_beam_sequences: List[List[JsonDict]] = field(default_factory=list)
+    compound_beam_built: bool = False
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
         return sequence_signature(specs) if specs else "root"
@@ -2276,6 +2287,143 @@ def _single_transform_screening_order(
     return ordered
 
 
+def _sequence_analytical_score(specs: Sequence[JsonDict], constraints: JsonDict) -> float:
+    if not specs:
+        return 0.0
+    total = 0.0
+    risk = 0.0
+    families = [_candidate_family(spec) for spec in specs]
+    names = [str(spec.get("tr", "")) for spec in specs]
+    for spec in specs:
+        pred = spec.get("predictions", {}) or {}
+        total += float(pred.get("score", 0.0) or 0.0)
+        risk += float(pred.get("risk", 0.0) or 0.0)
+
+    bonus = 0.0
+    for left, right in zip(names, names[1:]):
+        if left == "INTERCHANGE" and right.startswith("TILE"):
+            bonus += 0.20
+        if left.startswith("TILE") and right == "INTERCHANGE":
+            bonus += 0.12
+        if left == "TILE_1D" and right == "SET_LOOP_OPT":
+            bonus += 0.14
+        if left in {"SPLIT", "FULL_SPLIT"} and right.startswith("TILE"):
+            bonus += 0.18
+        if left == "FULL_SPLIT" and right == "SET_LOOP_OPT":
+            bonus += 0.10
+    if len(set(families)) > 1:
+        bonus += float(constraints.get("tree_sequence_novelty_bonus", 0.10))
+    return (total / len(specs)) + bonus - 0.20 * (risk / len(specs))
+
+
+def _beam_candidate_allowed(
+    candidate: JsonDict,
+    prefix: Sequence[JsonDict],
+    tree: AdaptiveTreeState,
+    constraints: JsonDict,
+) -> bool:
+    if _candidate_family(candidate) in tree.disabled_families:
+        return False
+    if int(candidate.get("scop", -1)) in tree.disabled_scops:
+        return False
+    if tree.is_blacklisted_candidate(candidate):
+        return False
+    if not _candidate_diversity_allowed(list(prefix), candidate, constraints):
+        return False
+    next_prefix = [*prefix, candidate]
+    if tree.is_saturated(next_prefix) or tree.is_bad_prefix(next_prefix):
+        return False
+    if static_prune_sequence(next_prefix, constraints):
+        return False
+    return True
+
+
+def _materialize_prefix_app(
+    source: Path,
+    poly: PolyMorphSpec,
+    prefix: Sequence[JsonDict],
+    performance_bias: Dict[str, JsonDict] | None,
+    hot_filter: HotKernelFilter | None,
+) -> SyclProjectApp | None:
+    try:
+        app = make_project_app(
+            poly=poly,
+            source=source,
+            exec_name=poly.exec_name,
+            populate_scops=True,
+        )
+    except Exception:
+        return None
+    if prefix:
+        try:
+            apply_transforms_to_scops(
+                app.scops,
+                list(prefix),
+                legality_cb=lambda: app_is_legal(app),
+                verbose=False,
+            )
+        except Exception:
+            return None
+        if not poly.allow_illegal and not app_is_legal(app):
+            return None
+    return app
+
+
+def build_compound_beam_sequences(
+    source: Path,
+    poly: PolyMorphSpec,
+    tree: AdaptiveTreeState,
+    performance_bias: Dict[str, JsonDict] | None = None,
+    hot_filter: HotKernelFilter | None = None,
+) -> List[List[JsonDict]]:
+    constraints = poly.search.constraints
+    depth = max(1, min(
+        int(constraints.get("compound_beam_depth", poly.search.max_transforms_per_trial)),
+        int(poly.search.max_transforms_per_trial),
+    ))
+    beam_width = max(1, int(constraints.get("compound_beam_width", 20)))
+    measure_top_k = max(1, int(constraints.get("compound_beam_measure_top_k", 10)))
+    branching = max(1, int(constraints.get("compound_beam_branching", 24)))
+
+    beam: List[tuple[List[JsonDict], float]] = [([], 0.0)]
+    terminals: Dict[str, tuple[List[JsonDict], float]] = {}
+
+    for _depth in range(depth):
+        expanded: List[tuple[List[JsonDict], float]] = []
+        for prefix, _score in beam:
+            prefix_app = _materialize_prefix_app(source, poly, prefix, performance_bias, hot_filter)
+            if prefix_app is None:
+                continue
+            candidates = enumerate_transform_candidates(
+                prefix_app,
+                poly,
+                performance_bias,
+                hot_filter,
+                print_family_summary=False,
+            )
+            candidates = [
+                candidate
+                for candidate in _sort_tree_candidates(candidates, tree, list(prefix))
+                if _beam_candidate_allowed(candidate, prefix, tree, constraints)
+            ][:branching]
+            for candidate in candidates:
+                next_prefix = [*prefix, candidate]
+                signature = sequence_signature(next_prefix)
+                if signature in terminals:
+                    continue
+                score = _sequence_analytical_score(next_prefix, constraints)
+                expanded.append((next_prefix, score))
+                if len(next_prefix) >= 2:
+                    terminals[signature] = (next_prefix, score)
+        if not expanded:
+            break
+        expanded.sort(key=lambda item: item[1], reverse=True)
+        beam = expanded[:beam_width]
+
+    ranked = sorted(terminals.values(), key=lambda item: item[1], reverse=True)
+    return [prefix for prefix, _score in ranked[:measure_top_k]]
+
+
 def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> float:
     return max(0.0, _speedup_for_primary(cfg, baseline_value, value))
 
@@ -2307,6 +2455,47 @@ def sample_transform_sequence(
         if sequence_signature(stop) not in tree.tried_sequences:
             tree.mark_tried(stop)
             return stop
+
+    if bool(poly.search.constraints.get("compound_actions_enabled", True)):
+        if not tree.compound_beam_built:
+            tree.compound_beam_sequences = build_compound_beam_sequences(
+                app.original_source,
+                poly,
+                tree,
+                performance_bias,
+                hot_filter,
+            )
+            tree.compound_beam_built = True
+            if tree.compound_beam_sequences:
+                print(
+                    f"[MCTS] analytical compound beam queued "
+                    f"{len(tree.compound_beam_sequences)} prefix sequence(s)."
+                )
+        while tree.compound_beam_sequences:
+            prefix = tree.compound_beam_sequences.pop(0)
+            signature = sequence_signature(prefix)
+            if signature in tree.tried_sequences:
+                continue
+            if tree.is_saturated(prefix) or tree.is_terminal_evaluated(prefix):
+                continue
+            if poly.search.constraint_aware:
+                reasons = static_prune_sequence(prefix, poly.search.constraints)
+                if reasons:
+                    continue
+            try:
+                apply_transforms_to_scops(
+                    app.scops,
+                    prefix,
+                    legality_cb=lambda: app_is_legal(app),
+                )
+            except InvalidTransformArgs as exc:
+                mark_failed_and_prune(prefix, str(exc))
+            except Exception as exc:
+                mark_failed_and_prune(prefix, str(exc))
+            if not poly.allow_illegal and not app_is_legal(app):
+                mark_failed_and_prune(prefix, "Illegal transformed schedule")
+            tree.mark_tried(prefix)
+            return prefix
 
     if bool(poly.search.constraints.get("single_transform_screening", True)):
         limit = int(poly.search.constraints.get("single_transform_screening_limit", 0) or 0)

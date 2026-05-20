@@ -138,6 +138,7 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `preferred_tile_size_fallback_weight` | `0.20` when Pluto is enabled, otherwise `1.0` | Multiplier for the legacy preferred-size fallback. Set to `0.0` to avoid biasing tile search toward 32 when Pluto evidence is absent. |
 | `pluto_cost_model` | `true` | Use the simplified Pluto-style affine reuse/dependence-distance prior when scoring candidates. |
 | `pluto_cost_weight` | `1.0` | Multiplier for the simplified Pluto-style prior. |
+| `pluto_stream_pair_weight` | `0.15` | Weight assigned to stream-shaped access pairs when no exact repeated-array reuse is found. Lower values prevent stream-only evidence from over-rewarding tiling. |
 | `large_tile_volume` | `4096` | Tile volume above which register/cache pressure risk increases. |
 | `max_predicted_risk` | unset | If set, prune candidates whose predicted risk is higher. |
 | `min_predicted_score` | unset | If set, prune candidates whose predicted score is lower. |
@@ -151,6 +152,11 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `single_transform_screening` | `true` | Start with one-transform trials to estimate individual candidate quality. |
 | `single_transform_screening_limit` | `0` | Number of screening trials. If `0`, uses `min(16, candidate_count)`. |
 | `screening_per_family` | `2` | During screening, try candidates across transform families instead of only globally highest-ranked candidates. |
+| `compound_actions_enabled` | `true` | Build analytical compound prefixes before measurement, such as `INTERCHANGE -> TILE`, `TILE -> SET_LOOP_OPT`, and `SPLIT -> TILE`. |
+| `compound_beam_width` | `20` | Number of partial prefixes kept at each compound beam-search depth. |
+| `compound_beam_depth` | `max_transforms_per_trial` | Maximum compound-prefix depth explored analytically before measurement. |
+| `compound_beam_measure_top_k` | `10` | Number of analytically ranked compound prefixes queued for empirical measurement. |
+| `compound_beam_branching` | `24` | Maximum number of candidate children considered per beam prefix. |
 | `tree_family_novelty_bonus` | `0.20` | Prior bonus for a transform family that has not yet been tried. |
 | `tree_tile_size_novelty_bonus` | `0.25` | Prior bonus for tile sizes that have been tried fewer times, encouraging exploration across the configured `tile_sizes`. |
 | `tree_unvisited_bonus` | `1.0` | UCT-style bonus for unvisited children. |
