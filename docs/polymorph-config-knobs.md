@@ -74,11 +74,9 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `enumerate_only` | `false` | Enumerate candidate transformations and exit before search. |
 | `max_transforms_per_trial` | `1` | Maximum transformation sequence length in a trial. |
 | `tile_sizes` | `[8, 16, 32, 64, 128]` | Candidate tile sizes used to infer `TILE_1D`, `TILE_2D`, and `TILE_3D` arguments. |
-| `scale_factors` | `[2]` | Candidate scale/split factors where supported. |
-| `shift_values` | `[-2, -1, 1, 2]` | Candidate shift offsets for shift transformations. |
 | `allow_transforms` | `null` | Optional allow-list of Tadashi transform names. If present, only these transforms are considered. |
 | `block_transforms` | `["SET_PARALLEL"]` | Transform names to exclude. |
-| `legality_aware_args` | `true` | Infer arguments from the current node structure where possible, for example fuse child indexes. |
+| `legality_aware_args` | `true` | Infer arguments from Tadashi's current-node argument descriptors and validate them with Tadashi before search. |
 | `static_pruning` | `false` | Enable rule-based candidate and sequence pruning. |
 | `analytical_model` | `false` | Enable static heuristic scoring and risk estimation. |
 | `constraint_aware` | `false` | Apply score/risk constraints and performance-bias pruning. |
@@ -135,7 +133,8 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 
 | Key | Default | Meaning |
 |---|---:|---|
-| `preferred_tile_size` | `32` | Tile size favored by the analytical model. |
+| `preferred_tile_size` | `32` | Legacy tile-size center used only by the fallback heuristic. |
+| `preferred_tile_size_fallback_weight` | `0.20` when Pluto is enabled, otherwise `1.0` | Multiplier for the legacy preferred-size fallback. Set to `0.0` to avoid biasing tile search toward 32 when Pluto evidence is absent. |
 | `pluto_cost_model` | `true` | Use the simplified Pluto-style affine reuse/dependence-distance prior when scoring candidates. |
 | `pluto_cost_weight` | `1.0` | Multiplier for the simplified Pluto-style prior. |
 | `large_tile_volume` | `4096` | Tile volume above which register/cache pressure risk increases. |
@@ -152,6 +151,7 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `single_transform_screening_limit` | `0` | Number of screening trials. If `0`, uses `min(16, candidate_count)`. |
 | `screening_per_family` | `2` | During screening, try candidates across transform families instead of only globally highest-ranked candidates. |
 | `tree_family_novelty_bonus` | `0.20` | Prior bonus for a transform family that has not yet been tried. |
+| `tree_tile_size_novelty_bonus` | `0.25` | Prior bonus for tile sizes that have been tried fewer times, encouraging exploration across the configured `tile_sizes`. |
 | `tree_unvisited_bonus` | `1.0` | UCT-style bonus for unvisited children. |
 | `tree_exploration` | `0.8` | Exploration coefficient for visited children. |
 | `tree_failure_penalty` | `0.25` | Penalty multiplier for candidates/prefixes with failed, pruned, or early-stopped history. |

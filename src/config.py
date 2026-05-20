@@ -222,8 +222,6 @@ class PolyMorphSearchSpec:
     baseline_exec_name: str | None = None
     max_transforms_per_trial: int = 1
     tile_sizes: List[int] = dataclasses.field(default_factory=lambda: [8, 16, 32, 64])
-    scale_factors: List[int] = dataclasses.field(default_factory=lambda: [2])
-    shift_values: List[int] = dataclasses.field(default_factory=lambda: [-2, -1, 1, 2])
     allow_transforms: List[str] | None = None
     block_transforms: List[str] = dataclasses.field(
         default_factory=lambda: PolyMorphSearchSpec.DEFAULT_BLOCK_TRANSFORMS[:]
@@ -279,8 +277,6 @@ class PolyMorphSearchSpec:
             baseline_exec_name=data.get("baseline_exec_name"),
             max_transforms_per_trial=int(data.get("max_transforms_per_trial", 1)),
             tile_sizes=[int(x) for x in data.get("tile_sizes", [8, 16, 32, 64])],
-            scale_factors=[int(x) for x in data.get("scale_factors", [2])],
-            shift_values=[int(x) for x in data.get("shift_values", [-2, -1, 1, 2])],
             allow_transforms=[str(x) for x in allow] if allow is not None else None,
             block_transforms=[str(x) for x in block],
             result_json=data.get("result_json"),

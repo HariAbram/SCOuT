@@ -39,13 +39,6 @@
         64,
         128
       ],
-      "scale_factors": [
-        2
-      ],
-      "shift_values": [
-        -1,
-        1
-      ],
       "static_pruning": true,
       "analytical_model": true,
       "constraint_aware": true,
@@ -84,7 +77,9 @@
         "tree_family_novelty_bonus": 0.35,
         "tree_sequence_novelty_bonus": 0.1,
         "pluto_cost_model": true,
-        "pluto_cost_weight": 1.0
+        "pluto_cost_weight": 1.0,
+        "preferred_tile_size_fallback_weight": 0.0,
+        "tree_tile_size_novelty_bonus": 0.35
       },
       "generated_infix": "recursiveGaussian",
       "baseline_exec_name": "build/recursiveGaussian-baseline",

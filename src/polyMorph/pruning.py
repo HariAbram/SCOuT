@@ -148,9 +148,20 @@ def analytical_score(candidate: JsonDict, constraints: JsonDict | None = None) -
                 risk += 0.05
                 reasons.append("tile size exceeds preferred size despite Pluto distance coverage")
         elif max_tile_size:
-            distance = abs(max_tile_size - preferred) / max(preferred, 1.0)
-            score += max(0.0, 0.14 - 0.08 * distance)
-            reasons.append("tile size close to preferred cache/vector heuristic")
+            fallback_weight = float(
+                constraints.get(
+                    "preferred_tile_size_fallback_weight",
+                    0.20 if pluto_enabled else 1.0,
+                )
+                or 0.0
+            )
+            if fallback_weight > 0.0:
+                distance = abs(max_tile_size - preferred) / max(preferred, 1.0)
+                score += fallback_weight * max(0.0, 0.14 - 0.08 * distance)
+                reasons.append("weak preferred tile-size fallback heuristic")
+            elif pluto_enabled:
+                score += 0.03
+                reasons.append("Pluto evidence absent; tile size left mostly exploratory")
         if loop_rank and tile_rank > loop_rank:
             score -= 0.35
             risk += 0.35

@@ -1082,6 +1082,21 @@ def _candidate_family(candidate: JsonDict) -> str:
     return _transform_family(str(candidate.get("tr", "")))
 
 
+def _candidate_tile_signature(candidate: JsonDict) -> tuple[int, ...] | None:
+    if _candidate_family(candidate) != "TILE":
+        return None
+    values: List[int] = []
+    for value in candidate.get("args", []) or []:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(int(value))
+    return tuple(values) if values else None
+
+
+def _candidate_tile_size(candidate: JsonDict) -> int | None:
+    signature = _candidate_tile_signature(candidate)
+    return max(signature) if signature else None
+
+
 def _format_family_counts(counts: Counter[str]) -> str:
     if not counts:
         return "none"
@@ -1322,6 +1337,174 @@ def _bounded_indexes(count: int, limit: int = 3) -> List[int]:
     return list(range(max(0, min(count, limit))))
 
 
+def _is_lower_upper_bound(value: Any) -> bool:
+    return hasattr(value, "lower") and hasattr(value, "upper")
+
+
+def _bounded_range_from_descriptor(
+    descriptor: Any,
+    *,
+    fallback_values: Sequence[int],
+    default_upper: int = 4,
+) -> List[int]:
+    lower = getattr(descriptor, "lower", None)
+    upper = getattr(descriptor, "upper", None)
+    if lower is None and upper is None:
+        return [int(value) for value in fallback_values]
+    start = int(lower) if lower is not None else 0
+    if upper is None:
+        return [int(value) for value in fallback_values if int(value) >= start]
+    stop = int(upper)
+    if stop <= start:
+        return []
+    if stop - start > default_upper:
+        stop = start + default_upper
+    return list(range(start, stop))
+
+
+def _unique_ints(values: Sequence[int]) -> List[int]:
+    result: List[int] = []
+    seen: set[int] = set()
+    for value in values:
+        integer = int(value)
+        if integer in seen:
+            continue
+        seen.add(integer)
+        result.append(integer)
+    return result
+
+
+def _descriptor_integer_samples(
+    descriptor: Any,
+    *,
+    preferred: Sequence[int],
+    default_upper: int = 4,
+) -> List[int]:
+    lower = getattr(descriptor, "lower", None)
+    upper = getattr(descriptor, "upper", None)
+    samples = [int(value) for value in preferred]
+    if lower is not None:
+        samples = [value for value in samples if value >= int(lower)]
+    if upper is not None:
+        samples = [value for value in samples if value < int(upper)]
+    samples = _unique_ints(samples)
+    if samples:
+        return samples
+    return _bounded_range_from_descriptor(
+        descriptor,
+        fallback_values=[],
+        default_upper=default_upper,
+    )
+
+
+def _shift_coefficient_samples(poly: PolyMorphSpec) -> List[int]:
+    constraints = getattr(poly.search, "constraints", {}) or {}
+    max_shift = max(1, int(constraints.get("max_abs_shift", 1) or 1))
+    values = [-1, 1]
+    if max_shift >= 2:
+        values.extend([-2, 2])
+    return _unique_ints(value for value in values if abs(value) <= max_shift)
+
+
+def _parallel_hint_samples(descriptor: Any) -> List[int]:
+    upper = getattr(descriptor, "upper", None)
+    lower = int(getattr(descriptor, "lower", 0) or 0)
+    preferred = [0, 1, 2, 4, 8, 16]
+    if upper is not None:
+        preferred.append(max(lower, int(upper) - 1))
+    return _descriptor_integer_samples(
+        descriptor,
+        preferred=preferred,
+        default_upper=6,
+    )
+
+
+def _split_index_samples(poly: PolyMorphSpec, descriptor: Any | None = None) -> List[int]:
+    if descriptor is not None and _is_lower_upper_bound(descriptor):
+        return _descriptor_integer_samples(
+            descriptor,
+            preferred=[1, 2, 3],
+            default_upper=4,
+        )
+    return [1]
+
+
+def _expand_tadashi_arg_descriptors(
+    name: str,
+    descriptors: Sequence[Any],
+    poly: PolyMorphSpec,
+) -> List[List[Any]]:
+    if not descriptors:
+        return [[]]
+
+    expanded: List[List[Any]] = [[]]
+    for descriptor in descriptors:
+        if _is_lower_upper_bound(descriptor):
+            if name.startswith("TILE"):
+                values = _bounded_range_from_descriptor(
+                    descriptor,
+                    fallback_values=[int(value) for value in poly.search.tile_sizes],
+                )
+            elif "SHIFT" in name:
+                values = _descriptor_integer_samples(
+                    descriptor,
+                    preferred=_shift_coefficient_samples(poly),
+                )
+            elif name == "SET_PARALLEL":
+                values = _parallel_hint_samples(descriptor)
+            else:
+                values = _split_index_samples(poly, descriptor)
+            expanded = [[*prefix, value] for prefix in expanded for value in values]
+            continue
+
+        if isinstance(descriptor, list) and descriptor and all(isinstance(item, list) for item in descriptor):
+            expanded = [[*prefix, *item] for prefix in expanded for item in descriptor]
+            continue
+
+        if isinstance(descriptor, list):
+            expanded = [[*prefix, item] for prefix in expanded for item in descriptor]
+            continue
+
+        expanded = [[*prefix, descriptor] for prefix in expanded]
+    return expanded
+
+
+def _filter_valid_node_args(name: str, node: Any, args_list: Sequence[Sequence[Any]]) -> List[List[Any]]:
+    if node is None or not hasattr(node, "valid_args"):
+        return [list(args) for args in args_list]
+    tr = enum_from_name(name)
+    valid: List[List[Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for args in args_list:
+        arg_list = list(args)
+        key = tuple(arg_list)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            ok = bool(node.valid_args(tr, *arg_list))
+        except Exception:
+            continue
+        if ok:
+            valid.append(arg_list)
+    return valid
+
+
+def _tadashi_args_for_node(name: str, poly: PolyMorphSpec, node: Any | None) -> List[List[Any]]:
+    if node is None or not hasattr(node, "available_args"):
+        return []
+    try:
+        tr = enum_from_name(name)
+        descriptors = node.available_args(tr)
+    except Exception:
+        return []
+    try:
+        args = _expand_tadashi_arg_descriptors(name, list(descriptors or []), poly)
+    except Exception:
+        return []
+    return _filter_valid_node_args(name, node, args)
+
+
 def candidate_args_for_transform(name: str, poly: PolyMorphSpec, node: Any | None = None) -> List[List[Any]]:
     loop_rank = _node_loop_rank(node) if node is not None else 1
     param_count = _node_param_count(node) if node is not None else 1
@@ -1347,33 +1530,33 @@ def candidate_args_for_transform(name: str, poly: PolyMorphSpec, node: Any | Non
     if name == "FULL_SPLIT":
         return [[]]
     if name == "SPLIT":
-        return [[int(x)] for x in poly.search.scale_factors]
+        return [[int(x)] for x in _split_index_samples(poly)]
     if name == "SCALE":
-        return [[int(x)] for x in poly.search.scale_factors]
+        return [[int(x)] for x in _split_index_samples(poly)]
     if name == "FULL_SHIFT_VAL":
-        return [[int(x)] for x in poly.search.shift_values]
+        return [[int(x)] for x in _shift_coefficient_samples(poly)]
     if name == "PARTIAL_SHIFT_VAL":
-        return [[dim, int(value)] for dim in loop_indexes for value in poly.search.shift_values]
+        return [[dim, int(value)] for dim in loop_indexes for value in _shift_coefficient_samples(poly)]
     if name == "FULL_SHIFT_VAR":
-        return [[dim, int(value)] for dim in loop_indexes for value in poly.search.shift_values]
+        return [[dim, int(value)] for dim in loop_indexes for value in _shift_coefficient_samples(poly)]
     if name == "PARTIAL_SHIFT_VAR":
         return [
             [target_dim, shift_dim, int(value)]
             for target_dim in loop_indexes
             for shift_dim in loop_indexes
-            for value in poly.search.shift_values
+            for value in _shift_coefficient_samples(poly)
         ]
     if name == "FULL_SHIFT_PARAM":
-        return [[param, int(value)] for param in param_indexes for value in poly.search.shift_values]
+        return [[param, int(value)] for param in param_indexes for value in _shift_coefficient_samples(poly)]
     if name == "PARTIAL_SHIFT_PARAM":
         return [
             [target_dim, param, int(value)]
             for target_dim in loop_indexes
             for param in param_indexes
-            for value in poly.search.shift_values
+            for value in _shift_coefficient_samples(poly)
         ]
     if name == "SET_PARALLEL":
-        return [[int(x)] for x in poly.search.scale_factors]
+        return [[int(x)] for x in [0, 1, 2]]
     if name == "SET_LOOP_OPT":
         member_count = _node_band_member_count(node)
         if member_count is None:
@@ -1388,11 +1571,15 @@ def candidate_args_for_node(name: str, poly: PolyMorphSpec, node: Any) -> List[L
     if not poly.search.legality_aware_args:
         return inferred
 
+    tadashi_args = _tadashi_args_for_node(name, poly, node)
+    if tadashi_args:
+        return tadashi_args
+
     child_count = _sequence_child_count(node)
     if name == "FUSE" and _node_is_sequence_like(node) and child_count >= 2:
         return [[idx, idx + 1] for idx in range(child_count - 1)]
 
-    return inferred
+    return _filter_valid_node_args(name, node, inferred)
 
 
 def _node_is_sequence_like(node: Any) -> bool:
@@ -1423,23 +1610,30 @@ def _sequence_child_count(node: Any) -> int:
 
 
 def candidate_args_invalid_for_node(name: str, args: Sequence[Any], node: Any) -> str | None:
-    if name != "FUSE":
-        return None
-    if not _node_is_sequence_like(node):
+    if hasattr(node, "valid_args"):
+        try:
+            if bool(node.valid_args(enum_from_name(name), *list(args))):
+                return None
+        except Exception as exc:
+            return f"{name} args {list(args)} failed Tadashi validation: {exc}"
+        return f"args={list(args)} are not valid for {name}"
+
+    if name == "FUSE" and not _node_is_sequence_like(node):
         return "FUSE requires a sequence schedule node"
-    if len(args) != 2:
+    if name == "FUSE" and len(args) != 2:
         return "FUSE requires two child indexes"
-    try:
-        left, right = (int(args[0]), int(args[1]))
-    except (TypeError, ValueError):
-        return "FUSE child indexes must be integers"
-    if left < 0 or right < 0:
-        return "FUSE child indexes must be non-negative"
-    if left == right:
-        return "FUSE child indexes must be distinct"
-    child_count = _sequence_child_count(node)
-    if child_count and max(left, right) >= child_count:
-        return f"FUSE args {list(args)} exceed sequence child count {child_count}"
+    if name == "FUSE":
+        try:
+            left, right = (int(args[0]), int(args[1]))
+        except (TypeError, ValueError):
+            return "FUSE child indexes must be integers"
+        if left < 0 or right < 0:
+            return "FUSE child indexes must be non-negative"
+        if left == right:
+            return "FUSE child indexes must be distinct"
+        child_count = _sequence_child_count(node)
+        if child_count and max(left, right) >= child_count:
+            return f"FUSE args {list(args)} exceed sequence child count {child_count}"
     return None
 
 
@@ -1608,6 +1802,9 @@ def select_diverse_top_k(candidates: List[JsonDict], top_k: int) -> List[JsonDic
     for candidate in ranked:
         name = str(candidate.get("tr", ""))
         groups.setdefault(name, []).append(candidate)
+    for name, group in list(groups.items()):
+        if name.startswith("TILE"):
+            groups[name] = _interleave_tile_sizes(group)
 
     group_names = sorted(
         groups,
@@ -1666,6 +1863,7 @@ class AdaptiveTreeState:
     saturated_prefixes: set[str] = field(default_factory=set)
     terminal_repeat_counts: Counter[str] = field(default_factory=Counter)
     tried_family_counts: Counter[str] = field(default_factory=Counter)
+    tried_tile_size_counts: Counter[int] = field(default_factory=Counter)
     failed_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     disabled_families: set[str] = field(default_factory=set)
@@ -1683,6 +1881,10 @@ class AdaptiveTreeState:
             if signature not in self.tried_sequences:
                 self.tried_sequences.add(signature)
                 self.tried_family_counts[_candidate_family(specs[0])] += 1
+                for spec in specs:
+                    tile_size = _candidate_tile_size(spec)
+                    if tile_size is not None:
+                        self.tried_tile_size_counts[tile_size] += 1
 
     def mark_existing(self, specs: List[JsonDict], reward: float, status: str = "complete") -> None:
         self.mark_tried(specs)
@@ -1855,6 +2057,10 @@ class AdaptiveTreeState:
         prior = 0.35 * prior_score + 0.15 * max(0.0, 1.0 + neg_risk)
         if self.tried_family_counts[_candidate_family(candidate)] == 0:
             prior += float(self.constraints.get("tree_family_novelty_bonus", 0.20))
+        tile_size = _candidate_tile_size(candidate)
+        if tile_size is not None:
+            tile_novelty = float(self.constraints.get("tree_tile_size_novelty_bonus", 0.25))
+            prior += tile_novelty / (1.0 + self.tried_tile_size_counts[tile_size])
         if parent:
             pair_key = stable_json_hash([
                 _compact_transform_specs([parent[-1]])[0],
@@ -1927,6 +2133,45 @@ def _sort_tree_candidates(
     return [candidate for _, candidate in scored]
 
 
+def _interleave_tile_sizes(candidates: List[JsonDict]) -> List[JsonDict]:
+    tile_candidates = [candidate for candidate in candidates if _candidate_tile_size(candidate) is not None]
+    if len(tile_candidates) <= 1:
+        return candidates
+
+    by_size: Dict[int, List[JsonDict]] = {}
+    for candidate in tile_candidates:
+        size = _candidate_tile_size(candidate)
+        if size is None:
+            continue
+        by_size.setdefault(size, []).append(candidate)
+    size_order = sorted(
+        by_size,
+        key=lambda size: candidate_rank_key(by_size[size][0]),
+        reverse=True,
+    )
+    interleaved_tiles: List[JsonDict] = []
+    offset = 0
+    while True:
+        added = False
+        for size in size_order:
+            group = by_size[size]
+            if offset < len(group):
+                interleaved_tiles.append(group[offset])
+                added = True
+        if not added:
+            break
+        offset += 1
+
+    result: List[JsonDict] = []
+    tile_iter = iter(interleaved_tiles)
+    for candidate in candidates:
+        if _candidate_tile_size(candidate) is None:
+            result.append(candidate)
+        else:
+            result.append(next(tile_iter))
+    return result
+
+
 def _single_transform_screening_order(
     candidates: List[JsonDict],
     tree: AdaptiveTreeState,
@@ -1939,6 +2184,9 @@ def _single_transform_screening_order(
     grouped: Dict[str, List[JsonDict]] = {}
     for candidate in ranked:
         grouped.setdefault(_candidate_family(candidate), []).append(candidate)
+    for family, group in list(grouped.items()):
+        if family == "TILE":
+            grouped[family] = _interleave_tile_sizes(group)
     family_order = sorted(
         grouped,
         key=lambda family: candidate_rank_key(grouped[family][0]),

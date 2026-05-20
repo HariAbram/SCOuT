@@ -203,9 +203,44 @@ def _product(values: List[float]) -> float:
     return result
 
 
-_ACCESS_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\[([^\]]+)\]")
+_ACCESS_START_RE = re.compile(r"\b([A-Za-z_]\w*)\s*\[")
 _LOOP_VAR_RE = re.compile(r"\bi(\d+)\b")
 _INT_RE = re.compile(r"(?<![A-Za-z_])[-+]?\d+(?![A-Za-z_])")
+
+
+def _canonical_array_name(name: str) -> str:
+    canonical = re.sub(r"^(MemRef_|Stmt\w+_)", "", str(name))
+    canonical = re.sub(r"(_read|_write|_access)$", "", canonical)
+    return canonical
+
+
+def _iter_accesses(text: str) -> List[tuple[str, str]]:
+    accesses: List[tuple[str, str]] = []
+    pos = 0
+    while True:
+        match = _ACCESS_START_RE.search(text, pos)
+        if not match:
+            break
+        name = _canonical_array_name(match.group(1))
+        if name.lower() in {"schedule", "domain", "context", "filter"}:
+            pos = match.end()
+            continue
+        start = match.end()
+        depth = 1
+        idx = start
+        while idx < len(text) and depth > 0:
+            char = text[idx]
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+            idx += 1
+        if depth == 0:
+            accesses.append((name, text[start : idx - 1]))
+            pos = idx
+        else:
+            pos = match.end()
+    return accesses
 
 
 def _split_indices(text: str) -> List[str]:
@@ -272,7 +307,7 @@ def simplified_pluto_cost_features(yaml_text: str) -> JsonDict:
         }
 
     accesses: Dict[str, List[List[tuple[tuple[int, ...], int]]]] = {}
-    for array_name, indices_text in _ACCESS_RE.findall(yaml_text):
+    for array_name, indices_text in _iter_accesses(yaml_text):
         index_exprs = _split_indices(indices_text)
         if not index_exprs:
             continue
@@ -281,8 +316,25 @@ def simplified_pluto_cost_features(yaml_text: str) -> JsonDict:
 
     distance_by_dim = [0 for _ in range(loop_rank)]
     reuse_pairs = 0
+    stream_pairs = 0
     distance_sum = 0
     max_distance = 0
+
+    def add_distance(signatures: List[tuple[tuple[int, ...], int]], distance: int) -> None:
+        nonlocal distance_sum, max_distance
+        if distance <= 0:
+            return
+        distance_sum += distance
+        max_distance = max(max_distance, distance)
+        active_seen = False
+        for coeffs, _const in signatures:
+            active_dims = [idx for idx, coeff in enumerate(coeffs) if coeff]
+            for dim in active_dims:
+                distance_by_dim[dim] = max(distance_by_dim[dim], distance)
+                active_seen = True
+        if not active_seen:
+            distance_by_dim[0] = max(distance_by_dim[0], distance)
+
     for refs in accesses.values():
         if len(refs) < 2:
             continue
@@ -300,24 +352,39 @@ def simplified_pluto_cost_features(yaml_text: str) -> JsonDict:
                     if distance <= 0:
                         continue
                     reuse_pairs += 1
-                    distance_sum += distance
-                    max_distance = max(max_distance, distance)
-                    active_dims = [idx for idx, coeff in enumerate(l_coeffs) if coeff]
-                    if active_dims:
-                        for dim in active_dims:
-                            distance_by_dim[dim] = max(distance_by_dim[dim], distance)
-                    else:
-                        distance_by_dim[0] = max(distance_by_dim[0], distance)
+                    add_distance([l_sig], distance)
+
+    if reuse_pairs == 0:
+        shape_groups: Dict[tuple[tuple[int, ...], ...], List[List[tuple[tuple[int, ...], int]]]] = {}
+        for refs in accesses.values():
+            for ref in refs:
+                shape = tuple(coeffs for coeffs, _const in ref)
+                if any(any(coeff for coeff in coeffs) for coeffs in shape):
+                    shape_groups.setdefault(shape, []).append(ref)
+        for refs in shape_groups.values():
+            if len(refs) < 2:
+                continue
+            for left_idx in range(len(refs)):
+                for right_idx in range(left_idx + 1, len(refs)):
+                    stream_pairs += 1
+                    # Streaming SCoPs such as scan often access several arrays
+                    # with the same loop-carried affine shape.  This is not a
+                    # true dependence distance, but it is useful as a locality
+                    # prior when exact repeated-array evidence is absent.
+                    add_distance(refs[left_idx], 1)
 
     carried_dims = sum(1 for distance in distance_by_dim if distance > 0)
     reduction_opportunity = (
         max_distance * max(1, carried_dims) + 0.25 * distance_sum
-        if reuse_pairs else 0.0
+        if reuse_pairs or stream_pairs else 0.0
     )
+    evidence_pairs = reuse_pairs + stream_pairs
     return {
         "pluto_loop_rank": loop_rank,
         "pluto_access_count": sum(len(refs) for refs in accesses.values()),
-        "pluto_reuse_pair_count": reuse_pairs,
+        "pluto_reuse_pair_count": evidence_pairs,
+        "pluto_exact_reuse_pair_count": reuse_pairs,
+        "pluto_stream_pair_count": stream_pairs,
         "pluto_max_distance": float(max_distance),
         "pluto_distance_sum": float(distance_sum),
         "pluto_distance_by_dim": [float(distance) for distance in distance_by_dim],

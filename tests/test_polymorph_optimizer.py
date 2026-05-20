@@ -497,8 +497,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             search=SimpleNamespace(
                 legality_aware_args=True,
                 tile_sizes=[8],
-                scale_factors=[2],
-                shift_values=[1],
             )
         )
         self.assertEqual(candidate_args_for_node("FUSE", poly, node), [[0, 1], [1, 2]])
@@ -511,8 +509,7 @@ class PolyMorphOptimizerTests(unittest.TestCase):
             search=SimpleNamespace(
                 legality_aware_args=True,
                 tile_sizes=[8, 16],
-                scale_factors=[2],
-                shift_values=[-1, 1],
+                constraints={"max_abs_shift": 1},
             )
         )
         self.assertEqual(candidate_args_for_node("TILE_2D", poly, node), [[8, 8], [16, 16]])
@@ -522,6 +519,41 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertEqual(
             candidate_args_for_node("SET_LOOP_OPT", poly, band_node),
             [[0, 1], [0, 3], [1, 1], [1, 3]],
+        )
+
+    def test_legality_aware_args_use_tadashi_arg_descriptors(self) -> None:
+        class DescriptorNode:
+            yaml_str = "[p_0] -> { Stmt[i0, i1] }"
+
+            def __init__(self, descriptors, valid):
+                self._descriptors = descriptors
+                self._valid = valid
+
+            def available_args(self, _tr):
+                return self._descriptors
+
+            def valid_args(self, _tr, *args):
+                return tuple(args) in self._valid
+
+        class Bound:
+            def __init__(self, lower=None, upper=None):
+                self.lower = lower
+                self.upper = upper
+
+        poly = SimpleNamespace(
+            search=SimpleNamespace(
+                legality_aware_args=True,
+                tile_sizes=[8, 16, 32],
+                constraints={"max_abs_shift": 1},
+            )
+        )
+        split_node = DescriptorNode([Bound(1, 3)], {(1,)})
+        shift_node = DescriptorNode([[0], Bound()], {(0, -1), (0, 1)})
+
+        self.assertEqual(candidate_args_for_node("SPLIT", poly, split_node), [[1]])
+        self.assertEqual(
+            candidate_args_for_node("FULL_SHIFT_VAR", poly, shift_node),
+            [[0, -1], [0, 1]],
         )
 
     def test_correctness_output_capture_and_numeric_tolerance(self) -> None:

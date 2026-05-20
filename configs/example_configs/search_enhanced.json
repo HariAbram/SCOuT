@@ -53,14 +53,8 @@
         8,
         16,
         32,
-        64
-      ],
-      "scale_factors": [
-        2
-      ],
-      "shift_values": [
-        -1,
-        1
+        64,
+        128
       ],
       "static_pruning": true,
       "analytical_model": true,
@@ -96,7 +90,9 @@
         "hot_kernel_top_k": 3,
         "hot_kernel_min_fraction": 0.0,
         "hot_kernel_min_scops": 1,
-        "hot_kernel_scop_mapping": "ordinal"
+        "hot_kernel_scop_mapping": "ordinal",
+        "preferred_tile_size_fallback_weight": 0.0,
+        "tree_tile_size_novelty_bonus": 0.35
       },
       "ablation_enabled": false,
       "replay_top_k": 0
