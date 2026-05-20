@@ -3237,66 +3237,79 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
 
             build_app_or_raise(transformed_app)
 
-            if poly.search.multi_fidelity and poly.search.repeat > 1:
-                early_stop_warmups = int(
-                    poly.search.constraints.get("early_stop_warmup_runs", 1)
-                )
-                early_stop_runs = max(
-                    1,
-                    int(poly.search.constraints.get("early_stop_measure_runs", 1)),
-                )
-                with temporary_metric_warmup_runs(cfg, early_stop_warmups):
-                    first_metrics = measure_metrics_or_raise(transformed_app, early_stop_runs, cfg)
-                first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
-                first_kernel_analysis = analyze_kernel_timing_deltas(
-                    baseline_metrics,
-                    first_metrics,
-                    specs,
-                )
-                first_regression = classify_performance_regression(
-                    cfg,
-                    baseline_value,
-                    first_value,
-                    first_kernel_analysis,
-                )
-                trial.set_user_attr("first_fidelity_metrics", first_metrics)
-                trial.set_user_attr("first_fidelity_warmup_runs", early_stop_warmups)
-                trial.set_user_attr(
-                    "first_fidelity_performance_feedback",
-                    {
-                        "kernel_timing": first_kernel_analysis,
-                        "regression": first_regression,
-                    },
-                )
-                if _is_bad_first_fidelity(
-                    cfg,
-                    baseline_value,
-                    first_value,
-                    poly.search.early_stop_worse_than,
-                ):
-                    trial.set_user_attr("early_stopped", True)
-                    tree_state.update(
-                        specs,
-                        _tree_reward_for_value(cfg, baseline_value, first_value),
-                        "early_stop",
+            try:
+                if poly.search.multi_fidelity and poly.search.repeat > 1:
+                    early_stop_warmups = int(
+                        poly.search.constraints.get("early_stop_warmup_runs", 1)
                     )
-                    _update_performance_bias(
-                        performance_bias,
+                    early_stop_runs = max(
+                        1,
+                        int(poly.search.constraints.get("early_stop_measure_runs", 1)),
+                    )
+                    with temporary_metric_warmup_runs(cfg, early_stop_warmups):
+                        first_metrics = measure_metrics_or_raise(
+                            transformed_app,
+                            early_stop_runs,
+                            cfg,
+                            clear_runtime_cache=False,
+                        )
+                    first_value = _objective_values_from_metrics(cfg, first_metrics)[0]
+                    first_kernel_analysis = analyze_kernel_timing_deltas(
+                        baseline_metrics,
+                        first_metrics,
                         specs,
-                        _speedup_for_primary(cfg, baseline_value, first_value),
+                    )
+                    first_regression = classify_performance_regression(
+                        cfg,
+                        baseline_value,
+                        first_value,
+                        first_kernel_analysis,
+                    )
+                    trial.set_user_attr("first_fidelity_metrics", first_metrics)
+                    trial.set_user_attr("first_fidelity_warmup_runs", early_stop_warmups)
+                    trial.set_user_attr(
+                        "first_fidelity_performance_feedback",
                         {
                             "kernel_timing": first_kernel_analysis,
                             "regression": first_regression,
                         },
                     )
-                    trial.set_user_attr("tree_updated", True)
-                    raise TrialPruned(
-                        f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
-                        f"{first_value} worse than baseline {baseline_value} "
-                        f"by factor {poly.search.early_stop_worse_than}"
-                    )
+                    if _is_bad_first_fidelity(
+                        cfg,
+                        baseline_value,
+                        first_value,
+                        poly.search.early_stop_worse_than,
+                    ):
+                        trial.set_user_attr("early_stopped", True)
+                        tree_state.update(
+                            specs,
+                            _tree_reward_for_value(cfg, baseline_value, first_value),
+                            "early_stop",
+                        )
+                        _update_performance_bias(
+                            performance_bias,
+                            specs,
+                            _speedup_for_primary(cfg, baseline_value, first_value),
+                            {
+                                "kernel_timing": first_kernel_analysis,
+                                "regression": first_regression,
+                            },
+                        )
+                        trial.set_user_attr("tree_updated", True)
+                        raise TrialPruned(
+                            f"early stop: first-fidelity objective after {early_stop_warmups} warmup run(s) "
+                            f"{first_value} worse than baseline {baseline_value} "
+                            f"by factor {poly.search.early_stop_worse_than}"
+                        )
 
-            metrics = measure_metrics_or_raise(transformed_app, poly.search.repeat, cfg)
+                metrics = measure_metrics_or_raise(
+                    transformed_app,
+                    poly.search.repeat,
+                    cfg,
+                    clear_runtime_cache=False,
+                )
+            finally:
+                clear_acpp_runtime_cache()
             obj_values = _objective_values_from_metrics(cfg, metrics)
             value = obj_values[0]
             kernel_analysis = analyze_kernel_timing_deltas(baseline_metrics, metrics, specs)
