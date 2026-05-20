@@ -165,6 +165,7 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `disable_family_after_failures` | `4` | Disable a transform family during screening after this many failed candidates, if the failure fraction threshold is also met. |
 | `disable_family_failure_fraction` | `0.50` | Fraction of visible screening candidates in a family that must fail before the family is disabled. |
 | `cache_hit_reward_scale` | `0.95` | Reward multiplier used when a cached terminal sequence is selected. The tree is updated, but the trial is retried instead of counted as a completed trial. |
+| `baseline_warmup_runs` | `final_validation_warmup_runs`, at least `1` | Warmup executions before measuring the baseline objective. Prevents AdaptiveCpp JIT latency from entering the baseline metric. |
 
 ### Hot-Kernel Filtering
 
@@ -188,6 +189,7 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | Key | Default | Meaning |
 |---|---:|---|
 | `backend_sensitivity_rel_threshold` | `0.20` | Mark backend-sensitive if objective values across masks vary by more than this relative threshold. |
+| `backend_sensitivity_warmup_runs` | `final_validation_warmup_runs`, at least `1` | Warmup executions before measuring each backend mask. |
 
 ### Performance-Bias Feedback
 

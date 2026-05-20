@@ -665,6 +665,24 @@ def measure_metrics_or_raise(
     return {"runtime": sum(values) / len(values)}
 
 
+def measure_metrics_with_warmup_or_raise(
+    app: SyclProjectApp,
+    repeat: int,
+    cfg: Config | None,
+    warmup_runs: int,
+) -> Dict[str, float]:
+    try:
+        with temporary_metric_warmup_runs(cfg, max(0, int(warmup_runs))):
+            return measure_metrics_or_raise(
+                app,
+                repeat,
+                cfg,
+                clear_runtime_cache=False,
+            )
+    finally:
+        clear_acpp_runtime_cache()
+
+
 def _objective_is_better(cfg: Config, left: float, right: float) -> bool:
     goal = cfg.objectives[0].goal if cfg.objectives else "min"
     return left > right if goal == "max" else left < right
@@ -820,16 +838,31 @@ def collect_backend_sensitivity(
     original_env = dict(app.run_env)
     per_backend: Dict[str, JsonDict] = {}
     repeat = max(1, int(poly.search.backend_sensitivity_repeat))
+    warmups = max(
+        1,
+        int(
+            poly.search.constraints.get(
+                "backend_sensitivity_warmup_runs",
+                poly.search.final_validation_warmup_runs,
+            )
+        ),
+    )
     try:
         for mask in masks:
             app.run_env = {**original_env, "ACPP_VISIBILITY_MASK": mask}
             try:
-                metrics = measure_metrics_or_raise(app, repeat, cfg)
+                metrics = measure_metrics_with_warmup_or_raise(
+                    app,
+                    repeat,
+                    cfg,
+                    warmups,
+                )
                 values = _objective_values_from_metrics(cfg, metrics)
                 per_backend[mask] = {
                     "ok": True,
                     "metrics": metrics,
                     "objective": values[0],
+                    "warmup_runs": warmups,
                 }
             except Exception as exc:
                 per_backend[mask] = {
@@ -3035,7 +3068,21 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         populate_scops=False,
     )
     build_app_or_raise(baseline_app)
-    baseline_metrics = measure_metrics_or_raise(baseline_app, poly.search.repeat, cfg)
+    baseline_warmups = max(
+        1,
+        int(
+            poly.search.constraints.get(
+                "baseline_warmup_runs",
+                poly.search.final_validation_warmup_runs,
+            )
+        ),
+    )
+    baseline_metrics = measure_metrics_with_warmup_or_raise(
+        baseline_app,
+        poly.search.repeat,
+        cfg,
+        baseline_warmups,
+    )
     baseline_correctness_outputs = capture_correctness_outputs(baseline_app, cfg, poly)
     if baseline_correctness_outputs:
         print(f"Captured {len(baseline_correctness_outputs)} baseline correctness output(s).")
