@@ -78,7 +78,8 @@
         "pluto_cost_model": true,
         "pluto_cost_weight": 1.0,
         "preferred_tile_size_fallback_weight": 0.0,
-        "tree_tile_size_novelty_bonus": 0.35
+        "tree_tile_size_novelty_bonus": 0.35,
+        "baseline_warmup_runs": 1
       },
       "generated_infix": "match",
       "baseline_exec_name": "build/match-baseline",

@@ -57,7 +57,8 @@
         "hot_kernel_min_scops": 1,
         "hot_kernel_scop_mapping": "ordinal",
         "preferred_tile_size_fallback_weight": 0.0,
-        "tree_tile_size_novelty_bonus": 0.35
+        "tree_tile_size_novelty_bonus": 0.35,
+        "baseline_warmup_runs": 1
       },
       "cache_jsonl": "test-benchmarks/polyMorph/O1/matrixT-sycl/o1-matrixT-result.cache.jsonl",
       "ablation_enabled": false,
