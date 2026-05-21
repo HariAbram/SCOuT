@@ -60,10 +60,10 @@
         "tree_tile_size_novelty_bonus": 0.35,
         "baseline_warmup_runs": 1,
         "compound_actions_enabled": true,
-        "compound_beam_width": 20,
-        "compound_beam_depth": 3,
-        "compound_beam_measure_top_k": 10,
-        "compound_beam_branching": 24,
+        "compound_beam_width": 5,
+        "compound_beam_depth": 2,
+        "compound_beam_measure_top_k": 3,
+        "compound_beam_branching": 8,
         "pluto_stream_pair_weight": 0.15,
         "max_transforms_per_scop": 3
       },
@@ -71,7 +71,8 @@
       "ablation_enabled": false,
       "replay_top_k": 0,
       "trial_warmup_runs": 1,
-      "target_backend": "omp"
+      "target_backend": "omp",
+      "backend_sensitivity_masks": []
     }
   }
 }

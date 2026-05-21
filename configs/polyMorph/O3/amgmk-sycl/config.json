@@ -47,10 +47,7 @@
       "cache_jsonl": "configs/polyMorph/O3/amgmk-sycl/o3-amgmk-cache.jsonl",
       "top_k": 50,
       "retrieval_top_k": 3,
-      "backend_sensitivity_masks": [
-        "omp",
-        "ocl"
-      ],
+      "backend_sensitivity_masks": [],
       "backend_sensitivity_repeat": 2,
       "backend_sensitivity_per_trial": false,
       "target_backend": "omp",
@@ -79,10 +76,10 @@
         "tree_tile_size_novelty_bonus": 0.35,
         "baseline_warmup_runs": 1,
         "compound_actions_enabled": true,
-        "compound_beam_width": 20,
-        "compound_beam_depth": 3,
-        "compound_beam_measure_top_k": 10,
-        "compound_beam_branching": 24,
+        "compound_beam_width": 5,
+        "compound_beam_depth": 2,
+        "compound_beam_measure_top_k": 3,
+        "compound_beam_branching": 8,
         "pluto_stream_pair_weight": 0.15,
         "max_transforms_per_scop": 3
       },
