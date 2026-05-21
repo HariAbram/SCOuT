@@ -71,7 +71,7 @@
       "ablation_enabled": false,
       "replay_top_k": 0,
       "trial_warmup_runs": 1,
-      "target_backend": "ocl"
+      "target_backend": "cuda"
     }
   }
 }

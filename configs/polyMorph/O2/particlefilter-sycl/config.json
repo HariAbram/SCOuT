@@ -62,7 +62,7 @@
       ],
       "backend_sensitivity_repeat": 2,
       "backend_sensitivity_per_trial": false,
-      "target_backend": "ocl",
+      "target_backend": "cuda",
       "constraints": {
         "max_tile_size": 128,
         "max_tile_volume": 16384,
