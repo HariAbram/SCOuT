@@ -23,8 +23,6 @@ from src.polyMorph.runner import (
     analyze_kernel_timing_deltas,
     append_evaluation_cache,
     apply_learned_model_to_candidates,
-    apply_hot_kernel_filter_to_candidates,
-    build_hot_kernel_filter,
     build_learned_candidate_model,
     candidate_args_invalid_for_node,
     candidate_args_for_node,
@@ -39,6 +37,7 @@ from src.polyMorph.runner import (
     verify_correctness_outputs,
     _short_jscop_backup_path,
     _sort_tree_candidates,
+    _sycl_related_scop_map,
 )
 
 
@@ -63,16 +62,26 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.case_retrieval)
         self.assertIn("SET_PARALLEL", spec.block_transforms)
 
-    def test_tadashi_options_disable_llvm_names_only_for_scop_population(self) -> None:
+    def test_tadashi_options_preserve_user_flags(self) -> None:
         self.assertEqual(tadashi_compiler_options(["-O2"], False), ["-O2"])
-        self.assertEqual(
-            tadashi_compiler_options(["-O2"], True),
-            ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
+        self.assertEqual(tadashi_compiler_options(["-O2"], True), ["-O2"])
+
+    def test_sycl_scop_filter_maps_kernel_jscops(self) -> None:
+        app = SimpleNamespace(
+            scops=[SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
+            translator=SimpleNamespace(
+                json_paths=[
+                    Path("main___%for.body---%for.end.jscop"),
+                    Path("_ZNK7hipsycl4glue15__sscp_dispatch27ndrange_parallel_for_offset.jscop"),
+                    Path("_Z11setupKernelRN7hipsycl4sycl7nd_itemILi1EEEPj.jscop"),
+                ]
+            ),
         )
-        self.assertEqual(
-            tadashi_compiler_options(["-O2", "-mllvm", "-polly-use-llvm-names=false"], True),
-            ["-O2", "-mllvm", "-polly-use-llvm-names=false"],
-        )
+        poly = SimpleNamespace(search=SimpleNamespace(constraints={"sycl_kernel_scop_filter": True}))
+        scop_map = _sycl_related_scop_map(app, poly)
+        self.assertFalse(scop_map[0]["sycl_related"])
+        self.assertTrue(scop_map[1]["sycl_related"])
+        self.assertTrue(scop_map[2]["sycl_related"])
 
     def test_config_parses_new_options(self) -> None:
         spec = PolyMorphSearchSpec.from_dict(
@@ -102,7 +111,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
                 "learned_model": False,
                 "learned_model_min_observations": 2,
                 "target_backend": "cuda",
-                "ablation_enabled": False,
                 "replay_top_k": 3,
             }
         )
@@ -129,7 +137,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         self.assertFalse(spec.learned_model)
         self.assertEqual(spec.learned_model_min_observations, 2)
         self.assertEqual(spec.target_backend, "cuda")
-        self.assertFalse(spec.ablation_enabled)
         self.assertEqual(spec.replay_top_k, 3)
 
     def test_enrich_score_and_prune_candidate(self) -> None:
@@ -412,30 +419,6 @@ class PolyMorphOptimizerTests(unittest.TestCase):
         tree.disable_scops_from_specs(specs, "JScop filename too long")
         self.assertIn(6, tree.disabled_scops)
         self.assertTrue(tree.is_blacklisted_candidate(specs[0]))
-
-    def test_hot_kernel_filter_keeps_scops_mapped_to_hot_kernels(self) -> None:
-        candidates = [
-            {"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]},
-            {"scop": 1, "node": 1, "tr": "TILE_1D", "args": [32]},
-            {"scop": 2, "node": 1, "tr": "TILE_1D", "args": [32]},
-        ]
-        metrics = {
-            "sycl_kernel_1_avg_s": 1.0,
-            "sycl_kernel_2_avg_s": 5.0,
-            "sycl_kernel_3_avg_s": 0.5,
-        }
-        hot_filter = build_hot_kernel_filter(candidates, metrics, {"hot_kernel_top_k": 1})
-        self.assertTrue(hot_filter.enabled)
-        self.assertEqual(hot_filter.hot_kernels, [2])
-        self.assertEqual(hot_filter.allowed_scops, {1})
-        filtered = apply_hot_kernel_filter_to_candidates(candidates, hot_filter)
-        self.assertEqual([candidate["scop"] for candidate in filtered], [1])
-        self.assertEqual(filtered[0]["source_info"]["suspected_kernel"], 2)
-
-    def test_hot_kernel_filter_disables_when_only_one_kernel_is_measured(self) -> None:
-        candidates = [{"scop": 0, "node": 1, "tr": "TILE_1D", "args": [32]}]
-        hot_filter = build_hot_kernel_filter(candidates, {"sycl_kernel_1_avg_s": 1.0}, {})
-        self.assertFalse(hot_filter.enabled)
 
     def test_search_space_exhausted_is_a_prune_signal(self) -> None:
         self.assertTrue(issubclass(SearchSpaceExhausted, Exception))

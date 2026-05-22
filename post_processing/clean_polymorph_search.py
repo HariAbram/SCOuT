@@ -27,6 +27,11 @@ BENCH_FILE_PATTERNS = (
     "*-search-trial-*",
 )
 
+JSCOP_FILE_PATTERNS = (
+    "*.jscop",
+    "*.jscop.bak",
+)
+
 BENCH_DIR_NAMES = (
     "parser_logs",
 )
@@ -35,6 +40,7 @@ BENCH_DIR_NAMES = (
 def iter_matches(root: Path, include_build_dirs: bool) -> tuple[list[Path], list[Path]]:
     config_root = root / "configs" / "polyMorph"
     bench_root = root / "test-benchmarks" / "polyMorph"
+    test_benchmarks_root = root / "test-benchmarks"
     files: set[Path] = set()
     dirs: set[Path] = set()
 
@@ -49,6 +55,10 @@ def iter_matches(root: Path, include_build_dirs: bool) -> tuple[list[Path], list
             dirs.update(path for path in bench_root.rglob(name) if path.is_dir())
         if include_build_dirs:
             dirs.update(path for path in bench_root.rglob("build") if path.is_dir())
+
+    if test_benchmarks_root.exists():
+        for pattern in JSCOP_FILE_PATTERNS:
+            files.update(path for path in test_benchmarks_root.rglob(pattern) if path.is_file())
 
     files = {path for path in files if not any(parent in dirs for parent in path.parents)}
     return sorted(files), sorted(dirs)

@@ -42,6 +42,7 @@ __pycache__
 *.sqlite
 *.codex
 *.csv
+*.jscop
 
 # OS generated files #
 ######################

@@ -51,12 +51,15 @@ At every tree step, candidates are enumerated from the current schedule tree, no
 The enumeration procedure is:
 
 1. inspect every SCoP discovered by Tadashi
-2. inspect every node in the current schedule tree
-3. collect transformations currently reported as available for that node
-4. infer legal argument lists for each transformation
-5. discard candidates rejected by static pruning, analytical constraints, or measured performance bias
+2. keep only SCoPs whose exported JScop/function identifier looks SYCL-kernel related
+3. inspect every node in the current schedule tree for those SCoPs
+4. collect transformations currently reported as available for that node
+5. infer legal argument lists for each transformation
+6. discard candidates rejected by static pruning, analytical constraints, or measured performance bias
 
 This dynamic enumeration avoids applying stale transformation coordinates.
+
+The SYCL SCoP filter is controlled by `search.constraints.sycl_kernel_scop_filter`, enabled by default. It matches markers such as `sycl`, `hipsycl`, `acpp`, `__sscp`, `nd_item`, `handler`, `parallel_for`, `kernel`, `queue`, and `runtest` in Tadashi's exported JScop names. Plain host/helper SCoPs, for example a `main___...jscop` with no kernel marker, are not considered for transformation. If a compiler/runtime uses different outlined-kernel names, override the marker list with `search.constraints.sycl_kernel_scop_markers`. If no SCoP matches at all, the default behavior is to keep all SCoPs and print identifiers so the search does not silently collapse to zero candidates; set `search.constraints.sycl_kernel_scop_filter_fallback_all` to `false` for strict filtering.
 
 ## Tree Policy
 
@@ -81,6 +84,14 @@ The policy balances:
 Before deeper sequences are explored, the search performs a short single-transform screening phase. During this phase each trial contains one legal transformation. The resulting measurements provide low-cost estimates of individual transformation quality and prevent longer sequences from being built around transformations that are already poor in isolation.
 
 The search also includes a `STOP` action. This action records the no-transformation baseline as a valid tree outcome, allowing the search to represent the case where no Tadashi transformation is preferable for a kernel.
+
+## Tadashi Baseline and Codegen Fairness
+
+Tadashi's Polly backend generates JScops from LLVM bitcode, rewrites JScop schedules, imports the modified JScops back through Polly, and emits an object file. During transformed code generation, Tadashi currently runs `opt -O3` and `llc -O3` internally.
+
+To avoid comparing a normal source build against a Tadashi-generated `-O3` object, MCTS mode measures the baseline through the same no-op Tadashi path. The baseline has its original schedules, but it is still emitted through Tadashi's JScop import and object-generation pipeline. Candidate trials use the same path after schedule transformation. This makes measured speedups compare schedule changes rather than normal compiler source builds against Tadashi object builds.
+
+The configured `polyMorph.flags` are still passed into Tadashi's initial source-to-bitcode step and into the benchmark build command, but the final Tadashi object emission uses Tadashi's internal `opt -O3` and `llc -O3`. See `docs/polymorph-config-knobs.md` for the full step-by-step command pipeline.
 
 ## Prefix Pruning
 
@@ -181,7 +192,7 @@ The search writes several classes of records:
 
 History and cache records are used to seed future prefix statistics. Thus previous failures and improvements affect later search runs over similar kernels. Cache keys include the configured `target_backend`, so measurements from different backend masks are not reused interchangeably.
 
-When ablation is enabled, the best sequence is replayed after search together with variants that remove one transform at a time and single-transform variants. These records are stored under `ablation_results` in the result JSON. Setting `replay_top_k` replays the top completed trial sequences and stores them under `replay_results`.
+Setting `replay_top_k` replays the top completed trial sequences after search and stores them under `replay_results` in the result JSON.
 
 ## Important Parameters
 

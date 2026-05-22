@@ -61,6 +61,52 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `transforms` | `[]` | Manual transformation sequence for non-search use. |
 | `generated_infix` | `"pass1"` | Infix used for generated source names in manual transformation mode. Search uses `search.generated_infix`. |
 
+## Tadashi/Polly Codegen Pipeline
+
+polyMorph uses Tadashi's Polly translator in two phases: SCoP/JScop discovery and transformed object generation. The `polyMorph.flags` list is passed to Tadashi as user compiler options, but Tadashi also adds its own optimization choices internally.
+
+For SCoP/JScop discovery, Tadashi first compiles the configured source to LLVM bitcode:
+
+```text
+<compiler> -O0 -Xclang -disable-O0-optnone <polyMorph.flags> -c -emit-llvm <source> -o <tmp>/<source>.O0.bc
+```
+
+For `compiler: "acpp"` and `flags: ["-O1"]`, the command shape is therefore roughly:
+
+```text
+acpp -O0 -Xclang -disable-O0-optnone -O1 -c -emit-llvm main.cpp -o main.O0.bc
+```
+
+Tadashi names this file `O0.bc` and logs the step as compiling with O0, but clang-like drivers usually let the later optimization flag win. Since `polyMorph.flags` appear after Tadashi's `-O0`, `-O1`, `-O2`, or `-O3` may affect the initial bitcode and therefore which SCoPs/JScops are discovered.
+
+SCOuT intentionally preserves LLVM/Polly names during SCoP extraction. Keeping descriptive JScop names makes it possible to filter SCoPs that are related to SYCL kernel wrappers instead of host/helper affine loops.
+
+Tadashi then canonicalizes the bitcode and exports JScops:
+
+```text
+opt [-load=LLVMPolly.so] -polly-canonicalize <source>.O0.bc -o <source>.pre_polly.bc
+opt [-load=LLVMPolly.so] -polly-import-jscop-dir=<tmp> -aa-pipeline=basic-aa -polly-codegen <source>.pre_polly.bc -polly-export-jscop -o=/dev/null
+```
+
+The configured flags are not passed directly to these `opt` commands. They only matter through the bitcode created in the first compile step.
+
+When code is generated after applying transformations, Tadashi rewrites the exported JScop schedules, imports them back through Polly, then hardcodes LLVM optimization for the generated object:
+
+```text
+opt [-load=LLVMPolly.so] -polly-import-jscop-dir=<tmp> -aa-pipeline=basic-aa -polly-codegen <source>.pre_polly.bc -polly-import-jscop -disable-polly-legality -polly-parallel-force -o=<source>.post_polly.bc
+opt -O3 <source>.post_polly.bc -o=<source>.bc
+llc -O3 -relocation-model=pic --filetype=obj <source>.bc -o=<generated>.o
+```
+
+Thus `polyMorph.flags` mainly influence initial bitcode/SCoP discovery and the benchmark Makefile invocation. The final Tadashi-generated object currently goes through `opt -O3` and `llc -O3` regardless of `flags`.
+
+In MCTS mode, SCOuT generates the baseline through the same no-op Tadashi path before measuring it. This makes baseline and transformed trials comparable:
+
+```text
+baseline:  original schedule -> JScop import -> opt -O3 -> llc -O3 -> object
+trial:     transformed schedule -> JScop import -> opt -O3 -> llc -O3 -> object
+```
+
 ## `polyMorph.search` Fields
 
 | Field | Default | Meaning |
@@ -101,7 +147,6 @@ This document lists the configuration fields used by `--mode polymorph`. The opt
 | `correctness_outputs` | `[]` | Output files compared against the baseline after each candidate. |
 | `correctness_tolerance` | `1.0e-6` | Numeric tolerance for correctness output comparison. |
 | `correctness_required` | `true` | If `true`, missing correctness output files fail the trial. |
-| `ablation_enabled` | `true` | Replay the best sequence and remove-one-transform variants after search. |
 | `replay_top_k` | `0` | Replay the top-k completed trials after search. |
 | `final_validation_enabled` | `true` | After search, rebuild the best/top candidates and remeasure them against repeated baseline samples. |
 | `final_validation_repeats` | `20` | Number of interleaved baseline/candidate measurement rounds per validated candidate. |
@@ -125,6 +170,9 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `max_tile_volume` | `65536` | Reject tile products larger than this. |
 | `max_abs_shift` | `128` | Reject shift magnitudes larger than this. |
 | `max_yaml_bytes` | `0` | If nonzero, reject candidates whose node YAML exceeds this size. |
+| `sycl_kernel_scop_filter` | `true` | Only enumerate transformations for JScops whose exported filename/function identifier looks SYCL-kernel related. Matching markers include `sycl`, `hipsycl`, `acpp`, `__sscp`, `sscp`, `nd_item`, `handler`, `parallel_for`, `kernel`, `queue`, and `runtest`. This avoids tuning affine host/helper loops discovered in the same source file. |
+| `sycl_kernel_scop_markers` | built-in marker list | Optional replacement list of marker strings used by `sycl_kernel_scop_filter`. Use this if a compiler/runtime names outlined kernels differently. |
+| `sycl_kernel_scop_filter_fallback_all` | `true` | If no SCoP matches the marker list, keep all SCoPs and print their identifiers instead of producing an empty search space. Set to `false` for strict filtering. |
 | `prune_tiling_small_scops` | `false` | Reject tiling on SCoPs classified as small. |
 | `max_same_transform_per_sequence` | `2` | Reject repeated identical transform type on the same `(scop, node)`. |
 | `max_transforms_per_scop` | `0` | If nonzero, cap transforms targeting the same SCoP in one sequence. |
@@ -152,11 +200,6 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `single_transform_screening` | `true` | Start with one-transform trials to estimate individual candidate quality. |
 | `single_transform_screening_limit` | `0` | Number of screening trials. If `0`, uses `min(16, candidate_count)`. |
 | `screening_per_family` | `2` | During screening, try candidates across transform families instead of only globally highest-ranked candidates. |
-| `compound_actions_enabled` | `true` | Build analytical compound prefixes before measurement, such as `INTERCHANGE -> TILE`, `TILE -> SET_LOOP_OPT`, and `SPLIT -> TILE`. |
-| `compound_beam_width` | `20` | Number of partial prefixes kept at each compound beam-search depth. |
-| `compound_beam_depth` | `max_transforms_per_trial` | Maximum compound-prefix depth explored analytically before measurement. |
-| `compound_beam_measure_top_k` | `10` | Number of analytically ranked compound prefixes queued for empirical measurement. |
-| `compound_beam_branching` | `24` | Maximum number of candidate children considered per beam prefix. |
 | `tree_family_novelty_bonus` | `0.20` | Prior bonus for a transform family that has not yet been tried. |
 | `tree_tile_size_novelty_bonus` | `0.25` | Prior bonus for tile sizes that have been tried fewer times, encouraging exploration across the configured `tile_sizes`. |
 | `tree_unvisited_bonus` | `1.0` | UCT-style bonus for unvisited children. |
@@ -173,16 +216,6 @@ The `constraints` object is intentionally open-ended. Missing keys use implement
 | `disable_family_failure_fraction` | `0.50` | Fraction of visible screening candidates in a family that must fail before the family is disabled. |
 | `cache_hit_reward_scale` | `0.95` | Reward multiplier used when a cached terminal sequence is selected. The tree is updated, but the trial is retried instead of counted as a completed trial. |
 | `baseline_warmup_runs` | `final_validation_warmup_runs`, at least `1` | Warmup executions before measuring the baseline objective. Prevents AdaptiveCpp JIT latency from entering the baseline metric. |
-
-### Hot-Kernel Filtering
-
-| Key | Default | Meaning |
-|---|---:|---|
-| `hot_kernel_filter` | `true` | Use baseline per-kernel timing to focus candidate SCoPs on the hottest kernels. The filter automatically disables itself when only one kernel is measured or no reliable SCoP mapping can be inferred. |
-| `hot_kernel_top_k` | `3` | Number of hottest kernels to keep. |
-| `hot_kernel_min_fraction` | `0.0` | If greater than zero, include additional kernels until this fraction of total kernel time is covered. |
-| `hot_kernel_min_scops` | `1` | Disable the filter if fewer than this many SCoPs would remain. |
-| `hot_kernel_scop_mapping` | `ordinal` | Heuristic SCoP-to-kernel mapping. `ordinal` uses one-based SCoP order when plausible, otherwise buckets SCoPs across kernel IDs. `one_based` maps `scop + 1`; `zero_based` maps `scop`. |
 
 ### Multi-Fidelity Early Stopping
 
@@ -240,7 +273,6 @@ Most polyMorph benchmark configs use the parser backend to read `[SYCL][avg]` or
   "multi_fidelity": true,
   "early_stop_worse_than": 1.10,
   "backend_sensitivity_per_trial": false,
-  "ablation_enabled": false,
   "replay_top_k": 0,
   "final_validation_enabled": false,
   "constraints": {

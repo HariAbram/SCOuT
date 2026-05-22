@@ -252,7 +252,6 @@ class PolyMorphSearchSpec:
     learned_model: bool = True
     learned_model_min_observations: int = 1
     target_backend: str | None = None
-    ablation_enabled: bool = True
     replay_top_k: int = 0
     final_validation_enabled: bool = True
     final_validation_repeats: int = 20
@@ -309,7 +308,6 @@ class PolyMorphSearchSpec:
             learned_model=bool(data.get("learned_model", True)),
             learned_model_min_observations=int(data.get("learned_model_min_observations", 1)),
             target_backend=str(data["target_backend"]) if data.get("target_backend") is not None else None,
-            ablation_enabled=bool(data.get("ablation_enabled", True)),
             replay_top_k=int(data.get("replay_top_k", 0)),
             final_validation_enabled=bool(data.get("final_validation_enabled", True)),
             final_validation_repeats=int(data.get("final_validation_repeats", 20)),

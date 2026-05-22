@@ -82,28 +82,6 @@ class SearchSpaceExhausted(TrialPruned):
 
 
 @dataclass
-class HotKernelFilter:
-    enabled: bool = False
-    hot_kernels: List[int] = field(default_factory=list)
-    allowed_scops: set[int] = field(default_factory=set)
-    kernel_by_scop: Dict[int, int] = field(default_factory=dict)
-    total_kernel_time: float = 0.0
-    selected_kernel_time: float = 0.0
-
-    @property
-    def coverage(self) -> float:
-        if self.total_kernel_time <= 0.0:
-            return 0.0
-        return self.selected_kernel_time / self.total_kernel_time
-
-    def allows(self, candidate: JsonDict) -> bool:
-        if not self.enabled:
-            return True
-        scop = int(candidate.get("scop", -1))
-        return scop in self.allowed_scops
-
-
-@dataclass
 class NativeTrial:
     number: int
     state: str = "RUNNING"
@@ -474,6 +452,115 @@ def copy_jscops_from_translator(translator: Any, dst_dir: Path) -> None:
         bak = src.with_suffix(src.suffix + ".bak")
         if bak.exists():
             shutil.copy2(bak, dst_dir / bak.name)
+
+
+SYCL_JSCOP_MARKERS = (
+    "sycl",
+    "hipsycl",
+    "acpp",
+    "__sscp",
+    "sscp",
+    "nd_item",
+    "handler",
+    "parallel_for",
+    "kernel",
+    "queue",
+    "runtest",
+)
+
+
+def _scop_jscop_path(translator: Any, scop_idx: int) -> Path | None:
+    paths = list(getattr(translator, "json_paths", []) or [])
+    if scop_idx < 0 or scop_idx >= len(paths):
+        return None
+    try:
+        return Path(paths[scop_idx])
+    except TypeError:
+        return None
+
+
+def _scop_identifier(app: SyclProjectApp, scop_idx: int, scop: Any) -> str:
+    parts: List[str] = []
+    rel_path = _scop_jscop_path(app.translator, scop_idx) if app.translator is not None else None
+    if rel_path is not None:
+        parts.append(rel_path.name)
+    function = _best_effort_attr(
+        scop,
+        ["function_name", "function", "name", "func_name"],
+    )
+    if function:
+        parts.append(function)
+    return " ".join(parts)
+
+
+def _sycl_scop_markers(poly: PolyMorphSpec) -> List[str]:
+    raw_markers = poly.search.constraints.get("sycl_kernel_scop_markers")
+    if raw_markers is None:
+        return list(SYCL_JSCOP_MARKERS)
+    if isinstance(raw_markers, str):
+        raw_markers = [raw_markers]
+    markers = [str(marker).lower() for marker in raw_markers or [] if str(marker).strip()]
+    return markers or list(SYCL_JSCOP_MARKERS)
+
+
+def _sycl_scop_reason(identifier: str, markers: Sequence[str]) -> str | None:
+    text = identifier.lower()
+    for marker in markers:
+        if marker in text:
+            return f"matched '{marker}'"
+    return None
+
+
+def _sycl_related_scop_map(app: SyclProjectApp, poly: PolyMorphSpec) -> Dict[int, JsonDict]:
+    enabled = bool(poly.search.constraints.get("sycl_kernel_scop_filter", True))
+    markers = _sycl_scop_markers(poly)
+    result: Dict[int, JsonDict] = {}
+    for scop_idx, scop in enumerate(app.scops or []):
+        identifier = _scop_identifier(app, scop_idx, scop)
+        reason = _sycl_scop_reason(identifier, markers)
+        result[scop_idx] = {
+            "enabled": enabled,
+            "sycl_related": (not enabled) or reason is not None,
+            "reason": reason or ("filter disabled" if not enabled else "no SYCL/kernel marker"),
+            "identifier": identifier,
+            "jscop": str(_scop_jscop_path(app.translator, scop_idx) or ""),
+            "markers": markers,
+        }
+    if enabled and result and not any(info.get("sycl_related") for info in result.values()):
+        fallback_all = bool(poly.search.constraints.get("sycl_kernel_scop_filter_fallback_all", True))
+        if fallback_all:
+            for info in result.values():
+                info["sycl_related"] = True
+                info["reason"] = "fallback: no SYCL/kernel marker matched any SCoP"
+                info["fallback_all"] = True
+    return result
+
+
+def print_sycl_scop_filter_summary(scop_map: Dict[int, JsonDict]) -> None:
+    if not scop_map:
+        return
+    enabled = bool(next(iter(scop_map.values())).get("enabled", True))
+    if not enabled:
+        print("SYCL SCoP filter: disabled")
+        return
+    fallback_all = any(info.get("fallback_all") for info in scop_map.values())
+    kept = [idx for idx, info in scop_map.items() if info.get("sycl_related")]
+    dropped = [idx for idx, info in scop_map.items() if not info.get("sycl_related")]
+    print(
+        "SYCL SCoP filter: "
+        f"kept={kept if kept else 'none'}, dropped={dropped if dropped else 'none'}"
+    )
+    if fallback_all:
+        print("  - warning: no SCoP identifiers matched; keeping all SCoPs to avoid empty search space")
+    for idx in kept:
+        info = scop_map[idx]
+        print(f"  - SCoP {idx}: {info.get('reason')} ({info.get('identifier')})")
+    if not kept:
+        print("  - warning: no SCoP identifiers matched SYCL/kernel markers")
+    elif fallback_all:
+        print("  - first exported identifiers:")
+        for idx, info in list(scop_map.items())[:5]:
+            print(f"    SCoP {idx}: {info.get('identifier')}")
 
 
 def remove_stale_build_output(app: SyclProjectApp) -> None:
@@ -975,19 +1062,12 @@ def _cache_path(poly: PolyMorphSpec) -> Path | None:
     return None
 
 
-JSCOP_SAFE_POLLY_OPTIONS = ["-mllvm", "-polly-use-llvm-names=false"]
-
-
 def tadashi_compiler_options(
     flags: Sequence[str],
     populate_scops: bool,
 ) -> List[str]:
-    options = list(flags)
-    if not populate_scops:
-        return options
-    if any("polly-use-llvm-names" in option for option in options):
-        return options
-    return [*options, *JSCOP_SAFE_POLLY_OPTIONS]
+    del populate_scops
+    return list(flags)
 
 
 def _cache_key(
@@ -1172,93 +1252,6 @@ def _format_family_counts(counts: Counter[str]) -> str:
     if not counts:
         return "none"
     return ", ".join(f"{family}:{count}" for family, count in sorted(counts.items()))
-
-
-def _hot_kernel_metrics(metrics: Dict[str, float]) -> list[tuple[int, float]]:
-    return sorted(
-        ((kernel_id, runtime) for kernel_id, runtime in _kernel_metrics(metrics).items() if runtime > 0.0),
-        key=lambda item: item[1],
-        reverse=True,
-    )
-
-
-def build_hot_kernel_filter(
-    candidates: Sequence[JsonDict],
-    baseline_metrics: Dict[str, float],
-    constraints: JsonDict,
-) -> HotKernelFilter:
-    if not bool(constraints.get("hot_kernel_filter", True)):
-        return HotKernelFilter()
-    kernel_times = _hot_kernel_metrics(baseline_metrics)
-    scop_ids = sorted({
-        int(candidate.get("scop", -1))
-        for candidate in candidates
-        if int(candidate.get("scop", -1)) >= 0
-    })
-    if len(kernel_times) <= 1 or not scop_ids:
-        return HotKernelFilter()
-
-    top_k = int(constraints.get("hot_kernel_top_k", 3) or 3)
-    top_k = max(1, min(top_k, len(kernel_times)))
-    min_fraction = float(constraints.get("hot_kernel_min_fraction", 0.0) or 0.0)
-    total_time = sum(runtime for _, runtime in kernel_times)
-    selected: list[tuple[int, float]] = []
-    selected_time = 0.0
-    for kernel_id, runtime in kernel_times:
-        if len(selected) < top_k or (min_fraction > 0.0 and selected_time / total_time < min_fraction):
-            selected.append((kernel_id, runtime))
-            selected_time += runtime
-            continue
-        break
-    hot_ids = [kernel_id for kernel_id, _ in selected]
-
-    kernel_ids = sorted(kernel_id for kernel_id, _ in kernel_times)
-    max_kernel_id = max(kernel_ids)
-    mapping_mode = str(constraints.get("hot_kernel_scop_mapping", "ordinal"))
-    kernel_by_scop: Dict[int, int] = {}
-    if mapping_mode == "one_based" or (mapping_mode == "ordinal" and max_kernel_id >= max(scop_ids) + 1):
-        kernel_by_scop = {scop: scop + 1 for scop in scop_ids}
-    elif mapping_mode == "zero_based":
-        kernel_by_scop = {scop: scop for scop in scop_ids}
-    else:
-        for idx, scop in enumerate(scop_ids):
-            bucket = min(int(idx * len(kernel_ids) / max(len(scop_ids), 1)), len(kernel_ids) - 1)
-            kernel_by_scop[scop] = kernel_ids[bucket]
-
-    hot_set = set(hot_ids)
-    allowed_scops = {scop for scop, kernel_id in kernel_by_scop.items() if kernel_id in hot_set}
-    min_allowed = int(constraints.get("hot_kernel_min_scops", 1) or 1)
-    if len(allowed_scops) < min_allowed:
-        return HotKernelFilter()
-    return HotKernelFilter(
-        enabled=True,
-        hot_kernels=hot_ids,
-        allowed_scops=allowed_scops,
-        kernel_by_scop=kernel_by_scop,
-        total_kernel_time=total_time,
-        selected_kernel_time=selected_time,
-    )
-
-
-def apply_hot_kernel_filter_to_candidates(
-    candidates: Sequence[JsonDict],
-    hot_filter: HotKernelFilter,
-) -> List[JsonDict]:
-    if not hot_filter.enabled:
-        return list(candidates)
-    filtered: List[JsonDict] = []
-    for candidate in candidates:
-        if not hot_filter.allows(candidate):
-            continue
-        scop = int(candidate.get("scop", -1))
-        suspected_kernel = hot_filter.kernel_by_scop.get(scop)
-        candidate.setdefault("source_info", {})["suspected_kernel"] = suspected_kernel
-        candidate.setdefault("scop_classification", {})["hot_kernel_filter"] = {
-            "matched": True,
-            "suspected_kernel": suspected_kernel,
-        }
-        filtered.append(candidate)
-    return filtered
 
 
 def load_evaluation_cache(path: Path | None) -> Dict[str, JsonDict]:
@@ -1767,7 +1760,6 @@ def enumerate_transform_candidates(
     app: SyclProjectApp,
     poly: PolyMorphSpec,
     performance_bias: Dict[str, JsonDict] | None = None,
-    hot_filter: HotKernelFilter | None = None,
     *,
     print_family_summary: bool = False,
     apply_top_k: bool = True,
@@ -1777,7 +1769,13 @@ def enumerate_transform_candidates(
     kept_family_counts: Counter[str] = Counter()
     candidate_pipeline = _candidate_pipeline_enabled(poly)
     performance_bias = performance_bias or {}
+    sycl_scop_map = _sycl_related_scop_map(app, poly)
+    if print_family_summary:
+        print_sycl_scop_filter_summary(sycl_scop_map)
     for scop_idx, scop in enumerate(app.scops):
+        sycl_info = sycl_scop_map.get(scop_idx, {})
+        if not sycl_info.get("sycl_related", True):
+            continue
         for node_idx, node in enumerate(scop.schedule_tree):
             available = getattr(node, "available_transformations", [])
             for tr in available:
@@ -1795,18 +1793,17 @@ def enumerate_transform_candidates(
                         "node": node_idx,
                         "tr": name,
                         "args": list(args),
-                        "source_info": _candidate_source_info(app.original_source, scop, node),
+                        "source_info": {
+                            **_candidate_source_info(app.original_source, scop, node),
+                            "jscop": sycl_info.get("jscop"),
+                            "sycl_related": bool(sycl_info.get("sycl_related", True)),
+                            "sycl_reason": sycl_info.get("reason"),
+                            "sycl_identifier": sycl_info.get("identifier"),
+                        },
                         "scop_classification": _classify_node(node, len(available)),
                     }
                     if candidate_pipeline:
                         candidate = enrich_candidate(candidate, node)
-                        if hot_filter and hot_filter.enabled:
-                            suspected_kernel = hot_filter.kernel_by_scop.get(scop_idx)
-                            candidate.setdefault("source_info", {})["suspected_kernel"] = suspected_kernel
-                            candidate.setdefault("scop_classification", {})["hot_kernel_filter"] = {
-                                "matched": scop_idx in hot_filter.allowed_scops,
-                                "suspected_kernel": suspected_kernel,
-                            }
                         if poly.search.analytical_model:
                             prediction = analytical_score(candidate, poly.search.constraints)
                             candidate["predictions"].update(prediction)
@@ -1824,8 +1821,6 @@ def enumerate_transform_candidates(
                             candidate["prune_reasons"].extend(reasons)
                         if candidate["prune_reasons"]:
                             continue
-                    if hot_filter and not hot_filter.allows(candidate):
-                        continue
                     candidates.append(candidate)
                     kept_family_counts[_candidate_family(candidate)] += 1
     if apply_top_k and candidate_pipeline and poly.search.analytical_model and poly.search.top_k:
@@ -1939,8 +1934,6 @@ class AdaptiveTreeState:
     successful_family_candidates: Dict[str, set[str]] = field(default_factory=dict)
     disabled_families: set[str] = field(default_factory=set)
     disabled_scops: set[int] = field(default_factory=set)
-    compound_beam_sequences: List[List[JsonDict]] = field(default_factory=list)
-    compound_beam_built: bool = False
 
     def prefix_key(self, specs: List[JsonDict]) -> str:
         return sequence_signature(specs) if specs else "root"
@@ -2287,143 +2280,6 @@ def _single_transform_screening_order(
     return ordered
 
 
-def _sequence_analytical_score(specs: Sequence[JsonDict], constraints: JsonDict) -> float:
-    if not specs:
-        return 0.0
-    total = 0.0
-    risk = 0.0
-    families = [_candidate_family(spec) for spec in specs]
-    names = [str(spec.get("tr", "")) for spec in specs]
-    for spec in specs:
-        pred = spec.get("predictions", {}) or {}
-        total += float(pred.get("score", 0.0) or 0.0)
-        risk += float(pred.get("risk", 0.0) or 0.0)
-
-    bonus = 0.0
-    for left, right in zip(names, names[1:]):
-        if left == "INTERCHANGE" and right.startswith("TILE"):
-            bonus += 0.20
-        if left.startswith("TILE") and right == "INTERCHANGE":
-            bonus += 0.12
-        if left == "TILE_1D" and right == "SET_LOOP_OPT":
-            bonus += 0.14
-        if left in {"SPLIT", "FULL_SPLIT"} and right.startswith("TILE"):
-            bonus += 0.18
-        if left == "FULL_SPLIT" and right == "SET_LOOP_OPT":
-            bonus += 0.10
-    if len(set(families)) > 1:
-        bonus += float(constraints.get("tree_sequence_novelty_bonus", 0.10))
-    return (total / len(specs)) + bonus - 0.20 * (risk / len(specs))
-
-
-def _beam_candidate_allowed(
-    candidate: JsonDict,
-    prefix: Sequence[JsonDict],
-    tree: AdaptiveTreeState,
-    constraints: JsonDict,
-) -> bool:
-    if _candidate_family(candidate) in tree.disabled_families:
-        return False
-    if int(candidate.get("scop", -1)) in tree.disabled_scops:
-        return False
-    if tree.is_blacklisted_candidate(candidate):
-        return False
-    if not _candidate_diversity_allowed(list(prefix), candidate, constraints):
-        return False
-    next_prefix = [*prefix, candidate]
-    if tree.is_saturated(next_prefix) or tree.is_bad_prefix(next_prefix):
-        return False
-    if static_prune_sequence(next_prefix, constraints):
-        return False
-    return True
-
-
-def _materialize_prefix_app(
-    source: Path,
-    poly: PolyMorphSpec,
-    prefix: Sequence[JsonDict],
-    performance_bias: Dict[str, JsonDict] | None,
-    hot_filter: HotKernelFilter | None,
-) -> SyclProjectApp | None:
-    try:
-        app = make_project_app(
-            poly=poly,
-            source=source,
-            exec_name=poly.exec_name,
-            populate_scops=True,
-        )
-    except Exception:
-        return None
-    if prefix:
-        try:
-            apply_transforms_to_scops(
-                app.scops,
-                list(prefix),
-                legality_cb=lambda: app_is_legal(app),
-                verbose=False,
-            )
-        except Exception:
-            return None
-        if not poly.allow_illegal and not app_is_legal(app):
-            return None
-    return app
-
-
-def build_compound_beam_sequences(
-    source: Path,
-    poly: PolyMorphSpec,
-    tree: AdaptiveTreeState,
-    performance_bias: Dict[str, JsonDict] | None = None,
-    hot_filter: HotKernelFilter | None = None,
-) -> List[List[JsonDict]]:
-    constraints = poly.search.constraints
-    depth = max(1, min(
-        int(constraints.get("compound_beam_depth", poly.search.max_transforms_per_trial)),
-        int(poly.search.max_transforms_per_trial),
-    ))
-    beam_width = max(1, int(constraints.get("compound_beam_width", 20)))
-    measure_top_k = max(1, int(constraints.get("compound_beam_measure_top_k", 10)))
-    branching = max(1, int(constraints.get("compound_beam_branching", 24)))
-
-    beam: List[tuple[List[JsonDict], float]] = [([], 0.0)]
-    terminals: Dict[str, tuple[List[JsonDict], float]] = {}
-
-    for _depth in range(depth):
-        expanded: List[tuple[List[JsonDict], float]] = []
-        for prefix, _score in beam:
-            prefix_app = _materialize_prefix_app(source, poly, prefix, performance_bias, hot_filter)
-            if prefix_app is None:
-                continue
-            candidates = enumerate_transform_candidates(
-                prefix_app,
-                poly,
-                performance_bias,
-                hot_filter,
-                print_family_summary=False,
-            )
-            candidates = [
-                candidate
-                for candidate in _sort_tree_candidates(candidates, tree, list(prefix))
-                if _beam_candidate_allowed(candidate, prefix, tree, constraints)
-            ][:branching]
-            for candidate in candidates:
-                next_prefix = [*prefix, candidate]
-                signature = sequence_signature(next_prefix)
-                if signature in terminals:
-                    continue
-                score = _sequence_analytical_score(next_prefix, constraints)
-                expanded.append((next_prefix, score))
-                if len(next_prefix) >= 2:
-                    terminals[signature] = (next_prefix, score)
-        if not expanded:
-            break
-        expanded.sort(key=lambda item: item[1], reverse=True)
-        beam = expanded[:beam_width]
-
-    ranked = sorted(terminals.values(), key=lambda item: item[1], reverse=True)
-    return [prefix for prefix, _score in ranked[:measure_top_k]]
-
-
 def _tree_reward_for_value(cfg: Config, baseline_value: float, value: float) -> float:
     return max(0.0, _speedup_for_primary(cfg, baseline_value, value))
 
@@ -2440,13 +2296,12 @@ def sample_transform_sequence(
     poly: PolyMorphSpec,
     tree: AdaptiveTreeState,
     performance_bias: Dict[str, JsonDict] | None = None,
-    hot_filter: HotKernelFilter | None = None,
 ) -> List[JsonDict]:
     def mark_failed_and_prune(prefix: List[JsonDict], message: str) -> None:
         tree.mark_existing(prefix, 0.0, "failed")
         raise TrialPruned(message)
 
-    initial_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
+    initial_candidates = enumerate_transform_candidates(app, poly, performance_bias)
     if not initial_candidates:
         raise SearchSpaceExhausted("No candidate transformations available for this trial.")
 
@@ -2455,47 +2310,6 @@ def sample_transform_sequence(
         if sequence_signature(stop) not in tree.tried_sequences:
             tree.mark_tried(stop)
             return stop
-
-    if bool(poly.search.constraints.get("compound_actions_enabled", True)):
-        if not tree.compound_beam_built:
-            tree.compound_beam_sequences = build_compound_beam_sequences(
-                app.original_source,
-                poly,
-                tree,
-                performance_bias,
-                hot_filter,
-            )
-            tree.compound_beam_built = True
-            if tree.compound_beam_sequences:
-                print(
-                    f"[MCTS] analytical compound beam queued "
-                    f"{len(tree.compound_beam_sequences)} prefix sequence(s)."
-                )
-        while tree.compound_beam_sequences:
-            prefix = tree.compound_beam_sequences.pop(0)
-            signature = sequence_signature(prefix)
-            if signature in tree.tried_sequences:
-                continue
-            if tree.is_saturated(prefix) or tree.is_terminal_evaluated(prefix):
-                continue
-            if poly.search.constraint_aware:
-                reasons = static_prune_sequence(prefix, poly.search.constraints)
-                if reasons:
-                    continue
-            try:
-                apply_transforms_to_scops(
-                    app.scops,
-                    prefix,
-                    legality_cb=lambda: app_is_legal(app),
-                )
-            except InvalidTransformArgs as exc:
-                mark_failed_and_prune(prefix, str(exc))
-            except Exception as exc:
-                mark_failed_and_prune(prefix, str(exc))
-            if not poly.allow_illegal and not app_is_legal(app):
-                mark_failed_and_prune(prefix, "Illegal transformed schedule")
-            tree.mark_tried(prefix)
-            return prefix
 
     if bool(poly.search.constraints.get("single_transform_screening", True)):
         limit = int(poly.search.constraints.get("single_transform_screening_limit", 0) or 0)
@@ -2538,7 +2352,7 @@ def sample_transform_sequence(
     chosen: List[JsonDict] = []
     used_exact: set[tuple[int, int, str, tuple[Any, ...]]] = set()
     for _pos in range(max_transforms):
-        current_candidates = enumerate_transform_candidates(app, poly, performance_bias, hot_filter)
+        current_candidates = enumerate_transform_candidates(app, poly, performance_bias)
         if not current_candidates:
             if not chosen:
                 raise SearchSpaceExhausted("No candidate transformations available for this trial.")
@@ -2655,6 +2469,33 @@ def make_project_app(
         ephemeral=False,
         populate_scops=populate_scops,
     )
+
+
+def make_tadashi_baseline_app(
+    *,
+    poly: PolyMorphSpec,
+    source: Path,
+    exec_name: str,
+    alt_infix: str,
+) -> SyclProjectApp:
+    """Generate a no-op Tadashi/Polly object so baseline and trials share codegen."""
+    app = make_project_app(
+        poly=poly,
+        source=source,
+        exec_name=exec_name,
+        populate_scops=True,
+    )
+    if not poly.allow_illegal and not app_is_legal(app):
+        raise RuntimeError("Baseline Tadashi SCoP import produced an illegal schedule")
+    baseline_app = app.generate_code(
+        alt_infix=alt_infix,
+        ephemeral=False,
+        populate_scops=False,
+        ensure_legality=not poly.allow_illegal,
+    )
+    baseline_app = inherit_build_settings(baseline_app, app)
+    baseline_app.exec_name = exec_name
+    return baseline_app
 
 
 def infer_source(poly: PolyMorphSpec) -> Path:
@@ -3279,11 +3120,12 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         print(f"[polyMorph] measuring baseline and trials with ACPP_VISIBILITY_MASK={poly.search.target_backend}")
 
     print("\n=== Building/measuring baseline ===")
-    baseline_app = make_project_app(
+    print("[polyMorph] generating no-op Tadashi baseline object for fair comparison.")
+    baseline_app = make_tadashi_baseline_app(
         poly=poly,
         source=source,
         exec_name=baseline_exec,
-        populate_scops=False,
+        alt_infix=f"{poly.search.generated_infix}-baseline",
     )
     build_app_or_raise(baseline_app)
     baseline_warmups = max(
@@ -3313,26 +3155,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         exec_name=poly.exec_name,
         populate_scops=True,
     )
-    all_candidates = enumerate_transform_candidates(enum_app, poly, apply_top_k=False)
-    hot_kernel_filter = build_hot_kernel_filter(all_candidates, baseline_metrics, poly.search.constraints)
-    if hot_kernel_filter.enabled:
-        candidates = enumerate_transform_candidates(
-            enum_app,
-            poly,
-            hot_filter=hot_kernel_filter,
-            print_family_summary=True,
-        )
-        print(
-            "Hot-kernel candidate filter: "
-            f"kernels={hot_kernel_filter.hot_kernels}, "
-            f"allowed_scops={sorted(hot_kernel_filter.allowed_scops)}, "
-            f"coverage={hot_kernel_filter.coverage:.3f}, "
-            f"candidates={len(all_candidates)}->{len(candidates)}"
-        )
-    else:
-        candidates = enumerate_transform_candidates(enum_app, poly, print_family_summary=True)
-        if bool(poly.search.constraints.get("hot_kernel_filter", True)):
-            print("Hot-kernel candidate filter: disabled automatically; no reliable multi-kernel timing/SCoP map.")
+    candidates = enumerate_transform_candidates(enum_app, poly, print_family_summary=True)
     print_candidates(candidates, verbose=poly.search.enumerate_only)
 
     if not candidates:
@@ -3413,7 +3236,7 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
         )
 
         try:
-            specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias, hot_kernel_filter)
+            specs = sample_transform_sequence(trial_app, poly, tree_state, performance_bias)
             if not specs:
                 raise SearchSpaceExhausted("No candidate transformations available for this trial.")
             trial.set_user_attr("transforms", specs)
@@ -3950,25 +3773,6 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
     print("Best transforms:")
     print(json.dumps(best_specs, indent=2))
 
-    ablation_results: List[JsonDict] = []
-    if poly.search.ablation_enabled and best_specs and not _is_stop_sequence(best_specs):
-        seen_analysis: set[str] = set()
-        analysis_sequences: List[tuple[str, List[JsonDict]]] = [("best_full", list(best_specs))]
-        if len(best_specs) > 1:
-            for idx in range(len(best_specs)):
-                reduced = [spec for pos, spec in enumerate(best_specs) if pos != idx]
-                if reduced:
-                    analysis_sequences.append((f"best_minus_{idx}", reduced))
-        for idx, spec in enumerate(best_specs):
-            analysis_sequences.append((f"best_single_{idx}", [spec]))
-        for label, specs in analysis_sequences:
-            sig = sequence_signature(specs)
-            if sig in seen_analysis:
-                continue
-            seen_analysis.add(sig)
-            print(f"[analysis] replaying {label}")
-            ablation_results.append(evaluate_sequence_for_analysis(specs, label))
-
     replay_results: List[JsonDict] = []
     if poly.search.replay_top_k > 0:
         ranked_trials = sorted(
@@ -4030,7 +3834,6 @@ def explore_mcts(cfg: Config, poly: PolyMorphSpec, source: Path) -> int:
                 else None
             ),
             "backend_best_configs": _backend_specific_best(trials, cfg),
-            "ablation_results": ablation_results,
             "replay_results": replay_results,
             "final_validation": final_validation,
         }
