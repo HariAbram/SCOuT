@@ -19,6 +19,7 @@ __pycache__
 **/build/
 *.jsonl
 *.agents
+generate_jscop_sycl_report.sh
 
 # Packages #
 ############
@@ -59,3 +60,4 @@ configs/polyMorph/**/*-result.json
 configs/polyMorph/**/*-trials.csv
 configs/polyMorph/**/*-cache.jsonl
 configs/polyMorph/**/*-history.jsonl
+test-benchmarks/polyMorph/jscop-reports/

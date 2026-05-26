@@ -463,9 +463,7 @@ SYCL_JSCOP_MARKERS = (
     "nd_item",
     "handler",
     "parallel_for",
-    "kernel",
-    "queue",
-    "runtest",
+    "kernel"
 )
 
 

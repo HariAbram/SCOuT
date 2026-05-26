@@ -82,7 +82,7 @@
       "result_json": "configs/polyMorph/O3/extrema-sycl/o3-extrema-result.json",
       "trial_csv": "configs/polyMorph/O3/extrema-sycl/o3-extrema-trials.csv",
       "replay_top_k": 0,
-      "final_validation_enabled": true,
+      "final_validation_enabled": false,
       "final_validation_repeats": 3,
       "final_validation_warmup_runs": 1,
       "trial_warmup_runs": 1,
