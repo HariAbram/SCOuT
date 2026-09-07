@@ -1,0 +1,98 @@
+{
+  "backend": "parser",
+  "project": {
+    "dir": "targets/gromacs",
+    "build_system": "cmake",
+    "target": "gmx",
+    "build_jobs": 1,
+    "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
+    "cmake_defs": [
+      "CMAKE_C_COMPILER=/usr/lib/llvm20/bin/clang",
+      "GMX_SYCL=ACPP",
+      "GMX_GPU=SYCL",
+      "ACPP_TARGETS=hip:gfx1201",
+      "GMX_BUILD_OWN_FFTW=OFF",
+      "REGRESSIONTEST_DOWNLOAD=OFF",
+      "BUILD_TESTING=OFF"
+    ]
+  },
+  "compiler": "/usr/lib/llvm20/bin/clang++",
+  "compiler_flags_base": "",
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-ffast-math",
+    "-fno-math-errno",
+    "-funroll-loops",
+    "-fvectorize"
+  ],
+  "compiler_params": {
+    "-march": ["native", "znver4"],
+    "-mprefer-vector-width": [128, 256]
+  },
+  "compiler_params_select": {
+    "min": 0,
+    "max": 2,
+    "always": []
+  },
+  "program_args": [
+    "mdrun",
+    "-s",
+    "bench/ADH_bench_systems/ADH/adh_dodec/bench.tpr",
+    "-deffnm",
+    "scout_cpu_omp",
+    "-nsteps",
+    "200",
+    "-ntmpi",
+    "1",
+    "-ntomp",
+    "16",
+    "-pin",
+    "on",
+    "-nb",
+    "cpu",
+    "-pme",
+    "cpu",
+    "-update",
+    "cpu",
+    "-bonded",
+    "cpu"
+  ],
+  "env": {
+    "OMP_PLACES": ["cores", "threads"],
+    "OMP_PROC_BIND": ["close", "spread"],
+    "OMP_SCHEDULE": ["static", "dynamic"]
+  },
+  "objectives": [
+    { "metric": "gmx_ns_per_day", "goal": "max" }
+  ],
+  "search": {
+    "study": "tabu",
+    "random_seed": 13
+  },
+  "tabu": {
+    "max_iters": 8,
+    "max_no_improve": 5,
+    "tabu_tenure": 8,
+    "neighborhood": 4,
+    "allow_variant_moves": true,
+    "allow_param_moves": true,
+    "allow_pool_moves": true,
+    "allow_env_moves": true,
+    "env_mode": "sample",
+    "env_cap": 4,
+    "results_csv": "/tmp/scout-gromacs/tabu_cpu_omp.csv"
+  },
+  "parser": {
+    "label": "sum",
+    "aggregate": "sum",
+    "run_cwd": "binary_dir",
+    "warmup_runs": 0,
+    "format": "gromacs"
+  },
+  "runs": 1,
+  "csv_log": "/tmp/scout-gromacs/tabu_cpu_omp_unused.csv",
+  "failed_builds": "/tmp/scout-gromacs/tabu_cpu_omp_failed.csv"
+}

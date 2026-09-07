@@ -89,6 +89,27 @@ def _last_executable(root: Path) -> Optional[Path]:
     return latest
 
 
+def _resolve_cmake_target_executable(build_dir: Path, target: str) -> Optional[Path]:
+    # Common CMake layout: executable under build root or build/bin.
+    direct = build_dir / target
+    if direct.is_file() and os.access(direct, os.X_OK):
+        return direct
+
+    in_bin = build_dir / "bin" / target
+    if in_bin.is_file() and os.access(in_bin, os.X_OK):
+        return in_bin
+
+    # Fallback: search exact filename under the build tree.
+    matches: List[Path] = []
+    for p in build_dir.rglob(target):
+        if p.is_file() and os.access(p, os.X_OK):
+            matches.append(p)
+    if not matches:
+        return None
+    matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return matches[0]
+
+
 def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path, trial: Optional[optuna.Trial] = None) -> Optional[Path]:
     if cfg.build_system == "cmake":
         build_dir = workdir / f"cmake_{uuid.uuid4().hex[:8]}"
@@ -101,9 +122,9 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
              "-DCMAKE_BUILD_TYPE=Release"
             ] 
         
-        if cfg.cmake_flag_vars:
+        if flags and cfg.cmake_flag_vars:
             for var in cfg.cmake_flag_vars:
-                cmake_cmd += [f"-D{var}+={flags}"]
+                cmake_cmd += [f"-D{var}={flags}"]
         
         if cfg.cmake_defs:
             cmake_cmd +=[f"-D{d}" for d in defs]
@@ -113,7 +134,11 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
             _save_log(workdir, trial, "cmake_config", proc)
             return None
         
-        build_cmd = ["cmake", "--build", str(build_dir), "--parallel"]
+        build_cmd = ["cmake", "--build", str(build_dir)]
+        if cfg.build_jobs and cfg.build_jobs > 0:
+            build_cmd += ["--parallel", str(cfg.build_jobs)]
+        else:
+            build_cmd += ["--parallel"]
         if cfg.target:
             build_cmd += ["--target", cfg.target]
         proc = _run(build_cmd)
@@ -121,11 +146,18 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
             _save_log(workdir, trial, "cmake_build", proc)
             return None
         
-        return (build_dir / cfg.target) if cfg.target else _last_executable(build_dir)
+        if cfg.target:
+            resolved = _resolve_cmake_target_executable(build_dir, cfg.target)
+            return resolved
+        return _last_executable(build_dir)
 
     if cfg.build_system == "make":
         _run(["make", "clean"], cwd=cfg.dir)
-        build_cmd = ["make", f"CXX={compiler}", "-j"]
+        build_cmd = ["make", f"CXX={compiler}"]
+        if cfg.build_jobs and cfg.build_jobs > 0:
+            build_cmd.append(f"-j{cfg.build_jobs}")
+        else:
+            build_cmd.append("-j")
 
         if flags:
             build_cmd.append(f"{cfg.make_flags_var}+={flags}")

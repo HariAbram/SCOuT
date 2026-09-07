@@ -286,6 +286,15 @@ _SYCL_RE = re.compile(
     re.IGNORECASE | re.MULTILINE
 )
 
+_GROMACS_PERF_RE = re.compile(
+    r"Performance:\s+"
+    r"(?P<ns_per_day>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<hour_per_ns>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<ms_per_step>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<matom_steps_per_s>[0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+
 def _wf_resolve_cwd(run_cwd: str, bin_path: Path, workdir: Optional[Path], project: Optional[BuildProject]) -> Path:
     if run_cwd == "workdir" and workdir:
         return workdir
@@ -331,6 +340,7 @@ def measure_parser_sycl_wavefront(
     cwd = _wf_resolve_cwd(pcfg.run_cwd, Path(bin_path), workdir, project)
 
     want_label = (pcfg.label or "avg").lower()
+    parse_format = (getattr(pcfg, "format", "sycl") or "sycl").lower()
     meas_runs = max(1, runs)
     total_runs = int(getattr(pcfg, "warmup_runs", 0)) + meas_runs
     warmup_cut = int(getattr(pcfg, "warmup_runs", 0))
@@ -348,6 +358,27 @@ def measure_parser_sycl_wavefront(
             continue
 
         text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        if parse_format == "gromacs":
+            perf_matches = list(_GROMACS_PERF_RE.finditer(text))
+            if not perf_matches:
+                logs = (workdir or cwd) / "parser_logs"
+                try:
+                    logs.mkdir(parents=True, exist_ok=True)
+                    (logs / f"no_match_{i:02d}.out").write_text(proc.stdout or "")
+                    (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
+                except Exception:
+                    pass
+                raise RuntimeError("Parser backend (GROMACS): no matching Performance line found.")
+            m = perf_matches[-1]
+            runs_kernel_vals.append({
+                0: float(m.group("ns_per_day")),
+                1: float(m.group("hour_per_ns")),
+                2: float(m.group("ms_per_step")),
+                3: float(m.group("matom_steps_per_s")),
+            })
+            iterations_seen.append(-1)
+            continue
+
         per_kernel: Dict[int, float] = {}
         iters_val: Optional[int] = None
 
@@ -374,6 +405,22 @@ def measure_parser_sycl_wavefront(
 
         runs_kernel_vals.append(per_kernel)
         iterations_seen.append(iters_val if iters_val is not None else -1)
+
+    if parse_format == "gromacs":
+        ns_per_day_vals = [d[0] for d in runs_kernel_vals if 0 in d]
+        hour_per_ns_vals = [d[1] for d in runs_kernel_vals if 1 in d]
+        ms_per_step_vals = [d[2] for d in runs_kernel_vals if 2 in d]
+        matom_steps_vals = [d[3] for d in runs_kernel_vals if 3 in d]
+        if not ns_per_day_vals:
+            raise RuntimeError("Parser backend (GROMACS): no throughput values collected.")
+
+        clear_acpp_runtime_cache()
+        return {
+            "gmx_ns_per_day": float(mean(ns_per_day_vals)),
+            "gmx_hour_per_ns": float(mean(hour_per_ns_vals)) if hour_per_ns_vals else 0.0,
+            "gmx_ms_per_step": float(mean(ms_per_step_vals)) if ms_per_step_vals else 0.0,
+            "gmx_matom_steps_per_s": float(mean(matom_steps_vals)) if matom_steps_vals else 0.0,
+        }
 
     # average across measured runs per kernel
     all_kids = sorted({k for d in runs_kernel_vals for k in d.keys()})
