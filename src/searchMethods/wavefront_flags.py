@@ -28,7 +28,7 @@ MetricDict = Dict[str, Number]
 from src.config import Config, ParserConfig, BuildProject
 from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain
+from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain, save_run_output
 
 @dataclass
 class _WFParams:
@@ -309,6 +309,12 @@ def _wf_aggregate(vals: List[float], how: str) -> float:
     if how == "min":  return float(min(vals))
     return float(sum(vals))  # default sum
 
+def _tail_excerpt(stdout: str, stderr: str, n: int = 20) -> str:
+    """Return the last n lines of a run's merged output (for failure messages)."""
+    text = (stdout or "") + (("\n" + stderr) if stderr else "")
+    tail = text.strip().splitlines()[-n:]
+    return "\n".join(tail) if tail else "(no output)"
+
 def measure_parser_sycl_wavefront(
     pcfg: ParserConfig,
     bin_path: Path,
@@ -350,8 +356,14 @@ def measure_parser_sycl_wavefront(
 
     for i in range(total_runs):
         proc = _run(cmd, cwd=cwd, env=merged_env)
+        tmp = save_run_output(proc.stdout or "", proc.stderr or "", prefix=f"scout_run_{i:02d}_")
+        print(f"[run] {i:02d} output → {tmp}")
         if proc.returncode != 0:
-            raise RuntimeError(f"program exited with rc={proc.returncode}")
+            raise RuntimeError(
+                f"program exited with rc={proc.returncode}.\n"
+                f"  output → {tmp}\n"
+                f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+            )
 
         # ignore parse errors during warmup; still execute the binary to JIT
         if i < warmup_cut:
@@ -368,7 +380,11 @@ def measure_parser_sycl_wavefront(
                     (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
                 except Exception:
                     pass
-                raise RuntimeError("Parser backend (GROMACS): no matching Performance line found.")
+                raise RuntimeError(
+                    "Parser backend (GROMACS): no matching Performance line found.\n"
+                    f"  output → {tmp}\n"
+                    f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+                )
             m = perf_matches[-1]
             runs_kernel_vals.append({
                 0: float(m.group("ns_per_day")),
@@ -401,7 +417,11 @@ def measure_parser_sycl_wavefront(
                 (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
             except Exception:
                 pass
-            raise RuntimeError("Parser backend (SYCL): no matching [SYCL] lines found.")
+            raise RuntimeError(
+                "Parser backend (SYCL): no matching [SYCL] lines found.\n"
+                f"  output → {tmp}\n"
+                f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+            )
 
         runs_kernel_vals.append(per_kernel)
         iterations_seen.append(iters_val if iters_val is not None else -1)

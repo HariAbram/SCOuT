@@ -5,6 +5,7 @@ from __future__ import annotations
 ###############################################################################
 
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -47,15 +48,70 @@ def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | Non
         check=False,
     )
 
+# Progress line patterns: Ninja prints "[N/M] …", CMake Makefiles prints "[ NN%] …".
+_NINJA_RE = re.compile(r"^\[(\d+)\s*/\s*(\d+)\]")
+_CMAKE_RE = re.compile(r"^\[\s*(\d{1,3})\s*%\]")
+
+
+def _progress_pct(line: str) -> Optional[int]:
+    """Return the integer progress percentage encoded in a build line, else None."""
+    m = _NINJA_RE.match(line)
+    if m:
+        done, total = int(m.group(1)), int(m.group(2))
+        return round(100 * done / total) if total else None
+    m = _CMAKE_RE.match(line)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _run_stream(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | None = None) -> subprocess.CompletedProcess:
+    """
+    Run a command, streaming its output to the console with live progress
+    updates, while capturing everything for later logging.
+
+    stdout and stderr are merged (stderr=STDOUT). Progress is detected from
+    Ninja ('[N/M]') or CMake ('[ NN%]') lines and echoed once per whole-percent
+    step. Returns a CompletedProcess whose .stdout holds the merged output and
+    whose .stderr is empty.
+    """
+    pretty = " ".join(shlex.quote(str(c)) for c in cmd) if isinstance(cmd, Sequence) else cmd
+    print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
+    print("[build] starting …")
+
+    proc = subprocess.Popen(
+        cmd,
+        shell=isinstance(cmd, str),
+        cwd=str(cwd) if cwd else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    lines: List[str] = []
+    last_pct: Optional[int] = None
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        lines.append(line)
+        pct = _progress_pct(line)
+        if pct is not None and pct != last_pct:
+            last_pct = pct
+            print(f"[build] {pct:3d}%  {line.strip()}")
+
+    rc = proc.wait()
+    print(f"[build] finished (rc={rc})")
+    return subprocess.CompletedProcess(cmd, rc, stdout="".join(lines), stderr="")
+
 def _trial_tag(trial: Optional["optuna.Trial"]) -> str:
     return f"trial_{trial.number:05d}" if trial is not None else f"phaseB_{uuid.uuid4().hex[:8]}"
 
 def _save_log(workdir: Path,
               trial: Optional["optuna.Trial"],
               step: str,
-              proc) -> None:
+              proc) -> Path:
     """
-    Save stdout/stderr of a subprocess to workdir/logs.
+    Save stdout/stderr of a subprocess to workdir/logs and return the log dir.
     Works even when trial is None (e.g., Phase-B rebuilds).
     """
     log_dir = Path(workdir) / "logs"
@@ -64,6 +120,19 @@ def _save_log(workdir: Path,
     tag = _trial_tag(trial)
     (log_dir / f"{tag}_{step}.out").write_text(proc.stdout or "")
     (log_dir / f"{tag}_{step}.err").write_text(proc.stderr or "")
+    return log_dir
+
+
+def _report_build_failure(step: str, proc, log_dir: Path) -> None:
+    """Print a concise terminal report for a failed build step."""
+    print(f"[build] ✗ {step} FAILED (rc={proc.returncode})")
+    print(f"[build] logs → {log_dir}")
+    text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+    tail = text.strip().splitlines()[-20:]
+    if tail:
+        print(f"[build] {step} — last output:")
+        for ln in tail:
+            print(f"  {ln}")
 
 ###############################################################################
 # Build logic (identical to original)                                         #
@@ -73,7 +142,8 @@ def compile_single_source(compiler: str, src: Path, flags: str, out: Path, trial
     cmd = f"{compiler} {flags} {shlex.quote(str(src))} -o {shlex.quote(str(out))}"
     proc = _run(cmd)
     if proc.returncode:
-        _save_log(out, trial, "make", proc)
+        log_dir = _save_log(out, trial, "make", proc)
+        _report_build_failure("make", proc, log_dir)
         return None
     return out if proc.returncode == 0 else None
 
@@ -131,9 +201,10 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
 
         proc = _run(cmake_cmd)
         if proc.returncode:
-            _save_log(workdir, trial, "cmake_config", proc)
+            log_dir = _save_log(workdir, trial, "cmake_config", proc)
+            _report_build_failure("cmake_config", proc, log_dir)
             return None
-        
+
         build_cmd = ["cmake", "--build", str(build_dir)]
         if cfg.build_jobs and cfg.build_jobs > 0:
             build_cmd += ["--parallel", str(cfg.build_jobs)]
@@ -141,9 +212,10 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
             build_cmd += ["--parallel"]
         if cfg.target:
             build_cmd += ["--target", cfg.target]
-        proc = _run(build_cmd)
+        proc = _run_stream(build_cmd)
         if proc.returncode:
-            _save_log(workdir, trial, "cmake_build", proc)
+            log_dir = _save_log(workdir, trial, "cmake_build", proc)
+            _report_build_failure("cmake_build", proc, log_dir)
             return None
         
         if cfg.target:
@@ -168,7 +240,8 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
 
         proc = _run(build_cmd, cwd=cfg.dir)
         if proc.returncode:
-            _save_log(workdir, trial, "make", proc)
+            log_dir = _save_log(workdir, trial, "make", proc)
+            _report_build_failure("make", proc, log_dir)
             return None
         
         return (cfg.dir / cfg.target) if cfg.target else _last_executable(cfg.dir)

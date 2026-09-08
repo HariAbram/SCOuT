@@ -6,6 +6,7 @@
 import itertools
 import shlex
 import sys
+import tempfile
 import hashlib, json, os
 from pathlib import Path
 from datetime import datetime
@@ -281,3 +282,20 @@ def unique_csv_path(path: Union[str, Path]) -> Path:
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M")
     return p.with_stem(f"{p.stem}_{stamp}")
+
+def save_run_output(stdout: str, stderr: str, *, prefix: str = "scout_run") -> Path:
+    """
+    Write a single run's stdout and stderr to a unique temp file and return its path.
+
+    The file is created in the system tempdir via tempfile.mkstemp so it is
+    unique per call even when many runs share the same working directory. The
+    returned Path is meant to be surfaced in the terminal so a failed run can
+    be inspected.
+    """
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".log")
+    with os.fdopen(fd, "w") as fp:
+        fp.write(stdout or "")
+        if stderr:
+            fp.write("\n--- stderr ---\n")
+            fp.write(stderr)
+    return Path(path)

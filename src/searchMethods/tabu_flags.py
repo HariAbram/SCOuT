@@ -332,7 +332,7 @@ def _compile_and_measure(
     else:
         binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
     if not binary:
-        raise RuntimeError("build failed")
+        raise RuntimeError("build failed (see build output above for details)")
 
     # Measure
     if cfg.backend == "perf":
@@ -421,6 +421,7 @@ def run_tabu_study(cfg: Config) -> None:
             v, mets, binp = _compile_and_measure(cfg, flags_str, e, workroot / "baseline" / f"env{i:03d}")
             sc = score(v)
         except Exception as ex:
+            print(f"[tabu] baseline env{i:03d} FAILED → {ex}")
             v, mets, binp, sc = (math.inf, {"error": str(ex)}, "", math.inf)
         if sc < best_start_sc:
             best_start_sc = sc
@@ -520,6 +521,7 @@ def run_tabu_study(cfg: Config) -> None:
                         v, mets, binp = _compile_and_measure(cfg, nflags, nenv, workroot / f"iter{iters:04d}")
                         cache[ck] = (v, mets, binp)
                     except Exception as ex:
+                        print(f"[tabu] iter {iters}: evaluation FAILED → {ex}")
                         v, mets, binp = (math.inf, {"error": str(ex)}, "")
 
                 sc = score(v)

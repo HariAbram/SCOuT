@@ -4,7 +4,7 @@
     "dir": "targets/gromacs",
     "build_system": "cmake",
     "target": "gmx",
-    "build_jobs": 1,
+    "build_jobs": 16,
     "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
     "cmake_defs": [
       "CMAKE_C_COMPILER=/usr/lib/llvm20/bin/clang",
@@ -40,7 +40,7 @@
   "program_args": [
     "mdrun",
     "-s",
-    "bench/ADH_bench_systems/ADH/adh_dodec/bench.tpr",
+    "/home/wincent/Documents/Chalmers/RA/SCOuT/targets/gromacs/bench/ADH_bench_systems/ADH/adh_dodec/bench.tpr",
     "-deffnm",
     "scout_gpu_acpp",
     "-nsteps",
