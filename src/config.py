@@ -141,6 +141,7 @@ class BuildProject:
     dir: Path
     build_system: str = "cmake"  # "cmake" | "make"
     target: Optional[str] = None
+    executable: Optional[Path] = None
     make_vars: Dict[str, str] = dataclasses.field(default_factory=dict)
     make_flags_var: str = "CXXFLAGS"
 
@@ -151,10 +152,14 @@ class BuildProject:
 
     @classmethod
     def from_dict(cls, d: Dict) -> "BuildProject":
+        build_system = str(d.get("build_system", "cmake")).lower()
+        if build_system not in {"cmake", "make"}:
+            raise ValueError("project.build_system must be 'cmake' or 'make'")
         return cls(
             dir=Path(d["dir"]),
-            build_system=d.get("build_system", "cmake"),
+            build_system=build_system,
             target=d.get("target"),
+            executable=Path(d["executable"]) if d.get("executable") else None,
             make_vars=d.get("make_vars", {}),
             make_flags_var=d.get("make_flags_var", "CXXFLAGS"),
             cmake_flag_vars=d.get("cmake_flag_vars", ["CMAKE_CXX_FLAGS"]),
@@ -165,16 +170,24 @@ class BuildProject:
 @dataclasses.dataclass
 class SearchSpec:
     study: str = "optuna"  # only optuna for now
-    sampler: str = "tpe"     # "tpe" | "nsga3" | "rs" | "cmaes"
+    sampler: str = "tpe"     # "tpe" | "nsga3" | "rs"
     n_startup_trials: int = 10  # for TPE
     population_size: int = 50
     random_seed: int | None = None
 
     @classmethod
     def from_dict(cls, d: Dict) -> "SearchSpec":
+        study = str(d.get("study", "optuna")).lower()
+        sampler = str(d.get("sampler", "tpe")).lower()
+        valid_studies = {"optuna", "wavefront", "tabu", "beam_tabu", "anneal"}
+        valid_samplers = {"tpe", "nsga3", "rs"}
+        if study not in valid_studies:
+            raise ValueError(f"search.study must be one of {sorted(valid_studies)}")
+        if sampler not in valid_samplers:
+            raise ValueError(f"search.sampler must be one of {sorted(valid_samplers)}")
         return cls(
-            study=d.get("study", "optuna"),
-            sampler=d.get("sampler", "tpe"),
+            study=study,
+            sampler=sampler,
             n_startup_trials=int(d.get("n_startup_trials", 10)),
             population_size=int(d.get("population_size", 50)),
             random_seed=d.get("random_seed"),
@@ -191,10 +204,15 @@ class WavefrontSpec:
     stop_if_no_improve: bool = True
     improvement_eps: float = 0.0
     env: Dict[str, str] = dataclasses.field(default_factory=dict)
-    results_csv: str = "wavefront_results.csv"
+    env_mode: str = "product"
+    env_cap: Optional[int] = None
+    results_csv: Optional[str] = None
 
     @classmethod
     def from_dict(cls, d: Dict) -> "WavefrontSpec":
+        env_mode = str(d.get("env_mode", "product")).lower()
+        if env_mode not in {"fixed", "product", "sample"}:
+            raise ValueError("wavefront.env_mode must be 'fixed', 'product', or 'sample'")
         return cls(
             base_flags=d.get("base_flags", []),
             flag_atoms=d.get("flag_atoms"),
@@ -205,7 +223,22 @@ class WavefrontSpec:
             stop_if_no_improve=bool(d.get("stop_if_no_improve", True)),
             improvement_eps=float(d.get("improvement_eps", 0.0)),
             env=d.get("env", {}) or {},
-            results_csv=d.get("results_csv", "wavefront_results.csv")
+            env_mode=env_mode,
+            env_cap=(None if d.get("env_cap") is None else int(d["env_cap"])),
+            results_csv=d.get("results_csv")
+        )
+
+
+@dataclasses.dataclass
+class SignificanceSpec:
+    min_rel_gain: float = 0.0
+    min_abs_gain: Optional[float] = None
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "SignificanceSpec":
+        return cls(
+            min_rel_gain=float(d.get("min_rel_gain", 0.0)),
+            min_abs_gain=(None if d.get("min_abs_gain") is None else float(d["min_abs_gain"])),
         )
 
 
@@ -415,6 +448,10 @@ class Config:
     # Search algorithm details
     search: SearchSpec
 
+    # Whether AdaptiveCpp's runtime/JIT cache is reused or deliberately cleared.
+    runtime_cache_policy: str
+    significance: SignificanceSpec
+
     runs: int
     # CSV / SQLite log paths
     csv_log: Optional[str]
@@ -426,6 +463,7 @@ class Config:
     wavefront: Optional[WavefrontSpec] = None
     #tabu
     tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    beam_tabu: Dict[str, Any] = dataclasses.field(default_factory=dict)
     #anneal 
     anneal: Dict[str, Any] = dataclasses.field(default_factory=dict)
     # polyMorph
@@ -461,10 +499,24 @@ class Config:
             if "always" in sel:
                 unknown = [k for k in sel["always"] if k not in available]
                 if unknown:
-                    print(f"[warn] compiler_params_select.always has unknown keys: {unknown}")
+                    raise ValueError(f"compiler_params_select.always has unknown keys: {unknown}")
+            for bound in ("k", "min", "max"):
+                if bound in sel and not 0 <= int(sel[bound]) <= len(available):
+                    raise ValueError(f"compiler_params_select.{bound} must be between 0 and {len(available)}")
+            if int(sel.get("min", 0)) > int(sel.get("max", len(available))):
+                raise ValueError("compiler_params_select.min cannot exceed max")
+            required = int(sel.get("k", sel.get("max", len(available))))
+            if len(sel.get("always", [])) > required:
+                raise ValueError("compiler_params_select.always contains more entries than the selected count permits")
             return sel
         
         compiler_params = raw.get("compiler_params", {})
+        if not isinstance(compiler_params, dict):
+            raise ValueError("compiler_params must be an object")
+        for name, spec in compiler_params.items():
+            values = spec.get("values") if isinstance(spec, dict) else spec
+            if not isinstance(values, list) or not values:
+                raise ValueError(f"compiler_params.{name} must have a non-empty value list")
         compiler_params_select = _validate_params_select(
             raw.get("compiler_params_select", {}),
             list(compiler_params.keys())
@@ -477,10 +529,20 @@ class Config:
         
         for var, spec in env_schema.items():
             if isinstance(spec, list):
+                if not spec:
+                    raise ValueError(f"'env.{var}' must contain at least one value")
                 continue
             if not (isinstance(spec, dict) and "values" in spec):
                 raise ValueError(
                     f"'env.{var}' must be a list or an object with a 'values' key"
+                )
+            if not isinstance(spec["values"], list) or not spec["values"]:
+                raise ValueError(f"'env.{var}.values' must be a non-empty list")
+            unknown_predecessors = [k for k in spec.get("when", {}) if k not in list(env_schema)[:list(env_schema).index(var)]]
+            if unknown_predecessors:
+                raise ValueError(
+                    f"env.{var}.when may only reference earlier environment variables; "
+                    f"invalid references: {unknown_predecessors}"
                 )
 
         # Program arguments
@@ -492,8 +554,13 @@ class Config:
             # Fallback to single objective block from backend
             if backend == "perf":
                 o_raw = raw.get("perf", {}).get("objective", {})
-            else:
+            elif backend == "likwid":
                 o_raw = raw.get("likwid", {}).get("objective", {})
+            else:
+                parser_raw = raw.get("parser", {})
+                label = str(parser_raw.get("label", "avg"))
+                aggregate = str(parser_raw.get("aggregate", "sum"))
+                o_raw = parser_raw.get("objective", {"metric": f"sycl_{label}_{aggregate}_s", "goal": "min"})
             objs_raw = [o_raw]
 
         objectives = [Objective.from_dict(o) for o in objs_raw]
@@ -507,10 +574,40 @@ class Config:
 
         anneal = raw.get("anneal", {})
 
+        for block_name, block in (("tabu", tabu), ("anneal", anneal), ("beam_tabu", raw.get("beam_tabu", {}))):
+            if not isinstance(block, dict):
+                raise ValueError(f"{block_name} must be an object")
+            env_mode = str(block.get("env_mode", "product")).lower()
+            if env_mode not in {"fixed", "product", "sample"}:
+                raise ValueError(f"{block_name}.env_mode must be 'fixed', 'product', or 'sample'")
+
+        search = SearchSpec.from_dict(raw.get("search", {}))
+        if search.study != "optuna" and len(objectives) != 1:
+            raise ValueError(f"search.study='{search.study}' supports exactly one objective")
+        runtime_cache_policy = str(raw.get("runtime_cache_policy", "reuse")).lower()
+        if runtime_cache_policy not in {"reuse", "cold"}:
+            raise ValueError("runtime_cache_policy must be 'reuse' or 'cold'")
+
+        runs = int(raw.get("runs", 1))
+        if runs <= 0:
+            raise ValueError("runs must be a positive integer")
+
+        loaded_project = BuildProject.from_dict(project) if project else None
+        loaded_source = Path(source) if source else None
+        if loaded_source is not None and not loaded_source.is_file():
+            raise ValueError(f"source does not exist: {loaded_source}")
+        if loaded_project is not None and not loaded_project.dir.is_dir():
+            raise ValueError(f"project.dir does not exist: {loaded_project.dir}")
+        if loaded_project is not None and loaded_project.executable is None:
+            raise ValueError(
+                "project.executable is required; build target names such as 'all' "
+                "do not identify the runnable file"
+            )
+
         return cls(
             backend=backend,
-            source=Path(source) if source else None,
-            project=BuildProject.from_dict(project) if project else None,
+            source=loaded_source,
+            project=loaded_project,
             compiler=raw.get("compiler", "acpp"),
             compiler_flags_base=raw.get("compiler_flags_base", ""),
             compiler_flags=raw.get("compiler_flags", []),
@@ -523,12 +620,15 @@ class Config:
             likwid=LikwidConfig.from_dict(raw.get("likwid", {})) if backend == "likwid" else None,
             parser=parser_cfg,
             objectives=objectives,
-            search=SearchSpec.from_dict(raw.get("search", {})),
+            search=search,
+            runtime_cache_policy=runtime_cache_policy,
+            significance=SignificanceSpec.from_dict(raw.get("significance", {})),
             wavefront=WavefrontSpec.from_dict(raw.get("wavefront", {})) if "wavefront" in raw else None,
             tabu=tabu,
+            beam_tabu=raw.get("beam_tabu", {}) or {},
             anneal=anneal,
             poly_morph=poly_morph,
-            runs=int(raw.get("runs", 1)),
+            runs=runs,
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),
             fail_log=raw.get("failed_builds"),

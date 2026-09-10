@@ -34,6 +34,15 @@ from src.misc import clear_acpp_runtime_cache
 _PERF_LINE_RE = re.compile(r"^\s*([0-9,]+)\s+([^\s#]+)")
 
 
+def _measurement_env(env: EnvMap, managed_env_keys: Sequence[str] = ()) -> EnvMap:
+    """Overlay a candidate environment after removing all managed search keys."""
+    merged = dict(os.environ)
+    for key in managed_env_keys:
+        merged.pop(str(key), None)
+    merged.update({str(k): str(v) for k, v in env.items()})
+    return merged
+
+
 def perf_parse(stderr: str, events: Sequence[str]) -> MetricDict:
     accum: Dict[str, Number] = {}
     for line in stderr.splitlines():
@@ -61,6 +70,7 @@ def measure_perf(
     runs: int = 1,
     *,
     clear_runtime_cache: bool = True,
+    managed_env_keys: Sequence[str] = (),
 ) -> MetricDict:
     meas_runs = max(1, runs)
     total_runs = cfg.warmup_runs + meas_runs
@@ -70,7 +80,9 @@ def measure_perf(
         cmd = ["perf", "stat", "-e", ",".join(cfg.events), "--", str(bin_path), *prog_args]
         if cfg.core_list:
             cmd = ["taskset", "-c", cfg.core_list, *cmd]
-        proc = _run(cmd, env={**os.environ, **env})
+        proc = _run(cmd, env=_measurement_env(env, managed_env_keys))
+        if proc.returncode != 0:
+            raise RuntimeError(f"perf/program exited with rc={proc.returncode}: {(proc.stderr or '')[-1200:]}")
 
         # Parse always, but only store if not warm-up
         data = perf_parse(proc.stderr, cfg.events)
@@ -169,6 +181,7 @@ def measure_likwid(
     runs: int = 1,
     *,
     clear_runtime_cache: bool = True,
+    managed_env_keys: Sequence[str] = (),
 ) -> MetricDict:
     specs   = cfg.metrics
     buckets: Dict[str, List[Number]] = {s.name: [] for s in specs}
@@ -191,7 +204,10 @@ def measure_likwid(
             cmd += ["-g", ",".join(cfg.events)]
         cmd += [str(bin_path), *prog_args]
 
-        proc = _run(cmd, env={**os.environ, **env})
+        proc = _run(cmd, env=_measurement_env(env, managed_env_keys))
+        if proc.returncode != 0:
+            text = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+            raise RuntimeError(f"LIKWID/program exited with rc={proc.returncode}: {text[-1200:]}")
         data = likwid_parse(proc.stdout, cfg.metrics)
 
         if i < cfg.warmup_runs:
@@ -212,9 +228,10 @@ def measure_likwid(
 ###############################################################################
 
 # Matches: [SYCL][avg] kernel 2: 0.000664 s over 1000 iters
+_NUMBER_RE = r'[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?'
 _SYCL_RE = re.compile(
     r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
-    r'(?P<val>[0-9]*\.?[0-9]+)\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
+    rf'(?P<val>{_NUMBER_RE})\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
     re.IGNORECASE | re.MULTILINE
 )
 
@@ -241,6 +258,7 @@ def measure_parser_sycl(
     project: Optional[BuildProject] = None,
     *,
     clear_runtime_cache: bool = True,
+    managed_env_keys: Sequence[str] = (),
 ) -> MetricDict:
     """
     Runs the binary like perf/likwid (taskset/prefix, controlled cwd),
@@ -250,7 +268,7 @@ def measure_parser_sycl(
     Returns per-kernel metrics (seconds) and one aggregate key:
         sycl_<label>_<aggregate>_s
     """
-    merged_env = {**os.environ, **env}
+    merged_env = _measurement_env(env, managed_env_keys)
     cmd: List[str] = []
     if cfg.prefix:     cmd.extend(cfg.prefix)
     if cfg.core_list:  cmd.extend(["taskset", "-c", cfg.core_list])

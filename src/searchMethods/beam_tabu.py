@@ -5,21 +5,19 @@ from __future__ import annotations
 # Standard library imports                                                    #
 ###############################################################################
 
-import csv, json, math, random, re, os, itertools
+import csv, json, math, random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Iterable, Union
-from statistics import mean
 import tempfile
 
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
 
-from src.config import Config, ParserConfig, BuildProject
-from src.build import compile_project, compile_single_source, _run
-from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path, is_significant_improvement, rel_gain, clear_acpp_runtime_cache
+from src.config import Config
+from src.evaluator import Evaluator
+from src.misc import unique_csv_path, is_significant_improvement, rel_gain
 
 ###############################################################################
 # Type helpers                                                                #
@@ -79,6 +77,7 @@ class _BTParams:
     per_iter_cap: Optional[int] = None
     env_mode: str = "product"
     env_cap: Optional[int] = None
+    env: Dict[str, str] = field(default_factory=dict)
     stop_if_no_improve: bool = True
     improvement_eps: float = 0.0
 
@@ -131,27 +130,11 @@ def _collect_atoms(cfg: Config, p: _BTParams) -> List[str]:
 
 # ---------- BUILD & MEASURE ----------
 
-def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str], work: Path
+def _compile_and_measure(evaluator: Evaluator, cfg: Config, flags: Sequence[str], env: Dict[str, str], work: Path
 ) -> Tuple[float, MetricDict, str]:
-    work.mkdir(parents=True, exist_ok=True)
-    flags_str = " ".join(flags)
-    # Build
-    if cfg.source:
-        binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
-    else:
-        binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
-    if not binary:
-        raise RuntimeError("build failed")
-
-    # Measure
-    if cfg.backend == "perf":
-        metrics = measure_perf(cfg.perf, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-    elif cfg.backend == "parser":
-        # import locally to avoid circular import; reuse your wavefront parser
-        from src.searchMethods.wavefront_flags import measure_parser_sycl_wavefront
-        metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, env, cfg.runs, work, cfg.project)
-    else:
-        metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
+    evaluation = evaluator.evaluate(flags, env, work)
+    metrics = evaluation.metrics
+    binary = evaluation.binary
 
     metric_name, goal = _choose_objective(cfg)
     if metric_name not in metrics:
@@ -166,20 +149,26 @@ def _canonical(flags: Iterable[str]) -> Tuple[str, ...]:
 
 def _neighbors(parent: Tuple[str,...], atoms: List[str], max_k: int, allow_add: bool, allow_del: bool, limit: int) -> List[Tuple[str,...]]:
     present = set(parent)
-    cand: List[Tuple[str,...]] = []
+    additions: List[Tuple[str,...]] = []
+    deletions: List[Tuple[str,...]] = []
 
     # add moves
     if allow_add and len(parent) < max_k:
         for a in atoms:
             if a not in present:
-                cand.append(_canonical(parent + (a,)))
-                if limit and len(cand) >= limit: break
+                additions.append(_canonical(parent + (a,)))
     # delete moves
     if allow_del and len(parent) > 0:
         for a in parent:
             c = list(parent); c.remove(a)
-            cand.append(_canonical(c))
-            if limit and len(cand) >= limit: break
+            deletions.append(_canonical(c))
+
+    cand: List[Tuple[str, ...]] = []
+    for i in range(max(len(additions), len(deletions))):
+        if i < len(additions):
+            cand.append(additions[i])
+        if i < len(deletions):
+            cand.append(deletions[i])
 
     # dedup and return
     uniq = []
@@ -187,7 +176,7 @@ def _neighbors(parent: Tuple[str,...], atoms: List[str], max_k: int, allow_add: 
     for t in cand:
         if t not in seen:
             seen.add(t); uniq.append(t)
-    return uniq
+    return uniq[:limit] if limit and limit > 0 else uniq
 
 def _move_from_to(src: Tuple[str,...], dst: Tuple[str,...]) -> Tuple[str,str]:
     s, d = set(src), set(dst)
@@ -205,22 +194,26 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     rng = random.Random(getattr(getattr(cfg, "search", object()), "random_seed", None))
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_beamtabu_"))
+    evaluator = Evaluator(cfg, workroot)
     atoms = _collect_atoms(cfg, bt)
     metric_name, goal = _choose_objective(cfg)
-    sig = getattr(cfg, "significance", {}) or {}
-    MIN_REL = float(sig.get("min_rel_gain", 0.15))
-    MIN_ABS = sig.get("min_abs_gain", None)
+    sig = cfg.significance
+    MIN_REL = sig.min_rel_gain
+    MIN_ABS = sig.min_abs_gain
 
     def score(v: float) -> float: return v if goal == "min" else -v
 
     # env combos
-    env_combos = _env_combos(cfg, bt.env_mode, bt.env_cap, rng, fixed_env={})
+    env_combos = _env_combos(cfg, bt.env_mode, bt.env_cap, rng, fixed_env=bt.env)
     print(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
 
     # Initial candidate = base_flags (atoms apply *on top* of this)
-    base = tuple(bt.base_flags or [])
+    base = tuple(dict.fromkeys(
+        ([cfg.compiler_flags_base] if cfg.compiler_flags_base else []) + list(bt.base_flags or [])
+    ))
     # Evaluate baseline over envs (take best env outcome for ranking)
-    best_env_val = math.inf
+    best_env_val = 0.0
+    best_env_score = math.inf
     best_env_metrics: Dict[str,float] = {}
     best_env_bin = ""
     best_env_env: Dict[str,str] = {}
@@ -230,14 +223,22 @@ def run_beam_tabu_study(cfg: Config) -> None:
     extra_metric_keys: set[str] = set()
 
     for ei, env in enumerate(env_combos, 1):
-        val, mets, binp = _compile_and_measure(cfg, list(base), env, workroot / "iter00_baseline" / f"env{ei:03d}")
+        try:
+            val, mets, binp = _compile_and_measure(evaluator, cfg, list(base), env, workroot / "iter00_baseline" / f"env{ei:03d}")
+        except Exception as exc:
+            print(f"[beam-tabu] baseline env {ei} failed: {exc}")
+            continue
         rows.append((0, [val], "|".join(base) if base else "default", dict(env), str(binp), mets))
         extra_metric_keys.update(mets.keys())
-        if score(val) < score(best_env_val):
+        if score(val) < best_env_score:
+            best_env_score = score(val)
             best_env_val, best_env_metrics, best_env_bin, best_env_env = val, mets, binp, env
 
+    if best_env_score == math.inf:
+        raise RuntimeError("beam-tabu: all baseline environment evaluations failed")
+
     best_global_val = best_env_val
-    best_global_combo: Tuple[str,...] = tuple(base)  # store only the atom part you add, base included for logging
+    best_global_combo: Tuple[str,...] = tuple()
 
     # Beam frontier holds tuples of *atom* sets added on top of base (for clarity we treat full string set)
     beam: List[Tuple[str,...]] = [tuple()]  # empty tuple means no atom yet (just base)
@@ -247,6 +248,7 @@ def run_beam_tabu_study(cfg: Config) -> None:
     # Iterations
     for it in range(1, tb.max_iters + 1):
         print(f"[beam-tabu] === iter {it} ===")
+        previous_beam = list(beam)
         next_candidates: List[Tuple[float, float, Tuple[str,...], Dict[str,float], str, Dict[str,str]]] = []
         # (score_for_rank, value, combo_atoms, metrics, bin, env_used)
 
@@ -269,18 +271,30 @@ def run_beam_tabu_study(cfg: Config) -> None:
                 flags = list(base) + list(child_atoms)
 
                 # Evaluate across envs, pick best env outcome
-                best_c_val = math.inf
+                best_c_val = 0.0
+                best_c_score = math.inf
                 best_c_mets: Dict[str,float] = {}
                 best_c_bin = ""
                 best_c_env: Dict[str,str] = {}
 
                 for ei, env in enumerate(env_combos, 1):
-                    val, mets, binp = _compile_and_measure(cfg, flags, env, workroot / f"iter{it:02d}" / f"cand_{hash(tuple(flags)) & 0xffff:x}" / f"env{ei:03d}")
+                    try:
+                        val, mets, binp = _compile_and_measure(
+                            evaluator, cfg, flags, env,
+                            workroot / f"iter{it:02d}" / f"candidate_{len(rows):05d}" / f"env{ei:03d}",
+                        )
+                    except Exception as exc:
+                        print(f"[beam-tabu] candidate failed: {exc}")
+                        continue
                     # buffer row for CSV
                     rows.append((it, [val], "|".join(flags) if flags else "default", dict(env), str(binp), mets))
                     extra_metric_keys.update(mets.keys())
-                    if score(val) < score(best_c_val):
+                    if score(val) < best_c_score:
+                        best_c_score = score(val)
                         best_c_val, best_c_mets, best_c_bin, best_c_env = val, mets, binp, env
+
+                if best_c_score == math.inf:
+                    continue
 
                 # Aspiration: allow tabu if it beats best_global
                 if is_tabu and score(best_c_val) >= score(best_global_val):
@@ -292,6 +306,14 @@ def run_beam_tabu_study(cfg: Config) -> None:
             print("[beam-tabu] no candidates; stopping.")
             break
 
+        # Deduplicate children reached from multiple parents, then select the beam.
+        by_child = {}
+        for candidate in next_candidates:
+            child = candidate[2]
+            if child not in by_child or candidate[0] < by_child[child][0]:
+                by_child[child] = candidate
+        next_candidates = list(by_child.values())
+
         # Sort and select beam
         next_candidates.sort(key=lambda t: t[0])
         selected = next_candidates[: bt.beam_width]
@@ -299,42 +321,40 @@ def run_beam_tabu_study(cfg: Config) -> None:
         # Generation best (by objective value)
         gen_best_score, gen_best_val, gen_best_atoms, gen_best_mets, gen_best_bin, gen_best_env = selected[0]
 
-        # Only accept as “meaningful” if it clears significance thresholds
-        if is_significant_improvement(
+        better = gen_best_score < score(best_global_val)
+        generation_gain = rel_gain(best_global_val, gen_best_val, goal)
+        meaningful = is_significant_improvement(
             old=best_global_val, new=gen_best_val, goal=goal,
-            min_rel_gain=MIN_REL, min_abs_gain=MIN_ABS
-        ):
+            min_rel_gain=MIN_REL,
+            min_abs_gain=max(float(MIN_ABS or 0.0), float(bt.improvement_eps)),
+        )
+        if better:
             best_global_val = gen_best_val
             best_global_combo = gen_best_atoms
-        else:
-            # Optional: a helpful log to make noise visible
+        if better and not meaningful:
             print(f"[beam-tabu] gen best not significant "
-                f"(Δrel={rel_gain(best_global_val, gen_best_val, goal):.3f})")
+                f"(Δrel={generation_gain:.3f})")
 
         # Build next beam frontier (just the atom-sets)
         beam = [atoms_c for (_sc, _v, atoms_c, _m, _b, _e) in selected]
 
-        # Update global best and tabu list
-        improved = False
+        # Update tabu memory using parents from the previous generation.
         new_beam: List[Tuple[str,...]] = []
         for sc, val, atoms_c, mets_c, bin_c, env_c in selected:
             new_beam.append(atoms_c)
-            if score(val) < score(best_global_val) - bt.improvement_eps:
-                best_global_val = val
-                best_global_combo = atoms_c
-                improved = True
             # Add move to tabu list (from closest parent — approximated using set diff)
             # Store the move that produced atoms_c from *some* parent in previous beam
             # Here we pick the smallest diff parent to define the move.
             move = None
             best_diff = 1e9
-            for parent_atoms in beam:
+            for parent_atoms in previous_beam:
                 diff = len(set(atoms_c) ^ set(parent_atoms))
                 if diff < best_diff:
                     best_diff = diff
                     move = _move_from_to(parent_atoms, atoms_c)
             if move and move[0] != "noop":
-                tabu[move] = it + tb.tabu_tenure
+                reverse = ("del" if move[0] == "add" else "add", move[1])
+                tabu[reverse] = it + tb.tabu_tenure
 
         beam = new_beam
 
@@ -343,7 +363,7 @@ def run_beam_tabu_study(cfg: Config) -> None:
         for mv in expired:
             tabu.pop(mv, None)
 
-        if improved:
+        if meaningful:
             no_improve = 0
         else:
             no_improve += 1
@@ -364,7 +384,7 @@ def run_beam_tabu_study(cfg: Config) -> None:
     print(f"[beam-tabu] writing CSV → {results_path}")
 
     obj_headers = [o.metric for o in cfg.objectives]
-    extra_cols = sorted(extra_metric_keys)
+    extra_cols = sorted(extra_metric_keys - set(obj_headers))
     header = ["k"] + obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
 
     with open(results_path, "w", newline="") as fp:
@@ -380,5 +400,6 @@ def run_beam_tabu_study(cfg: Config) -> None:
     # Summary
     print("\n[beam-tabu] ===== Summary =====")
     print(f"best {metric_name} = {best_global_val:.6g}")
-    print(f"flags = {list(bt.base_flags or []) + list(best_global_combo)}")
+    print(f"flags = {list(base) + list(best_global_combo)}")
     print(f"[beam-tabu] results → {results_path}")
+    print(f"[beam-tabu] unique builds: {evaluator.build_count}")

@@ -8,12 +8,10 @@ import json
 import math
 import random
 import tempfile
-import re, os
 from dataclasses import dataclass, field
 from itertools import combinations, permutations
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Iterable, Any, Union
-from statistics import mean, variance, median
 
 
 ###############################################################################
@@ -25,10 +23,9 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
-from src.config import Config, ParserConfig, BuildProject
-from src.build import compile_project, compile_single_source, _run
-from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain
+from src.config import Config
+from src.evaluator import Evaluator
+from src.misc import unique_csv_path, is_significant_improvement, rel_gain
 
 @dataclass
 class _WFParams:
@@ -54,7 +51,7 @@ class _WFParams:
     env_cap: Optional[int] = None   # max env combos per candidate (only for product/sample)
 
     # Output
-    results_csv: str = "wavefront_results.csv"
+    results_csv: Optional[str] = None
 
 
 def _enumerate_env_schema(schema: Dict[str, Union[List[str], Dict[str, Any]]]) -> List[Dict[str, str]]:
@@ -187,28 +184,11 @@ def _collect_atoms(cfg: Config, p: _WFParams) -> List[str]:
     return atoms
 
 
-def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str], work: Path
+def _compile_and_measure(evaluator: Evaluator, cfg: Config, flags: Sequence[str], env: Dict[str, str], work: Path
 ) -> Tuple[float, MetricDict, str]:
-    work.mkdir(parents=True, exist_ok=True)
-    flags_str = " ".join(flags)
-    print(f"[wavefront] using flags: {flags_str}")
-    # Build
-    if cfg.source:
-        binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
-    else:
-        binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
-    if not binary:
-        raise RuntimeError("build failed")
-    
-    run_env = dict(env)
-
-    # Measure
-    if cfg.backend == "perf":
-        metrics = measure_perf(cfg.perf, binary, cfg.program_args, run_env, cfg.runs)  # type: ignore[arg-type]
-    elif cfg.backend == "parser":
-        metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, run_env, cfg.runs, work, cfg.project)
-    else:  # "likwid"
-        metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
+    evaluation = evaluator.evaluate(flags, env, work)
+    metrics = evaluation.metrics
+    binary = evaluation.binary
 
     metric_name, goal = _choose_objective(cfg)
     if metric_name not in metrics:
@@ -280,133 +260,6 @@ def _generate_beam_boost(
 
 
 
-_SYCL_RE = re.compile(
-    r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
-    r'(?P<val>[0-9]*\.?[0-9]+)\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
-    re.IGNORECASE | re.MULTILINE
-)
-
-def _wf_resolve_cwd(run_cwd: str, bin_path: Path, workdir: Optional[Path], project: Optional[BuildProject]) -> Path:
-    if run_cwd == "workdir" and workdir:
-        return workdir
-    if run_cwd == "project_dir" and project:
-        return project.dir
-    return bin_path.parent  # "binary_dir"
-
-def _wf_aggregate(vals: List[float], how: str) -> float:
-    how = (how or "sum").lower()
-    if how == "mean": return float(mean(vals))
-    if how == "max":  return float(max(vals))
-    if how == "min":  return float(min(vals))
-    return float(sum(vals))  # default sum
-
-def measure_parser_sycl_wavefront(
-    pcfg: ParserConfig,
-    bin_path: Path,
-    prog_args: List[str],
-    env: Dict[str, str],
-    runs: int,
-    workdir: Optional[Path] = None,
-    project: Optional[BuildProject] = None,
-) -> Dict[str, float]:
-    """
-    Launch like perf/likwid (prefix/taskset/cwd), parse standardized SYCL lines,
-    discard warm-up iterations, and return metrics dict.
-
-    Emits:
-      - per kernel:   sycl_kernel_<id>_<label>_s
-      - aggregate:    sycl_<label>_<aggregate>_s
-      - (optional)    sycl_iters  (if consistent and present)
-    """
-    merged_env = {**os.environ, **env}
-
-    cmd: List[str] = []
-    if pcfg.prefix:
-        cmd.extend(pcfg.prefix)
-    if pcfg.core_list:
-        cmd.extend(["taskset", "-c", pcfg.core_list])
-    cmd.append(str(bin_path))
-    cmd.extend(prog_args)
-
-    cwd = _wf_resolve_cwd(pcfg.run_cwd, Path(bin_path), workdir, project)
-
-    want_label = (pcfg.label or "avg").lower()
-    meas_runs = max(1, runs)
-    total_runs = int(getattr(pcfg, "warmup_runs", 0)) + meas_runs
-    warmup_cut = int(getattr(pcfg, "warmup_runs", 0))
-
-    runs_kernel_vals: List[Dict[int, float]] = []
-    iterations_seen: List[int] = []
-
-    for i in range(total_runs):
-        proc = _run(cmd, cwd=cwd, env=merged_env)
-        if proc.returncode != 0:
-            raise RuntimeError(f"program exited with rc={proc.returncode}")
-
-        # ignore parse errors during warmup; still execute the binary to JIT
-        if i < warmup_cut:
-            continue
-
-        text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
-        per_kernel: Dict[int, float] = {}
-        iters_val: Optional[int] = None
-
-        for m in _SYCL_RE.finditer(text):
-            label = m.group("label").lower()
-            if label != want_label:
-                continue
-            kid   = int(m.group("kid"))
-            val   = float(m.group("val"))    # seconds
-            iters = int(m.group("iters"))
-            iters_val = iters
-            per_kernel[kid] = val
-
-        if not per_kernel:
-            # Helpful dump for debugging
-            logs = (workdir or cwd) / "parser_logs"
-            try:
-                logs.mkdir(parents=True, exist_ok=True)
-                (logs / f"no_match_{i:02d}.out").write_text(proc.stdout or "")
-                (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
-            except Exception:
-                pass
-            raise RuntimeError("Parser backend (SYCL): no matching [SYCL] lines found.")
-
-        runs_kernel_vals.append(per_kernel)
-        iterations_seen.append(iters_val if iters_val is not None else -1)
-
-    # average across measured runs per kernel
-    all_kids = sorted({k for d in runs_kernel_vals for k in d.keys()})
-    # filter if user specified explicit kernel IDs
-    selected = all_kids
-    if getattr(pcfg, "kernels", None):
-        ks = set(int(x) for x in pcfg.kernels)
-        selected = [k for k in all_kids if k in ks]
-
-    per_kernel_avg: Dict[int, float] = {}
-    for k in selected:
-        vals = [d[k] for d in runs_kernel_vals if k in d]
-        if vals:
-            per_kernel_avg[k] = float(mean(vals))
-
-    if not per_kernel_avg:
-        raise RuntimeError("Parser backend (SYCL): selected kernels missing in output.")
-
-    # aggregate across selected kernels
-    aggregate_val = _wf_aggregate(list(per_kernel_avg.values()), pcfg.aggregate)
-
-    # build metrics dict
-    mets: Dict[str, float] = {}
-    for k, v in per_kernel_avg.items():
-        mets[f"sycl_kernel_{k}_{want_label}_s"] = v
-    mets[f"sycl_{want_label}_{pcfg.aggregate}_s"] = aggregate_val
-
-    if iterations_seen and all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
-        mets["sycl_iters"] = float(iterations_seen[0])
-
-    clear_acpp_runtime_cache()
-    return mets
-
 def run_wavefront_study(cfg: Config) -> None:
     """
     Wave-front search over flag atoms:
@@ -422,6 +275,7 @@ def run_wavefront_study(cfg: Config) -> None:
 
     rng = random.Random(getattr(getattr(cfg, "search", object()), "random_seed", None))
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_wave_"))
+    evaluator = Evaluator(cfg, workroot)
     print(f"[wavefront] workdir: {workroot}")
     print(f"[wavefront] atoms={len(atoms)} max_k={params.max_k} mode={params.mode} beam_width={params.beam_width}")
     if params.per_wave_cap:
@@ -431,18 +285,20 @@ def run_wavefront_study(cfg: Config) -> None:
     env_combos = _env_combos_for_wavefront(cfg, params, rng)
     print(f"[wavefront] env_mode={params.env_mode} env_combos={len(env_combos)}")
 
-    base_flags = list(params.base_flags or [])
+    base_flags = list(dict.fromkeys(
+        ([cfg.compiler_flags_base] if cfg.compiler_flags_base else []) + list(params.base_flags or [])
+    ))
 
     # Baseline
     print("[wavefront] evaluating baseline …")
     base_dir = workroot / "k00_baseline"
-    rows: List[int, Tuple[List[float], str, Dict[str, str], str, Dict[str, float]]] = []
+    rows: List[Tuple[int, List[float], str, Dict[str, str], str, Dict[str, float]]] = []
     extra_metric_keys: set[str] = set()
 
     metric_name, goal = _choose_objective(cfg)
-    sig = getattr(cfg, "significance", {}) or {}
-    MIN_REL = float(sig.get("min_rel_gain", 0.15))
-    MIN_ABS = sig.get("min_abs_gain", None)
+    sig = cfg.significance
+    MIN_REL = sig.min_rel_gain
+    MIN_ABS = sig.min_abs_gain
     def _score(v: float) -> float: return v if goal == "min" else -v
 
     best_base_sc = math.inf
@@ -450,8 +306,12 @@ def run_wavefront_study(cfg: Config) -> None:
 
     for ei, env in enumerate(env_combos, 1):
         run_dir = base_dir / f"env{ei:03d}"
-        val, mets, binpath = _compile_and_measure(cfg, params.base_flags or [], env, run_dir)
-        rows.append(([val], "|".join(params.base_flags or []) or "default", dict(env), str(binpath), mets))
+        try:
+            val, mets, binpath = _compile_and_measure(evaluator, cfg, base_flags, env, run_dir)
+        except Exception as exc:
+            print(f"[wavefront] baseline env {ei} failed: {exc}")
+            continue
+        rows.append((0, [val], "|".join(base_flags) or "default", dict(env), str(binpath), mets))
         extra_metric_keys.update(mets.keys())
         sc = _score(val)
         if sc < best_base_sc:
@@ -467,22 +327,12 @@ def run_wavefront_study(cfg: Config) -> None:
     print(f"[wavefront] baseline {metric_name} = {base_val:.6g} env={json.dumps(base_env)}")
 
 
-    # --- Buffer rows to emit an Optuna-like CSV later ---
-    # Each row: (obj_values, compiler_flags_key, env_dict, binary_path, metrics_dict)
-    rows: List[Tuple[int, List[float], str, Dict[str, str], str, Dict[str, float]]] = []
-    extra_metric_keys: set[str] = set()
-
     def _flags_key(flags_seq: Sequence[str]) -> str:
         # match Optuna’s "pretty id" (pipe-joined)
         return "|".join(flags_seq) if flags_seq else "default"
 
-    # Record baseline in the same schema as Optuna CSV
-    rows.append((0, [float(base_val)], _flags_key(base_flags), dict(base_env), str(base_bin), base_metrics))
-    extra_metric_keys.update(base_metrics.keys())
-
     # Wave k >= 1
     prev_top: List[Tuple[str, ...]] = []
-    improved_any = False
     for k in range(1, params.max_k + 1):
         print(f"[wavefront] ===== Wave k={k} =====")
 
@@ -508,7 +358,7 @@ def run_wavefront_study(cfg: Config) -> None:
         # tuple: (score_for_beam, best_value_among_envs, combo_flags, best_metrics, best_binary)
 
         for idx, combo in enumerate(candidates, 1):
-            flags = (params.base_flags or []) + list(combo)
+            flags = base_flags + list(combo)
             # Evaluate ALL env combos (or reduced set) for this flag combo
             best_sc_c = math.inf
             best_val_c = math.inf
@@ -518,7 +368,7 @@ def run_wavefront_study(cfg: Config) -> None:
             for ei, env in enumerate(env_combos, 1):
                 run_dir = workroot / f"k{k:02d}" / f"c{idx:05d}" / f"env{ei:03d}"
                 try:
-                    value, metrics, binary = _compile_and_measure(cfg, flags, env, run_dir)
+                    value, metrics, binary = _compile_and_measure(evaluator, cfg, flags, env, run_dir)
                     sc = _score(value)
                 except Exception as exc:
                     value, sc, metrics, binary = (math.inf, math.inf, {"error": str(exc)}, "")
@@ -546,31 +396,34 @@ def run_wavefront_study(cfg: Config) -> None:
             prev_top = []
 
         # Early stop if not improving globally
-        if is_significant_improvement(old=best_val_global,
+        better = _score(best_val) < _score(best_val_global)
+        meaningful = is_significant_improvement(old=best_val_global,
                               new=best_val,
                               goal=goal,
                               min_rel_gain=MIN_REL,
-                              min_abs_gain=MIN_ABS):
-            # track the global-best *value* separately
+                              min_abs_gain=max(float(MIN_ABS or 0.0), float(params.improvement_eps)))
+        if better:
             best_val_global = best_val
             best_global_combo = best_combo
-            improved_any = True
-        else:
+        if not meaningful:
             if params.stop_if_no_improve:
                 print("[wavefront] no *significant* improvement; stopping early.")
                 break
 
     # --- Write CSV IDENTICAL to explore_optuna() ---
-    if getattr(cfg, "csv_log", None):
+    if params.results_csv:
+        results_path = unique_csv_path(params.results_csv)
+        Path(results_path).parent.mkdir(parents=True, exist_ok=True)
+    elif getattr(cfg, "csv_log", None):
         results_path = unique_csv_path(cfg.csv_log)
         Path(results_path).parent.mkdir(parents=True, exist_ok=True)
     else:
-        results_path = workroot / (getattr(params, "results_csv", None) or "wavefront_results.csv")
+        results_path = workroot / "wavefront_results.csv"
 
     print(f"[wavefront] writing CSV → {results_path}")
 
     obj_headers = [o.metric for o in cfg.objectives]  # usually 1 metric for wavefront
-    extra_cols = sorted(extra_metric_keys)
+    extra_cols = sorted(extra_metric_keys - set(obj_headers))
     header = ["k"] + obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
 
     with open(results_path, "w", newline="") as fp:
@@ -585,4 +438,5 @@ def run_wavefront_study(cfg: Config) -> None:
             w.writerow(row)
 
     print(f"[wavefront] results → {results_path}")
-
+    print(f"[wavefront] best {metric_name}={best_val_global:.6g} flags={base_flags + list(best_global_combo)}")
+    print(f"[wavefront] unique builds: {evaluator.build_count}")

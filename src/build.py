@@ -34,7 +34,7 @@ from src.config import BuildProject
 
 def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | None = None) -> subprocess.CompletedProcess:
     """Run a command, capturing output, and echo it to the console."""
-    pretty = " ".join(shlex.quote(str(c)) for c in cmd) if isinstance(cmd, Sequence) else cmd
+    pretty = cmd if isinstance(cmd, str) else " ".join(shlex.quote(str(c)) for c in cmd)
     print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
     return subprocess.run(
         cmd,
@@ -70,12 +70,13 @@ def _save_log(workdir: Path,
 ###############################################################################
 
 def compile_single_source(compiler: str, src: Path, flags: str, out: Path, trial: Optional[optuna.Trial] = None) -> Optional[Path]:
-    cmd = f"{compiler} {flags} {shlex.quote(str(src))} -o {shlex.quote(str(out))}"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [*shlex.split(compiler), *shlex.split(flags), str(src), "-o", str(out)]
     proc = _run(cmd)
     if proc.returncode:
-        _save_log(out, trial, "make", proc)
+        _save_log(out.parent, trial, "compile", proc)
         return None
-    return out if proc.returncode == 0 else None
+    return out if out.is_file() else None
 
 
 def _last_executable(root: Path) -> Optional[Path]:
@@ -90,6 +91,7 @@ def _last_executable(root: Path) -> Optional[Path]:
 
 
 def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path, trial: Optional[optuna.Trial] = None) -> Optional[Path]:
+    workdir.mkdir(parents=True, exist_ok=True)
     if cfg.build_system == "cmake":
         build_dir = workdir / f"cmake_{uuid.uuid4().hex[:8]}"
         build_dir.mkdir()
@@ -103,7 +105,7 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
         
         if cfg.cmake_flag_vars:
             for var in cfg.cmake_flag_vars:
-                cmake_cmd += [f"-D{var}+={flags}"]
+                cmake_cmd += [f"-D{var}:STRING={flags}"]
         
         if cfg.cmake_defs:
             cmake_cmd +=[f"-D{d}" for d in defs]
@@ -121,10 +123,16 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
             _save_log(workdir, trial, "cmake_build", proc)
             return None
         
-        return (build_dir / cfg.target) if cfg.target else _last_executable(build_dir)
+        binary = _resolve_project_executable(cfg, build_dir)
+        if binary is None:
+            _save_message(workdir, trial, "cmake_artifact", "Build succeeded but no executable was found")
+        return binary
 
     if cfg.build_system == "make":
-        _run(["make", "clean"], cwd=cfg.dir)
+        clean = _run(["make", "clean"], cwd=cfg.dir)
+        if clean.returncode:
+            _save_log(workdir, trial, "make_clean", clean)
+            return None
         build_cmd = ["make", f"CXX={compiler}", "-j"]
 
         if flags:
@@ -139,6 +147,30 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
             _save_log(workdir, trial, "make", proc)
             return None
         
-        return (cfg.dir / cfg.target) if cfg.target else _last_executable(cfg.dir)
+        binary = _resolve_project_executable(cfg, cfg.dir)
+        if binary is None:
+            _save_message(workdir, trial, "make_artifact", "Build succeeded but no executable was found")
+        return binary
 
     raise ValueError(f"unknown build_system '{cfg.build_system}'")
+
+
+def _resolve_project_executable(cfg: BuildProject, build_root: Path) -> Optional[Path]:
+    """Resolve the runnable artifact independently from the build target name."""
+    if cfg.executable:
+        candidate = cfg.executable if cfg.executable.is_absolute() else build_root / cfg.executable
+        return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+    if cfg.target:
+        candidate = build_root / cfg.target
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    return _last_executable(build_root)
+
+
+def _save_message(workdir: Path, trial: Optional["optuna.Trial"], step: str, message: str) -> None:
+    class _Message:
+        stdout = ""
+        stderr = message
+
+    _save_log(workdir, trial, step, _Message())

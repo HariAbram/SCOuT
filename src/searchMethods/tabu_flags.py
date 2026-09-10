@@ -9,7 +9,7 @@ import math
 import random
 import tempfile
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
@@ -22,9 +22,8 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
-from src.config import Config, ParserConfig, BuildProject
-from src.build import compile_project, compile_single_source, _run
-from src.metrics import measure_likwid, measure_perf
+from src.config import Config
+from src.evaluator import Evaluator
 from src.misc import unique_csv_path, is_significant_improvement
 
 
@@ -53,6 +52,7 @@ class TabuSpec:
     # Environment exploration (matches wavefront style)
     env_mode: str = "product"         # "fixed" | "product" | "sample"
     env_cap: Optional[int] = None     # cap/compress env combos if large
+    env: Dict[str, str] = field(default_factory=dict)
 
     # CSV file; default will fall back to cfg.csv_log
     results_csv: Optional[str] = None
@@ -111,9 +111,7 @@ def _env_combos(cfg: Config, tabu: TabuSpec, rng: random.Random) -> List[Dict[st
     """Return a non-empty list of env dicts; fall back to [{}] if cfg.env is empty/missing."""
     mode = (tabu.env_mode or "product").lower()
     if mode == "fixed":
-        # Use wavefront.env if present; otherwise a single empty env
-        wf_env = getattr(getattr(cfg, "wavefront", object()), "env", None)
-        return [dict(wf_env)] if isinstance(wf_env, dict) and wf_env else [{}]
+        return [dict(tabu.env or {})]
 
     # Normal (product/sample) modes
     schema = getattr(cfg, "env", None)
@@ -153,7 +151,7 @@ def _render_flags(
     if base_flags:
         parts.append(base_flags)
 
-    if variant:
+    if variant and variant != base_flags:
         parts.append(variant)
         label_parts.append(variant)
 
@@ -162,7 +160,9 @@ def _render_flags(
         if opt not in params_choice:
             continue
         val = params_choice[opt]
-        if isinstance(spec, dict) and "sep" in spec:
+        if "{}" in opt:
+            frag = opt.format(val)
+        elif isinstance(spec, dict) and "sep" in spec:
             sep = spec.get("sep", "=")
             frag = f"{opt}{sep}{val}"
         else:
@@ -198,6 +198,7 @@ def _neighbors(
     pool_all: List[str] = list(cfg.compiler_flag_pool or [])
     variants_all: List[str] = list(cfg.compiler_flags or [])
     params_schema = cfg.compiler_params or {}
+    always = set((cfg.compiler_params_select or {}).get("always", []))
 
     # Helper to get domain of a param
     def _values_for_param(key: str) -> List[Any]:
@@ -231,7 +232,7 @@ def _neighbors(
 
         # REMOVE (respect min)
         if len(active) > PARAM_MIN and active:
-            rem_keys = list(active)
+            rem_keys = list(active - always)
             rng.shuffle(rem_keys)
             for k in rem_keys:
                 new_params = dict(params_choice)
@@ -257,7 +258,7 @@ def _neighbors(
 
         # SWAP (remove one, add a different one)
         if active and inactive and (len(active) >= PARAM_MIN) and (len(active) <= PARAM_MAX):
-            rem_keys = list(active); rng.shuffle(rem_keys)
+            rem_keys = list(active - always); rng.shuffle(rem_keys)
             add_keys = list(inactive); rng.shuffle(add_keys)
             for rk in rem_keys:
                 for ak in add_keys:
@@ -319,30 +320,15 @@ def _neighbors(
 # Evaluate a (flags, env) config
 # -----------------------------
 def _compile_and_measure(
+    evaluator: Evaluator,
     cfg: Config,
     flags_str: str,
     env: Dict[str, str],
     work: Path,
 ) -> Tuple[float, MetricDict, str]:
-    work.mkdir(parents=True, exist_ok=True)
-
-    # Build
-    if cfg.source:
-        binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
-    else:
-        binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
-    if not binary:
-        raise RuntimeError("build failed")
-
-    # Measure
-    if cfg.backend == "perf":
-        metrics = measure_perf(cfg.perf, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-    elif cfg.backend == "parser":
-        # re-use the wavefront SYCL parser if you placed it there; if not, fallback to perf/likwid only
-        from src.searchMethods.wavefront_flags import measure_parser_sycl_wavefront  # local import to avoid cycle
-        metrics = measure_parser_sycl_wavefront(cfg.parser, Path(binary), cfg.program_args, env, cfg.runs, work, cfg.project)
-    else:
-        metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
+    evaluation = evaluator.evaluate(flags_str, env, work)
+    metrics = evaluation.metrics
+    binary = evaluation.binary
 
     # Objective
     obj = cfg.objectives[0]
@@ -370,6 +356,7 @@ def run_tabu_study(cfg: Config) -> None:
     print(f"[tabu] env_mode={tabu.env_mode} env_combos={len(env_list)}")
 
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_tabu_"))
+    evaluator = Evaluator(cfg, workroot)
     print(f"[tabu] workdir: {workroot}")
 
     # Initial state: start small (base + first variant; params unset; pool empty)
@@ -382,16 +369,22 @@ def run_tabu_study(cfg: Config) -> None:
     env0 = env_list[0] if env_list else {}
 
     sel = getattr(cfg, "compiler_params_select", {}) or {}
-    PARAM_MIN = int(sel.get("min", 0))
-    # if max omitted, allow all params
-    PARAM_MAX = int(sel.get("max", len((cfg.compiler_params or {}))))
+    if "k" in sel:
+        PARAM_MIN = PARAM_MAX = int(sel["k"])
+    else:
+        PARAM_MIN = int(sel.get("min", 0))
+        PARAM_MAX = int(sel.get("max", len((cfg.compiler_params or {}))))
+    always = [k for k in sel.get("always", []) if k in (cfg.compiler_params or {})]
+    PARAM_MIN = max(PARAM_MIN, len(always))
     if PARAM_MAX < PARAM_MIN:
         PARAM_MAX = PARAM_MIN
 
     params_schema = cfg.compiler_params or {}
     if PARAM_MIN > 0 and params_schema:
-        keys = list(params_schema.keys())
+        keys = always + [k for k in params_schema if k not in always]
         rng.shuffle(keys)
+        if always:
+            keys = always + [k for k in keys if k not in always]
         need = min(PARAM_MIN, len(keys))
         for k in keys[:need]:
             spec = params_schema[k]
@@ -418,7 +411,7 @@ def run_tabu_study(cfg: Config) -> None:
     for i, e in enumerate(env_list, 1):
         key, flags_str = _render_flags(cfg, base, variant0, params_choice, pool_list)
         try:
-            v, mets, binp = _compile_and_measure(cfg, flags_str, e, workroot / "baseline" / f"env{i:03d}")
+            v, mets, binp = _compile_and_measure(evaluator, cfg, flags_str, e, workroot / "baseline" / f"env{i:03d}")
             sc = score(v)
         except Exception as ex:
             v, mets, binp, sc = (math.inf, {"error": str(ex)}, "", math.inf)
@@ -442,40 +435,28 @@ def run_tabu_study(cfg: Config) -> None:
     # Tabu memory: store config keys; aspiration allows override if improves best
     tabu_q: deque[str] = deque(maxlen=tabu.tabu_tenure)
 
-    # Cache: avoid rebuilding identical (flags, env)
-    cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Tuple[float, Dict[str, float], str]] = {}
-    def cfg_key(k: str, e: Dict[str, str]):
-        return (k, tuple(sorted(e.items())))
-
-    cache[cfg_key(cur_key, env)] = (cur_val, cur_mets, cur_bin)
     tabu_q.append(cur_key + "|" + json.dumps(best_env, sort_keys=True))
 
     no_improve = 0
     iters = 0
 
     # Prepare CSV like Optuna
-    if getattr(cfg, "csv_log", None):
+    if tabu.results_csv:
+        out_csv = unique_csv_path(tabu.results_csv)
+        Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
+    elif getattr(cfg, "csv_log", None):
         out_csv = unique_csv_path(cfg.csv_log)
         Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
     else:
-        out_csv = workroot / (tabu.results_csv or "tabu_results.csv")
+        out_csv = workroot / "tabu_results.csv"
     print(f"[tabu] writing CSV → {out_csv}")
 
     extra_keys: set[str] = set(best_metrics.keys())
+    result_rows: List[Tuple[int, float, str, Dict[str, str], str, Dict[str, float]]] = [
+        (0, best_val, best_key, dict(best_env), best_binary, dict(best_metrics))
+    ]
     hdr = ["k"] + [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"]
-    # rows are streamed; we’ll write header now and append
-    with open(out_csv, "w", newline="") as fp:
-        w = csv.writer(fp)
-        # header will include extra metrics later (after we know them)
-        # To keep exactly the same schema as Optuna output, expand now:
-        extra_cols = sorted(extra_keys)
-        w.writerow(hdr + extra_cols)
-        # baseline row
-        w.writerow([0, best_val, best_key, json.dumps(best_env), best_binary] + [best_metrics.get(k, "") for k in extra_cols])
-        fp.flush()
-
-        # Main loop
-        while iters < tabu.max_iters and no_improve < tabu.max_no_improve:
+    while iters < tabu.max_iters and no_improve < tabu.max_no_improve:
             iters += 1
 
             # Generate neighbors for the current state (flag-side)
@@ -511,18 +492,14 @@ def run_tabu_study(cfg: Config) -> None:
                 # admissible if not tabu OR aspirates (improves global best)
                 is_tabu = (tabu_key in tabu_q)
 
-                # cached?
-                ck = cfg_key(nkey, nenv)
-                if ck in cache:
-                    v, mets, binp = cache[ck]
-                else:
-                    try:
-                        v, mets, binp = _compile_and_measure(cfg, nflags, nenv, workroot / f"iter{iters:04d}")
-                        cache[ck] = (v, mets, binp)
-                    except Exception as ex:
-                        v, mets, binp = (math.inf, {"error": str(ex)}, "")
-
-                sc = score(v)
+                try:
+                    v, mets, binp = _compile_and_measure(
+                        evaluator, cfg, nflags, nenv,
+                        workroot / f"iter{iters:04d}" / f"candidate_{len(result_rows):05d}",
+                    )
+                    sc = score(v)
+                except Exception as ex:
+                    v, mets, binp, sc = (math.inf, {"error": str(ex)}, "", math.inf)
                 if math.isinf(sc):
                     continue
 
@@ -533,38 +510,8 @@ def run_tabu_study(cfg: Config) -> None:
                         cand_best = (nv, nparams, npool, nenv)
                         cand_best_pkg = (v, mets, binp, nkey, nflags, nenv)
 
-                # stream a row (like Optuna): write even if tabu (we evaluated it)
-                # update header if new extra metrics arrive
-                new_keys = set(mets.keys())
-                if new_keys - set(extra_cols):
-                    # expand header once: rewrite file from scratch with new header
-                    extra_cols = sorted(set(extra_cols) | new_keys)
-                    fp.seek(0)
-                    with open(out_csv, "r", newline="") as _r:
-                        rows = list(csv.reader(_r))
-                    # rows[0] was old header — rewrite
-                    with open(out_csv, "w", newline="") as fp2:
-                        w2 = csv.writer(fp2)
-                        w2.writerow(hdr + extra_cols)
-                        if len(rows) > 1:
-                            # rewrite previous rows with new extra columns
-                            for r in rows[1:]:
-                                # r = [k, val, flags, env, bin, ... old extras]
-                                #base_len = 5
-                                base_len = 1 + len([o.metric for o in cfg.objectives]) + 3
-                                # rebuild into dict for old extras
-                                old_extra_vals = r[base_len:]
-                                old_keys = sorted(set(extra_keys))
-                                old_map = dict(zip(old_keys, old_extra_vals))
-                                w2.writerow(r[:base_len] + [old_map.get(k, "") for k in extra_cols])
-                    # refresh in-memory extra keys
-                    extra_keys = set(extra_cols)
-                    # reopen append handle
-                    fp = open(out_csv, "a", newline="")
-                    w = csv.writer(fp)
-
-                w.writerow([iters, v, nkey, json.dumps(nenv), binp] + [mets.get(k, "") for k in extra_cols])
-                fp.flush()
+                extra_keys.update(mets.keys())
+                result_rows.append((iters, v, nkey, dict(nenv), binp, dict(mets)))
 
             if cand_best is None:
                 print(f"[tabu] iter {iters}: no admissible neighbor; stopping.")
@@ -575,44 +522,38 @@ def run_tabu_study(cfg: Config) -> None:
             v, mets, binp, k, fstr, e = cand_best_pkg  # type: ignore[misc]
             tabu_q.append(k + "|" + json.dumps(e, sort_keys=True))
             
-            # Improvement?
-            if score(v) < score(best_val):
+            improved = score(v) < score(best_val)
+            meaningful = is_significant_improvement(
+                best_val, v, cfg.objectives[0].goal,
+                cfg.significance.min_rel_gain, cfg.significance.min_abs_gain,
+            )
+            if improved:
                 best_val = v
                 best_key = k
                 best_flags = fstr
                 best_env = dict(e)
                 best_metrics = dict(mets)
                 best_binary = binp
-                no_improve = 0
                 print(f"[tabu] iter {iters}: IMPROVED → {cfg.objectives[0].metric}={best_val:.6g}")
+            if meaningful:
+                no_improve = 0
             else:
                 no_improve += 1
-                print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
+                if not improved:
+                    print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
 
-            '''
-            sig = getattr(cfg, "significance", {}) or {}
-            MIN_REL = float(sig.get("min_rel_gain", 0.15))
-            MIN_ABS = sig.get("min_abs_gain", None)
-
-            # Did we significantly improve the global best?
-            if is_significant_improvement(old=best_val, new=v,
-                                        goal=("min" if cfg.objectives[0].goal == "min" else "max"),
-                                        min_rel_gain=MIN_REL, min_abs_gain=MIN_ABS):
-                best_val = v
-                best_key = k
-                best_flags = fstr
-                best_env = dict(e)
-                best_metrics = dict(mets)
-                best_binary = binp
-                no_improve = 0
-                print(f"[tabu] iter {iters}: IMPROVED → {cfg.objectives[0].metric}={best_val:.6g}")
-            else:
-                no_improve += 1
-                print(f"[tabu] iter {iters}: best={best_val:.6g} (no_improve={no_improve})")
-            '''
+    extra_cols = sorted(extra_keys - {o.metric for o in cfg.objectives})
+    with open(out_csv, "w", newline="") as fp:
+        w = csv.writer(fp)
+        w.writerow(hdr + extra_cols)
+        for iteration, value, flags_key, row_env, binary, metrics in result_rows:
+            if math.isinf(value):
+                continue
+            w.writerow([iteration, value, flags_key, json.dumps(row_env), binary] + [metrics.get(k, "") for k in extra_cols])
 
     print("\n[tabu] ===== Summary =====")
     print(f"best: {cfg.objectives[0].metric}={best_val:.6g}")
     print(f"flags: {best_key}")
     print(f"env: {json.dumps(best_env)}")
     print(f"[tabu] results → {out_csv}")
+    print(f"[tabu] unique builds: {evaluator.build_count}")

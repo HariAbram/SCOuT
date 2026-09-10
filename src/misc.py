@@ -51,7 +51,8 @@ def _select_pool_flags(trial, pool_flags: list[str], pool_cap: int) -> list[str]
     k = int(trial.suggest_int("pool_k", 0, min(pool_cap, len(pool_flags))))
     scored = [(float(trial.suggest_float(f"score::pool::{f}", 0.0, 1.0)), f) for f in pool_flags]
     scored.sort(reverse=True)
-    return [f for _, f in scored[:k]]
+    selected = {f for _, f in scored[:k]}
+    return [f for f in pool_flags if f in selected]
 
 
 
@@ -63,6 +64,11 @@ def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
       - spec = {"sep": " ", "values": [...]}
       - opt contains "{}" and spec is [values] ➜ format string
     """
+    if "{}" in opt and isinstance(spec, list):
+        val = trial.suggest_categorical(opt, spec)
+        rendered = opt.format(val)
+        return rendered, rendered
+
     if isinstance(spec, list):
         val = trial.suggest_categorical(opt, spec)
         return f"{opt}={val}", f"{opt}={val}"
@@ -71,11 +77,6 @@ def _render_one_param(trial, opt: str, spec: Any) -> Tuple[str, str]:
         val = trial.suggest_categorical(opt, spec["values"])
         sep = spec.get("sep", "=")
         return f"{opt}{sep}{val}", f"{opt}{sep}{val}"
-
-    if "{}" in opt and isinstance(spec, list):
-        val = trial.suggest_categorical(opt, spec)
-        rendered = opt.format(val)
-        return rendered, rendered
 
     raise ValueError(f"Unsupported compiler_param entry for '{opt}'")
 
@@ -91,7 +92,9 @@ def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any], max_k: Opt
         k = trial.suggest_int("params_k", int(sel.get("min", 0)), int(sel.get("max", len(keys))))
 
     if max_k is not None:
-        k = min(k, max_k)
+        required = int(sel.get("k", sel.get("min", 0)))
+        effective_cap = max(int(max_k), required, len(always))
+        k = min(k, effective_cap)
 
     # scores for a permutation; higher score = more likely to be chosen
     scored = []
@@ -109,7 +112,8 @@ def _select_param_subset(trial, keys: List[str], sel: Dict[str, Any], max_k: Opt
     for a in always:
         if a not in chosen:
             chosen[-1] = a                 # replace the last one (k>=len(always) guaranteed)
-    return chosen
+    chosen_set = set(chosen)
+    return [name for name in keys if name in chosen_set]
 
 
 def suggest_compiler_flags(trial,
@@ -181,13 +185,13 @@ def suggest_env(trial, schema: Dict[str, Union[List[str], Dict[str, Any]]]
     for var, spec in schema.items():
         # 1. Unconditional
         if isinstance(spec, Sequence) and not isinstance(spec, (str, bytes)):
-            env[var] = trial.suggest_categorical(var, list(spec))
+            env[var] = str(trial.suggest_categorical(var, list(spec)))
             continue
 
         # 2. Conditional
         pred  = spec.get("when", {})
-        if all(env.get(k) == v for k, v in pred.items()):
-            env[var] = trial.suggest_categorical(var, spec["values"])
+        if all(env.get(k) == str(v) for k, v in pred.items()):
+            env[var] = str(trial.suggest_categorical(var, spec["values"]))
         # else – silently skip
 
     return env
@@ -230,14 +234,11 @@ def is_significant_improvement(old: float,
                                min_rel_gain: float = 0.15,
                                min_abs_gain: Optional[float] = None) -> bool:
 
-    if min_abs_gain is not None:
-        if goal == "min":
-            if (old - new) >= min_abs_gain:
-                return True
-        else:  # goal == 'max'
-            if (new - old) >= min_abs_gain:
-                return True
-
+    absolute_gain = (old - new) if goal == "min" else (new - old)
+    if absolute_gain <= 0:
+        return False
+    if min_abs_gain is not None and absolute_gain < float(min_abs_gain):
+        return False
     return rel_gain(old, new, goal) >= float(min_rel_gain)
 
 ##### General helpers
@@ -279,5 +280,10 @@ def unique_csv_path(path: Union[str, Path]) -> Path:
     if not p.exists():
         return p
 
-    stamp = datetime.now().strftime("%Y%m%d-%H%M")
-    return p.with_stem(f"{p.stem}_{stamp}")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    candidate = p.with_stem(f"{p.stem}_{stamp}")
+    counter = 1
+    while candidate.exists():
+        candidate = p.with_stem(f"{p.stem}_{stamp}_{counter}")
+        counter += 1
+    return candidate
