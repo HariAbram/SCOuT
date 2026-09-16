@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Iterable, Union
 from statistics import mean
 import tempfile
+import os
 
 ###############################################################################
 # Local imports                                                               #
@@ -136,6 +137,10 @@ def _compile_and_measure(cfg: Config, flags: Sequence[str], env: Dict[str, str],
     work.mkdir(parents=True, exist_ok=True)
     flags_str = " ".join(flags)
     # Build
+    with open("./scout.log", "a") as log_file:
+        log_file.write(f"[beam-tabu] compiling with flags: {flags_str} in {work}\n")
+        log_file.write(f"[beam-tabu] env: {env}\n")
+
     if cfg.source:
         binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
     else:
@@ -205,6 +210,11 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     rng = random.Random(getattr(getattr(cfg, "search", object()), "random_seed", None))
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_beamtabu_"))
+
+    # If we are in a cluster environment with a TMPDIR, use that as the workroot instead of /tmp
+    if (os.getenv("TMPDIR")):
+        workroot = Path(os.getenv("TMPDIR")) / workroot.name
+    
     atoms = _collect_atoms(cfg, bt)
     metric_name, goal = _choose_objective(cfg)
     sig = getattr(cfg, "significance", {}) or {}
@@ -215,6 +225,9 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     # env combos
     env_combos = _env_combos(cfg, bt.env_mode, bt.env_cap, rng, fixed_env={})
+    with open("./scout.log", "a") as log_file:
+        log_file.write(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}\n")
+        
     print(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
 
     # Initial candidate = base_flags (atoms apply *on top* of this)

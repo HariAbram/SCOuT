@@ -434,6 +434,12 @@ def measure_parser_sycl_wavefront(
         if not ns_per_day_vals:
             raise RuntimeError("Parser backend (GROMACS): no throughput values collected.")
 
+        with open("./scout.log", "a") as log_file:
+            log_file.write(f"[parser] gmx_ns_per_day = {mean(ns_per_day_vals):.6g}\n")
+            log_file.write(f"[parser] gmx_hour_per_ns = {mean(hour_per_ns_vals):.6g}\n")
+            log_file.write(f"[parser] gmx_ms_per_step = {mean(ms_per_step_vals):.6g}\n")
+            log_file.write(f"[parser] gmx_matom_steps_per_s = {mean(matom_steps_vals):.6g}\n")
+
         clear_acpp_runtime_cache()
         return {
             "gmx_ns_per_day": float(mean(ns_per_day_vals)),

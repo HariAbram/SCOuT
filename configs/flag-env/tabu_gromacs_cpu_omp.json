@@ -1,22 +1,22 @@
 {
   "backend": "parser",
   "project": {
-    "dir": "targets/gromacs",
+    "dir": "/cephyr/users/wincenth/Vera/ra/gromacs/gromacs-2026.3",
     "build_system": "cmake",
     "target": "gmx",
-    "build_jobs": 16,
+    "build_jobs": 32,
     "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
     "cmake_defs": [
-      "CMAKE_C_COMPILER=/usr/lib/llvm20/bin/clang",
-      "GMX_SYCL=ACPP",
-      "GMX_GPU=SYCL",
-      "ACPP_TARGETS=hip:gfx1201",
-      "GMX_BUILD_OWN_FFTW=OFF",
-      "REGRESSIONTEST_DOWNLOAD=OFF",
+      "CMAKE_C_COMPILER=/apps/Arch/software/Clang/18.1.8-GCCcore-13.3.0/bin/clang",
+      "CMAKE_CXX_COMPILER=/apps/Arch/software/Clang/18.1.8-GCCcore-13.3.0/bin/clang++",
+      "GMX_GPU=OFF",
+      "GMX_MPI=OFF",
+      "GMX_BUILD_OWN_FFTW=ON",
+      "REGRESSIONTEST_DOWNLOAD=ON",
       "BUILD_TESTING=OFF"
     ]
   },
-  "compiler": "/usr/lib/llvm20/bin/clang++",
+  "compiler": "/apps/Arch/software/Clang/18.1.8-GCCcore-13.3.0/bin/clang++",
   "compiler_flags_base": "",
   "compiler_flags": [
     "-O2",
@@ -40,7 +40,7 @@
   "program_args": [
     "mdrun",
     "-s",
-    "/home/wincent/Documents/Chalmers/RA/SCOuT/targets/gromacs/bench/ADH_bench_systems/ADH/adh_dodec/bench.tpr",
+    "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/ADH/adh_dodec/bench.tpr",
     "-deffnm",
     "scout_cpu_omp",
     "-nsteps",
@@ -83,7 +83,7 @@
     "allow_env_moves": true,
     "env_mode": "sample",
     "env_cap": 4,
-    "results_csv": "/tmp/scout-gromacs/tabu_cpu_omp.csv"
+    "results_csv": "./tabu_cpu_omp.csv"
   },
   "parser": {
     "label": "sum",
@@ -93,6 +93,6 @@
     "format": "gromacs"
   },
   "runs": 1,
-  "csv_log": "/tmp/scout-gromacs/tabu_cpu_omp_unused.csv",
-  "failed_builds": "/tmp/scout-gromacs/tabu_cpu_omp_failed.csv"
+  "csv_log": "./tabu_cpu_omp_unused.csv",
+  "failed_builds": "./tabu_cpu_omp_failed.csv"
 }

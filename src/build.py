@@ -37,6 +37,8 @@ def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | Non
     """Run a command, capturing output, and echo it to the console."""
     pretty = " ".join(shlex.quote(str(c)) for c in cmd) if isinstance(cmd, Sequence) else cmd
     print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
+    with open("./scout.log", "a") as log_file:
+        log_file.write(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else "") + "\n")
     return subprocess.run(
         cmd,
         shell=isinstance(cmd, str),
@@ -78,6 +80,9 @@ def _run_stream(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMa
     pretty = " ".join(shlex.quote(str(c)) for c in cmd) if isinstance(cmd, Sequence) else cmd
     print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
     print("[build] starting …")
+    with open("./scout.log", "a") as log_file:
+        log_file.write(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else "") + "\n")
+        log_file.write("[build] starting …\n")
 
     proc = subprocess.Popen(
         cmd,
@@ -98,9 +103,13 @@ def _run_stream(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMa
         if pct is not None and pct != last_pct:
             last_pct = pct
             print(f"[build] {pct:3d}%  {line.strip()}")
+            with open("./scout.log", "a") as log_file:
+                log_file.write(f"[build] {pct:3d}%  {line.strip()}\n")
 
     rc = proc.wait()
     print(f"[build] finished (rc={rc})")
+    with open("./scout.log", "a") as log_file:
+        log_file.write(f"[build] finished (rc={rc})\n")
     return subprocess.CompletedProcess(cmd, rc, stdout="".join(lines), stderr="")
 
 def _trial_tag(trial: Optional["optuna.Trial"]) -> str:
