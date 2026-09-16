@@ -45,7 +45,7 @@ Code: [src/searchMethods/beam_tabu.py](/home/hari/git/SCOuT/src/searchMethods/be
 
 - Keeps several promising candidates instead of one current state
 - Mainly focused on flag-atom combinations
-- Still partly experimental because config wiring is incomplete
+- Uses a configured beam plus tabu move memory
 
 ### Annealing
 

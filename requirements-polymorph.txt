@@ -1,0 +1,3 @@
+# Optional PolyMorph dependencies. Core parameter tuning needs only requirements.txt.
+-r requirements.txt
+tadashi>=0.5.1

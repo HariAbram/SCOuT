@@ -1,0 +1,66 @@
+{
+  "backend": "perf",
+
+  "project": {
+    "dir": "test-benchmarks/parameterSearch/miniBUDE/sycl",
+    "build_system": "cmake",
+    "target": "bude",
+    "executable": "bude",
+    "cmake_flag_vars": ["CXX_EXTRA_FLAGS"],
+    "cmake_defs": [
+      "ACPP_TARGETS=generic"
+    ]
+  },
+
+  "compiler": "c++",
+  "compiler_flags_base": "",
+  "compiler_flags": [
+    "-O2",
+    "-O3"
+  ],
+  "compiler_flag_pool": [
+    "-ffast-math",
+    "-funroll-loops"
+  ],
+  "compiler_params": {
+    "-march": ["native"]
+  },
+  "compiler_params_select": {
+    "k": 1,
+    "always": ["-march"]
+  },
+
+  "program_args": [
+    "--deck",
+    "test-benchmarks/parameterSearch/miniBUDE/data/bm1",
+    "--iterations",
+    "1"
+  ],
+  "env": {
+    "ACPP_VISIBILITY_MASK": ["omp"]
+  },
+  "runtime_cache_policy": "reuse",
+
+  "objectives": [
+    {
+      "metric": "CPI",
+      "goal": "min"
+    }
+  ],
+  "search": {
+    "study": "optuna",
+    "sampler": "rs",
+    "random_seed": 42
+  },
+
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": null,
+    "warmup_runs": 1
+  },
+  "runs": 3,
+
+  "csv_log": "results/cmake_minibude_trials.csv",
+  "failed_builds": "results/cmake_minibude_failures.csv",
+  "sqlite_log": "results/cmake_minibude.db"
+}

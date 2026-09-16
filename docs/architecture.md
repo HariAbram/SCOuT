@@ -16,10 +16,11 @@ SCOuT explores compiler and runtime configurations for a target program. Each ru
 - `src/config.py`: config loading and validation
 - `src/explore.py`: Optuna driver and wrappers for custom searches
 - `src/build.py`: single-source, CMake, and Make builds
+- `src/evaluator.py`: shared build/evaluation cache and measurement dispatch
 - `src/metrics.py`: `perf`, `likwid`, and `parser` backends
 - `src/misc.py`: shared sampling and utility helpers
 - `src/searchMethods/`: heuristic search implementations
-- `src/polyMorph/`: Tadashi-based SYCL transformation workflow
+- `src/polyMorph/`: optional Tadashi-based SYCL transformation workflow
 
 ## Search dispatch
 
@@ -32,7 +33,14 @@ SCOuT explores compiler and runtime configurations for a target program. Each ru
 
 Any other `search.study` value falls back to Optuna.
 
-`main.py` also exposes a separate `polymorph` mode for Tadashi-based transformation search. That path is configured through a top-level `polyMorph` block rather than the regular SCOuT build/search fields.
+`main.py` also exposes a separate `polymorph` mode for Tadashi-based transformation search. That path is configured through a top-level `polyMorph` block rather than the regular SCOuT build/search fields. The package is imported lazily only after that mode is selected, so missing Tadashi dependencies cannot break the normal parameter-tuning CLI.
+
+Core and optional dependency boundaries:
+
+- `requirements.txt` contains only dependencies needed by parameter tuning.
+- `requirements-polymorph.txt` includes the core requirements and Tadashi.
+- Parameter-tuning code must not import `src.polyMorph`.
+- `src.polyMorph.__init__` is a lazy facade; importing it does not load the runner.
 
 ## Config shape
 
@@ -70,7 +78,7 @@ Supported measurement backends:
 - `likwid`
 - `parser`
 
-All search methods use the same build-then-measure pattern, even if they generate candidates differently.
+All search methods use the shared evaluator. Builds are cached by compiler inputs, independently from runtime-environment evaluations. AdaptiveCpp runtime-cache reuse is the default and cold-cache experiments are opt-in.
 
 ## Outputs
 

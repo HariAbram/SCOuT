@@ -1,2 +1,2 @@
-optuna==4.4.0
-pip3 install cmaes
+# Backward-compatible alias. Prefer: pip install -r requirements.txt
+-r requirements.txt

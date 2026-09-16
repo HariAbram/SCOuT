@@ -2,6 +2,17 @@
 
 This document lists the configuration fields used by `--mode polymorph`. The options are split into the outer `polyMorph` block and the nested `polyMorph.search` block. Free-form search policy parameters are placed under `polyMorph.search.constraints`.
 
+PolyMorph is optional and is not loaded during ordinary parameter tuning. To
+enable it, install its separate Python requirements:
+
+```bash
+python3 -m pip install -r requirements-polymorph.txt
+```
+
+Tadashi's compatible LLVM/Polly tools and the configured SYCL compiler must
+also be available on `PATH`. A parameter-tuning-only installation needs none
+of these PolyMorph prerequisites.
+
 ## Minimal Shape
 
 ```json

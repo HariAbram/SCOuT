@@ -1,4 +1,24 @@
-# polyMorph Config Suite
+# Example Configurations
+
+## Parameter tuning
+
+- `dse_config.json`: detailed Make-project example containing all supported search blocks
+- `cmake_project.json`: complete CMake-project example using the included miniBUDE SYCL benchmark
+
+Run the CMake example from the repository root:
+
+```bash
+python3 main.py --mode parameter_tuning \
+  --config configs/example_configs/cmake_project.json \
+  --trials 10
+```
+
+The CMake example uses `target: "bude"` for the build target and
+`executable: "bude"` for the runnable path inside SCOuT's generated build
+directory. It passes sampled flags through miniBUDE's `CXX_EXTRA_FLAGS` CMake
+cache variable.
+
+## PolyMorph
 
 Files:
 
@@ -13,13 +33,14 @@ Files:
 Run examples:
 
 ```bash
-python3 main.py --mode polymorph configs/polyMorph/discover.json
-python3 main.py --mode polymorph configs/polyMorph/list_available.json
-python3 main.py --mode polymorph configs/polyMorph/codegen_snapshot.json
-python3 main.py --mode polymorph configs/polyMorph/manual_transforms.json
-python3 main.py --mode polymorph configs/polyMorph/search_enumerate.json
-python3 main.py --mode polymorph configs/polyMorph/search_run.json
-python3 main.py --mode polymorph configs/polyMorph/search_enhanced.json
+python3 -m pip install -r requirements-polymorph.txt
+python3 main.py --mode polymorph --config configs/example_configs/discover.json
+python3 main.py --mode polymorph --config configs/example_configs/list_available.json
+python3 main.py --mode polymorph --config configs/example_configs/codegen_snapshot.json
+python3 main.py --mode polymorph --config configs/example_configs/manual_transforms.json
+python3 main.py --mode polymorph --config configs/example_configs/search_enumerate.json
+python3 main.py --mode polymorph --config configs/example_configs/search_run.json
+python3 main.py --mode polymorph --config configs/example_configs/search_enhanced.json
 ```
 
 Notes:

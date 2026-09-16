@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Any, Union
 
 try:
     import optuna
-    from optuna.samplers import TPESampler, NSGAIIISampler, RandomSampler, CmaEsSampler
+    from optuna.samplers import TPESampler, NSGAIIISampler, RandomSampler
     from optuna.trial import TrialState
 except ImportError as exc:  # pragma: no cover
     sys.exit("[fatal] Optuna missing – install via `pip install optuna`.")
@@ -37,8 +37,7 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 
 from src.config import Config
-from src.metrics import measure_likwid, measure_perf, measure_parser_sycl
-from src.build import compile_project, compile_single_source
+from src.evaluator import Evaluator
 from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 
 ###############################################################################
@@ -48,21 +47,21 @@ from src.misc import suggest_compiler_flags, suggest_env, unique_csv_path
 def explore_optuna(cfg: Config, n_trials: int) -> None:
     workdir_root = Path(tempfile.mkdtemp(prefix="SCOuT_"))
     print(f"[info] working directory root: {workdir_root}\n")
-    eval_cache: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Dict[str, Any]] = {}
+    evaluator = Evaluator(cfg, workdir_root)
 
     # Sampler choice
     is_multi = len(cfg.objectives) > 1
+    complexity_startup = cfg.search.n_startup_trials
     if cfg.search.sampler == "nsga3":
         sampler = NSGAIIISampler(population_size=cfg.search.population_size,seed=cfg.search.random_seed,)
     elif cfg.search.sampler == "rs":
         sampler = RandomSampler(seed=cfg.search.random_seed,)
-    elif cfg.search.sampler == "cmaes":
-        sampler = CmaEsSampler(seed=cfg.search.random_seed,)
     else:
         startup = cfg.search.n_startup_trials or 0
         if is_multi and startup < 5:
             print("[info] MOTPE bootstrap: bumping n_startup_trials → 5")
             startup = 5
+        complexity_startup = startup
         sampler = TPESampler(n_startup_trials=startup,
                             multivariate=True,
                             group=True,
@@ -70,12 +69,17 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                             )
 
     directions = ["minimize" if o.goal == "min" else "maximize" for o in cfg.objectives]
-    study = optuna.create_study(sampler=sampler, directions=directions)
+    storage = None
+    if cfg.sqlite_log:
+        sqlite_path = Path(cfg.sqlite_log)
+        sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        storage = f"sqlite:///{sqlite_path.resolve()}"
+    study = optuna.create_study(sampler=sampler, directions=directions, storage=storage)
 
     # --- Optional: pick a Pareto CSV path (only for multi-objective) ---------
     pareto_path: Optional[Path] = None
     if is_multi:
-        dest = getattr(cfg, "pareto_csv", None)
+        dest = cfg.pareto_log
         if dest:
             pareto_path = Path(dest)
         elif cfg.csv_log:
@@ -86,6 +90,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
 
     def _export_pareto_front(study: optuna.study.Study, out_csv: Path) -> None:
         """Write current Pareto set to CSV (overwrites on each call)."""
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
         try:
             front = study.best_trials  # Optuna ≥ 3.x
         except AttributeError:
@@ -97,6 +102,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         extra_metrics: set[str] = set()
         for t in front:
             extra_metrics.update((t.user_attrs.get("metrics") or {}).keys())
+        extra_metrics.difference_update(o.metric for o in cfg.objectives)
         header = [o.metric for o in cfg.objectives] + ["compiler_flags", "env", "binary"] + sorted(extra_metrics)
         with open(out_csv, "w", newline="") as fp:
             w = csv.writer(fp)
@@ -129,52 +135,23 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                             cfg.compiler_params,
                             cfg.compiler_flag_pool,
                             cfg.compiler_params_select,
-                            cfg.search.n_startup_trials,
+                            complexity_startup,
                         )
         trial.set_user_attr("compiler_flags_str", flags)  
 
         env = suggest_env(trial, cfg.env)
+        trial.set_user_attr("compiler_flags", flag_key)
+        trial.set_user_attr("env", env)
 
-        # -------- cache lookup (skip build+measure on duplicates) -------
-        # normalize env to a stable, hashable key
-        env_key: Tuple[Tuple[str, str], ...] = tuple(sorted((k, str(v)) for k, v in env.items()))
-        cache_key = (flag_key, env_key)
-        cached = eval_cache.get(cache_key)
-        if cached is not None:
-            # mirror user_attrs so CSV/pareto export can pick them up
-            trial.set_user_attr("compiler_flags", flag_key)
-            trial.set_user_attr("env", dict(env))
-            trial.set_user_attr("metrics", cached["metrics"])
-            trial.set_user_attr("binary", cached["binary"])
-            trial.set_user_attr("duplicate_of", cached["trial"])
-            # return the already-evaluated objective values
-            return list(cached["values"])
-        
-        # --------------------------------------------------------------
-        # 2) Build
-        # --------------------------------------------------------------
         workdir = workdir_root / f"trial_{trial.number:05d}"
         workdir.mkdir()
-        if cfg.source:
-            binary_path = compile_single_source(cfg.compiler, cfg.source, flags, workdir / "a.out", trial)
-        else:
-            binary_path = compile_project(cfg.project, cfg.compiler, flags, workdir, trial)
-        if not binary_path:
-            raise optuna.TrialPruned("build failed")
-
-
-        # --------------------------------------------------------------
-        # 3) Measure
-        # --------------------------------------------------------------
         try:
-            if cfg.backend == "perf":
-                metrics = measure_perf(cfg.perf, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-            elif cfg.backend == "parser": 
-                metrics = measure_parser_sycl(cfg.parser, binary_path, cfg.program_args, env, cfg.runs, workdir, cfg.project)
-            else:
-                metrics = measure_likwid(cfg.likwid, binary_path, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]        
+            evaluation = evaluator.evaluate(flags, env, workdir)
+            metrics = evaluation.metrics
+            binary_path = evaluation.binary
         except Exception as exc:
-            raise optuna.TrialPruned(f"measurement failed: {exc}")
+            trial.set_user_attr("failure_reason", str(exc))
+            raise optuna.TrialPruned(str(exc))
         
 
         # --------------------------------------------------------------
@@ -183,25 +160,18 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
         obj_values: List[Number] = []
         for obj in cfg.objectives:
             if obj.metric not in metrics:
-                raise optuna.TrialPruned(f"metric '{obj.metric}' missing")
+                reason = f"metric '{obj.metric}' missing"
+                trial.set_user_attr("failure_reason", reason)
+                raise optuna.TrialPruned(reason)
             obj_values.append(metrics[obj.metric])
 
         # --------------------------------------------------------------
         # 5) Attach extra info for analysis
         # --------------------------------------------------------------
 
-        trial.set_user_attr("compiler_flags", flag_key)
-        trial.set_user_attr("env", env)
         trial.set_user_attr("metrics", metrics)
         trial.set_user_attr("binary", str(binary_path))
-
-        # ------------- put fresh evaluation into the cache -------------
-        eval_cache[cache_key] = {
-            "values": list(obj_values),
-            "metrics": dict(metrics),
-            "binary": str(binary_path),
-            "trial": trial.number,
-        }
+        trial.set_user_attr("cached_evaluation", evaluation.cached)
 
         return obj_values
 
@@ -232,6 +202,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
     # ------------------------------------------------------------------
     if cfg.csv_log:
         csv_path = unique_csv_path(cfg.csv_log)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
         print(f"[info] writing CSV log → {csv_path}")
         with open(csv_path, "w", newline="") as fp:
             writer = csv.writer(fp)
@@ -240,6 +211,7 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
             extra_metrics: set[str] = set()
             for t in study.trials:
                 extra_metrics.update(t.user_attrs.get("metrics", {}).keys())
+            extra_metrics.difference_update(o.metric for o in cfg.objectives)
             header += sorted(extra_metrics)
             writer.writerow(header)
             # Rows
@@ -253,34 +225,25 @@ def explore_optuna(cfg: Config, n_trials: int) -> None:
                 row += [metrics.get(k, "") for k in sorted(extra_metrics)]
                 writer.writerow(row)
 
-    failed   = study.get_trials(states=(TrialState.FAIL,))
-    if failed:
-        with open(cfg.fail_log, "w", newline="") as fp:
+    failed = study.get_trials(states=(TrialState.FAIL, TrialState.PRUNED))
+    if failed and cfg.fail_log:
+        fail_path = Path(cfg.fail_log)
+        fail_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(fail_path, "w", newline="") as fp:
             writer = csv.writer(fp)
-            writer.writerow(["trial","flags","env","reason","log"])
+            writer.writerow(["trial", "flags", "env", "reason", "binary"])
             for t in failed:
                 writer.writerow([
                     t.number,
                     t.user_attrs.get("compiler_flags"),
                     json.dumps(t.user_attrs.get("env")),
-                    t.system_attrs.get("fail_reason"),
-                    t.system_attrs.get("build_log"),
+                    t.user_attrs.get("failure_reason"),
+                    t.user_attrs.get("binary"),
                 ])
     
 
     if cfg.sqlite_log:
-        storage = getattr(study, "storage", None) or getattr(study, "_storage", None)
-        if storage is None:
-            print("[warn] cannot access Study storage – skip SQLite export")
-        else:
-            copy_fn = getattr(storage, "copy_cached_study", None)
-            if callable(copy_fn):
-                # Only Cached/InMemory back-ends implement this method
-                copy_fn(study._study_id, f"sqlite:///{cfg.sqlite_log}")
-                print(f"[info] SQLite log written → {cfg.sqlite_log}")
-            else:
-                # Persistent storages (SQLite, RDB) don’t need copying
-                print("[info] Study already uses persistent storage – no copy needed")
+        print(f"[info] SQLite study written → {cfg.sqlite_log}")
 
 
 

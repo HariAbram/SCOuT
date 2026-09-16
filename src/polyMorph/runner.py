@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence
 from src.config import BuildProject, Config, PolyMorphSpec
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
 from src.misc import clear_acpp_runtime_cache
+from src.polyMorph import PolyMorphUnavailableError
 from src.polyMorph.features import (
     candidate_key,
     enrich_candidate,
@@ -134,7 +135,9 @@ def _run(
 def ensure_tadashi_available() -> None:
     if TADASHI_IMPORT_ERROR is None:
         return
-    raise RuntimeError(
+    raise PolyMorphUnavailableError(
+        "PolyMorph is optional and requires Tadashi. Install the optional "
+        "dependencies with 'python3 -m pip install -r requirements-polymorph.txt'. "
         "Tadashi could not be imported in this environment. "
         f"Original error: {TADASHI_IMPORT_ERROR}"
     )

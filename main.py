@@ -5,15 +5,15 @@ Multi‑objective design‑space exploration tool for AdaptiveCpp / SYCL workloa
 
 Requirements
 ~~~~~~~~~~~~
-* Python ≥ 3.8
-* `pip install optuna`
+* Python ≥ 3.10
+* `python3 -m pip install -r requirements.txt`
 * `likwid` and/or `perf` in `$PATH` for measurement
 
 Usage
 ~~~~~
 ```bash
-$ python main.py --mode parameter_tuning config.json --trials 50
-$ python main.py --mode polymorph configs/polyMorph/O1/matrixT-sycl/config.json --trials 50
+$ python main.py --mode parameter_tuning --config config.json --trials 50
+$ python main.py --mode polymorph --config configs/polyMorph/O1/matrixT-sycl/config.json --trials 50
 ```
 See `sample_config.json` for a minimal two‑objective example.
 """
@@ -41,7 +41,6 @@ from src.explore import (
     explore_beam_tabu,
     explore_anneal,
 )
-from src.polyMorph import run_poly_morph
 
 ###############################################################################
 # Type helpers                                                                #
@@ -138,7 +137,7 @@ def main() -> None:
             "for polymorph it overrides polyMorph.search.n_trials from the config."
         ),
     )
-    parser.add_argument("--pareto-log", action="store_true", help="Store pareto front (reserved)")
+    parser.add_argument("--pareto-log", action="store_true", help="Write pareto.csv when a multi-objective config has no pareto_log")
     parser.add_argument("--interactive", action="store_true", help="Prompt for missing args")
 
     args = parser.parse_args()
@@ -172,6 +171,8 @@ def main() -> None:
                 trials = 50
 
         cfg = Config.load(config_path)
+        if args.pareto_log and not cfg.pareto_log:
+            cfg.pareto_log = "pareto.csv"
 
         t0 = time.perf_counter()
         try:
@@ -180,6 +181,11 @@ def main() -> None:
             dt = time.perf_counter() - t0
             print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
     elif mode == "polymorph":
+        # PolyMorph is an optional subsystem.  Import it only after the user
+        # explicitly selects this mode so its Python/toolchain dependencies do
+        # not affect normal parameter-tuning runs.
+        from src.polyMorph import PolyMorphUnavailableError, run_poly_morph
+
         config_path = args.config
         if config_path is None:
             if args.interactive or sys.stdin.isatty():
@@ -192,7 +198,10 @@ def main() -> None:
         try:
             if args.trials is not None:
                 print(f"[polyMorph] overriding search.n_trials with --trials={args.trials}")
-            rc = run_poly_morph(cfg, args.trials)
+            try:
+                rc = run_poly_morph(cfg, args.trials)
+            except PolyMorphUnavailableError as exc:
+                parser.exit(2, f"error: {exc}\n")
             if rc:
                 raise SystemExit(rc)
         finally:

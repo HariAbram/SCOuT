@@ -3,19 +3,17 @@ from __future__ import annotations
 ###############################################################################
 # Standard library imports
 ###############################################################################
-import csv, json, math, random, tempfile, os, re
-from dataclasses import dataclass
+import csv, json, math, random, tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Iterable
-from statistics import mean
 
 ###############################################################################
 # Local imports
 ###############################################################################
-from src.config import Config, ParserConfig, BuildProject
-from src.build import compile_project, compile_single_source, _run
-from src.metrics import measure_likwid, measure_perf
-from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement
+from src.config import Config
+from src.evaluator import Evaluator
+from src.misc import unique_csv_path, is_significant_improvement
 
 ###############################################################################
 # Type helpers                                                                #
@@ -84,13 +82,15 @@ def _render_flags(
     parts: List[str] = []
     if base_flags:
         parts.append(base_flags)
-    if variant:
+    if variant and variant != base_flags:
         parts.append(variant)
     for opt, spec in (getattr(cfg, "compiler_params", {}) or {}).items():
         if opt not in params_choice:
             continue
         val = params_choice[opt]
-        if isinstance(spec, dict) and "sep" in spec:
+        if "{}" in opt:
+            frag = opt.format(val)
+        elif isinstance(spec, dict) and "sep" in spec:
             frag = f"{opt}{spec.get('sep', '=')}{val}"
         else:
             frag = f"{opt}={val}"
@@ -102,84 +102,14 @@ def _render_flags(
     return flags_key, flags_str
 
 # ---------- Build & measure ----------
-def _compile_and_measure(cfg: Config, flags_str: str, env: Dict[str, str], work: Path) -> Tuple[float, MetricDict, str]:
-    work.mkdir(parents=True, exist_ok=True)
-    # Build
-    if cfg.source:
-        binary = compile_single_source(cfg.compiler, cfg.source, flags_str, work / "a.out")
-    else:
-        binary = compile_project(cfg.project, cfg.compiler, flags_str, work)
-    if not binary:
-        raise RuntimeError("build failed")
-    # Measure
-    if cfg.backend == "perf":
-        metrics = measure_perf(cfg.perf, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-    elif cfg.backend == "parser":
-        metrics = _measure_parser_sycl_sa(cfg.parser, Path(binary), cfg.program_args, env, cfg.runs, work, cfg.project)
-    else:
-        metrics = measure_likwid(cfg.likwid, binary, cfg.program_args, env, cfg.runs)  # type: ignore[arg-type]
-    try:
-        clear_acpp_runtime_cache()
-    except Exception:
-        pass
+def _compile_and_measure(evaluator: Evaluator, cfg: Config, flags_str: str, env: Dict[str, str], work: Path) -> Tuple[float, MetricDict, str]:
+    evaluation = evaluator.evaluate(flags_str, env, work)
+    metrics = evaluation.metrics
+    binary = evaluation.binary
     metric_name, _goal = _choose_objective(cfg)
     if metric_name not in metrics:
         raise RuntimeError(f"objective metric '{metric_name}' missing; got {list(metrics.keys())}")
     return float(metrics[metric_name]), metrics, str(binary)
-
-# ---------- Minimal parser (same as your anneal) ----------
-_SYCL_RE = re.compile(
-    r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
-    r'(?P<val>[0-9]*\.?[0-9]+)\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
-    re.IGNORECASE | re.MULTILINE
-)
-def _wf_resolve_cwd(run_cwd: str, bin_path: Path, workdir: Optional[Path], project: Optional[BuildProject]) -> Path:
-    if run_cwd == "workdir" and workdir: return workdir
-    if run_cwd == "project_dir" and project: return project.dir
-    return bin_path.parent
-
-def _measure_parser_sycl_sa(
-    pcfg: ParserConfig,
-    bin_path: Path,
-    prog_args: List[str],
-    env: Dict[str, str],
-    runs: int,
-    workdir: Optional[Path] = None,
-    project: Optional[BuildProject] = None,
-) -> Dict[str, float]:
-    merged_env = {**os.environ, **env}
-    cmd: List[str] = []
-    if pcfg.prefix: cmd.extend(pcfg.prefix)
-    if pcfg.core_list: cmd.extend(["taskset", "-c", pcfg.core_list])
-    cmd.append(str(bin_path)); cmd.extend(prog_args)
-    cwd = _wf_resolve_cwd(getattr(pcfg, "run_cwd", "binary_dir"), Path(bin_path), workdir, project)
-    want_label = (pcfg.label or "avg").lower()
-    total_runs = int(getattr(pcfg, "warmup_runs", 0)) + max(1, runs)
-    warmup_cut = int(getattr(pcfg, "warmup_runs", 0))
-    per_runs: List[Dict[int, float]] = []; iters_seen: List[int] = []
-    for i in range(total_runs):
-        p = _run(cmd, cwd=cwd, env=merged_env)
-        if p.returncode != 0: raise RuntimeError(f"program exited with rc={p.returncode}")
-        if i < warmup_cut: continue
-        text = (p.stdout or "") + (("\n" + p.stderr) if p.stderr else "")
-        per_kernel: Dict[int, float] = {}; itv: Optional[int] = None
-        for m in _SYCL_RE.finditer(text):
-            if m.group("label").lower() != want_label: continue
-            per_kernel[int(m.group("kid"))] = float(m.group("val")); itv = int(m.group("iters"))
-        if not per_kernel: raise RuntimeError("Parser backend (SYCL): no matching [SYCL] lines found.")
-        per_runs.append(per_kernel); iters_seen.append(itv if itv is not None else -1)
-    all_kids = sorted({k for d in per_runs for k in d})
-    per_kernel_avg = {k: float(mean([d[k] for d in per_runs if k in d])) for k in all_kids}
-    agg = getattr(pcfg, "aggregate", "sum").lower()
-    if   agg == "mean": agg_val = float(mean(per_kernel_avg.values()))
-    elif agg == "min":  agg_val = float(min(per_kernel_avg.values()))
-    elif agg == "max":  agg_val = float(max(per_kernel_avg.values()))
-    else:               agg_val = float(sum(per_kernel_avg.values()))
-    mets: Dict[str, float] = {f"sycl_kernel_{k}_{want_label}_s": v for k, v in per_kernel_avg.items()}
-    mets[f"sycl_{want_label}_{getattr(pcfg, 'aggregate', 'sum')}_s"] = agg_val
-    if iters_seen and all(i == iters_seen[0] and i >= 0 for i in iters_seen):
-        mets["sycl_iters"] = float(iters_seen[0])
-    return mets
 
 # ---------- Anneal params ----------
 @dataclass
@@ -191,6 +121,7 @@ class _AnnealParams:
     neighbor_mode: str = "mix"
     env_mode: str = "product"
     env_cap: Optional[int] = 8
+    env: Dict[str, str] = field(default_factory=dict)
     results_csv: Optional[str] = None
 
 def _params_from_cfg(cfg: Config) -> _AnnealParams:
@@ -206,6 +137,7 @@ def _params_from_cfg(cfg: Config) -> _AnnealParams:
         if "env_mode"       in block and block["env_mode"] is not None:      dst.env_mode = str(block["env_mode"])
         if "env_cap" in block:  # allow None
             dst.env_cap = None if block["env_cap"] is None else int(block["env_cap"])
+        if "env"            in block and block["env"] is not None:          dst.env = dict(block["env"])
         if "results_csv"    in block:                                        dst.results_csv = block["results_csv"]
 
     # 1) Strong preference: top-level cfg.anneal (attribute or mapping)
@@ -250,6 +182,7 @@ def _neighbors_sa(
     variants_all: List[str] = list(cfg.compiler_flags or [])
     pool_all: List[str]     = list(cfg.compiler_flag_pool or [])
     params_schema           = cfg.compiler_params or {}
+    always = set((cfg.compiler_params_select or {}).get("always", []))
 
     out: List[Tuple[Optional[str], Dict[str, Any], List[str]]] = []
 
@@ -258,8 +191,8 @@ def _neighbors_sa(
         return list(spec["values"]) if isinstance(spec, dict) and "values" in spec else list(spec)
 
     def move_variant():
-        if not variants_all: return
-        choices = [v for v in variants_all if v != variant] or variants_all
+        choices = [v for v in variants_all if v != variant]
+        if not choices: return
         nv = rng.choice(choices)
         out.append((nv, dict(params_choice), list(pool_list)))
 
@@ -287,19 +220,24 @@ def _neighbors_sa(
             out.append((variant, new_params, list(pool_list)))
         elif act == "remove":
             if not active: return
-            k = rng.choice(list(active))
+            removable = list(active - always)
+            if not removable: return
+            k = rng.choice(removable)
             new_params = dict(params_choice); new_params.pop(k, None)
             out.append((variant, new_params, list(pool_list)))
         elif act == "change":
             if not active: return
             k = rng.choice(list(active)); vals = values_for_param(k)
             if not vals: return
-            cur = params_choice.get(k); choices = [v for v in vals if v != cur] or vals
+            cur = params_choice.get(k); choices = [v for v in vals if v != cur]
+            if not choices: return
             new_params = dict(params_choice); new_params[k] = rng.choice(choices)
             out.append((variant, new_params, list(pool_list)))
         elif act == "swap":
             if not active or len(active) == len(all_keys): return
-            rem_k = rng.choice(list(active))
+            removable = list(active - always)
+            if not removable: return
+            rem_k = rng.choice(removable)
             add_candidates = [k for k in all_keys if k not in active]
             if not add_candidates: return
             add_k = rng.choice(add_candidates); vals = values_for_param(add_k)
@@ -326,7 +264,13 @@ def _neighbors_sa(
 
     for _ in range(num):
         rng.choice(moves)()
-    return out
+    current_key = (variant, tuple(sorted(params_choice.items())), tuple(sorted(pool_list)))
+    unique = {}
+    for candidate in out:
+        key = (candidate[0], tuple(sorted(candidate[1].items())), tuple(sorted(candidate[2])))
+        if key != current_key:
+            unique[key] = candidate
+    return list(unique.values())
 
 # ---------- Main SA study ----------
 def run_anneal_study(cfg: Config) -> None:
@@ -342,14 +286,20 @@ def run_anneal_study(cfg: Config) -> None:
 
     # Respect compiler_params_select bounds for the number of active params
     sel = getattr(cfg, "compiler_params_select", {}) or {}
-    PARAM_MIN = int(sel.get("min", 0))
-    PARAM_MAX = int(sel.get("max", len((cfg.compiler_params or {}))))
+    if "k" in sel:
+        PARAM_MIN = PARAM_MAX = int(sel["k"])
+    else:
+        PARAM_MIN = int(sel.get("min", 0))
+        PARAM_MAX = int(sel.get("max", len((cfg.compiler_params or {}))))
+    always = [k for k in sel.get("always", []) if k in (cfg.compiler_params or {})]
+    PARAM_MIN = max(PARAM_MIN, len(always))
     if PARAM_MAX < PARAM_MIN:
         PARAM_MAX = PARAM_MIN
     # seed with PARAM_MIN random params (if any)
     params_schema = cfg.compiler_params or {}
     if PARAM_MIN > 0 and params_schema:
-        keys = list(params_schema.keys()); rng.shuffle(keys)
+        keys = [k for k in params_schema if k not in always]; rng.shuffle(keys)
+        keys = always + keys
         for k in keys[:min(PARAM_MIN, len(keys))]:
             spec = params_schema[k]
             vals = list(spec["values"]) if isinstance(spec, dict) and "values" in spec else list(spec)
@@ -357,29 +307,35 @@ def run_anneal_study(cfg: Config) -> None:
 
     # Objective / significance
     metric_name, goal = _choose_objective(cfg)
-    sig = getattr(cfg, "significance", {}) or {}
-    MIN_REL = float(sig.get("min_rel_gain", 0.15))
-    MIN_ABS = sig.get("min_abs_gain", None)
+    sig = cfg.significance
+    MIN_REL = sig.min_rel_gain
+    MIN_ABS = sig.min_abs_gain
 
     # Environments
-    envs = _env_combos(cfg, params.env_mode, params.env_cap, rng, fixed=(getattr(getattr(cfg, "wavefront", object()), "env", None)))
+    envs = _env_combos(cfg, params.env_mode, params.env_cap, rng, fixed=params.env)
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_anneal_"))
+    evaluator = Evaluator(cfg, workroot)
     print(f"[anneal] workdir={workroot} T0={params.T0} alpha={params.alpha} iters={params.max_iters} envs={len(envs)}")
 
     # Evaluate a state (variant, params, pool) across envs; return best env outcome
     def eval_state(variant: Optional[str], params_choice: Dict[str, Any], pool_list: List[str]
                    ) -> Tuple[float, Dict[str,float], str, Dict[str,str], str]:
-        best_val = math.inf; best_pkg = (math.inf, {}, "", {}, "")
+        best_score = math.inf
+        best_pkg = None
         key, flags_str = _render_flags(cfg, base_flags, variant, params_choice, pool_list)
         for i, env in enumerate(envs, 1):
             run_dir = workroot / "eval" / f"env{i:03d}"
             try:
-                v, m, b = _compile_and_measure(cfg, flags_str, env, run_dir)
+                v, m, b = _compile_and_measure(evaluator, cfg, flags_str, env, run_dir)
             except Exception as exc:
-                v, m, b = (math.inf, {"error": str(exc)}, "")
-            if _score(v, goal) < _score(best_val, goal):
-                best_val = v; best_pkg = (v, m, b, env, key)
-        return best_pkg  # (value, metrics, binary, env, key)
+                continue
+            candidate_score = _score(v, goal)
+            if candidate_score < best_score:
+                best_score = candidate_score
+                best_pkg = (v, m, b, env, key)
+        if best_pkg is None:
+            raise RuntimeError(f"all environment evaluations failed for flags '{key}'")
+        return best_pkg
 
     # Baseline
     cur_variant, cur_params, cur_pool = variant0, dict(params_choice), list(pool_list)
@@ -412,16 +368,19 @@ def run_anneal_study(cfg: Config) -> None:
 
         # acceptance
         cur_sc = _score(cur_val, goal); new_sc = _score(cand_val, goal)
-        accept = (new_sc < cur_sc) or (random.random() < math.exp(-(new_sc - cur_sc) / max(T, 1e-12)))
+        accept = (new_sc < cur_sc) or (rng.random() < math.exp(-(new_sc - cur_sc) / max(T, 1e-12)))
         if accept:
             cur_variant, cur_params, cur_pool = cand_variant, cand_params, cand_pool
             cur_val, cur_mets, cur_bin, cur_env, cur_key = cand_val, cand_mets, cand_bin, cand_env, cand_key
 
-        # meaningful global-best?
-        if is_significant_improvement(best_val, cur_val, goal, MIN_REL, MIN_ABS):
+        # Always retain the true best. Significance only controls plateau reset.
+        improved = _score(cur_val, goal) < _score(best_val, goal)
+        meaningful = is_significant_improvement(best_val, cur_val, goal, MIN_REL, MIN_ABS)
+        if improved:
             best_val, best_variant, best_params, best_pool, best_env, best_mets, best_bin, best_key = (
                 cur_val, cur_variant, dict(cur_params), list(cur_pool), dict(cur_env), dict(cur_mets), cur_bin, cur_key
             )
+        if meaningful:
             no_improve = 0
         else:
             no_improve += 1
@@ -439,9 +398,10 @@ def run_anneal_study(cfg: Config) -> None:
         results_path = unique_csv_path(cfg.csv_log); Path(results_path).parent.mkdir(parents=True, exist_ok=True)
     else:
         results_path = Path(params.results_csv) if params.results_csv else (workroot / "anneal_results.csv")
+    results_path.parent.mkdir(parents=True, exist_ok=True)
 
     obj_headers = [o.metric for o in cfg.objectives]
-    extra_cols = sorted(extra_metric_keys)
+    extra_cols = sorted(extra_metric_keys - set(obj_headers))
     header = obj_headers + ["compiler_flags", "env", "binary"] + extra_cols
 
     with open(results_path, "w", newline="") as fp:
@@ -457,3 +417,4 @@ def run_anneal_study(cfg: Config) -> None:
     print(f"flags: {best_key}")
     print(f"env:   {json.dumps(best_env)}")
     print(f"[anneal] results → {results_path}")
+    print(f"[anneal] unique builds: {evaluator.build_count}")

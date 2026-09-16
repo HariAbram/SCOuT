@@ -1,9 +1,10 @@
 {
   "backend": "perf",
   "project": {
-    "dir": "test-benchmarks/microSYCL",
+    "dir": "test-benchmarks/parameterSearch/microSYCL",
     "build_system": "make",
     "target": "all",
+    "executable": "bin/main-acpp-generic",
     "make_flags_var": "EXTRA_CFLAGS",
     "make_vars": {
       "BACKEND": "generic",
@@ -12,6 +13,7 @@
     }
   },
   "compiler": "acpp",
+  "runtime_cache_policy": "reuse",
   "compiler_flags_base": "--acpp-platform=cpu --acpp-targets=generic",
   "program_args": ["-s", "512", "--gemm", "-i", "2"],
   "compiler_flags": [
