@@ -259,9 +259,16 @@ def explore_wavefront(cfg: Config) -> None:
 # Tabu search exploration                                                     #
 ###############################################################################
 
-def explore_tabu(cfg: Config) -> None:
+def explore_tabu(
+    cfg: Config,
+    *,
+    resume: bool = False,
+    iters: Optional[int] = None,
+    budget: str = "lifetime",
+    workroot: Optional[Union[str, Path]] = None,
+) -> None:
     from src.searchMethods.tabu_flags import run_tabu_study
-    return run_tabu_study(cfg)
+    return run_tabu_study(cfg, resume=resume, iters=iters, budget=budget, workroot=workroot)
 
 ###############################################################################
 # Beam and Tabu search exploration                                            #

@@ -4,6 +4,7 @@
     "dir": "/cephyr/users/wincenth/Vera/ra/gromacs/gromacs-2026.3",
     "build_system": "cmake",
     "target": "gmx",
+    "executable": "bin/gmx",
     "build_jobs": 32,
     "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
     "cmake_defs": [
@@ -17,6 +18,7 @@
     ]
   },
   "compiler": "/apps/Arch/software/Clang/18.1.8-GCCcore-13.3.0/bin/clang++",
+  "runtime_cache_policy": "reuse",
   "compiler_flags_base": "",
   "compiler_flags": [
     "-O2",
@@ -40,15 +42,15 @@
   "program_args": [
     "mdrun",
     "-s",
-    "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/ADH/adh_dodec/bench.tpr",
+    "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/runfiles/cubic.tpr",
     "-deffnm",
     "scout_cpu_omp",
     "-nsteps",
-    "200",
+    "2000",
     "-ntmpi",
     "1",
     "-ntomp",
-    "16",
+    "32",
     "-pin",
     "on",
     "-nb",
@@ -83,13 +85,15 @@
     "allow_env_moves": true,
     "env_mode": "sample",
     "env_cap": 4,
-    "results_csv": "./tabu_cpu_omp.csv"
+    "results_csv": "./tabu_cpu_omp.csv",
+    "clean_run_outputs": true,
+    "clean_globs": ["mdout.mdp"]
   },
   "parser": {
     "label": "sum",
     "aggregate": "sum",
     "run_cwd": "binary_dir",
-    "warmup_runs": 0,
+    "warmup_runs": 2,
     "format": "gromacs"
   },
   "runs": 1,
