@@ -209,7 +209,7 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
         if cfg.cmake_defs:
             cmake_cmd +=[f"-D{d}" for d in defs]
 
-        proc = _run(cmake_cmd)
+        proc = _run_stream(cmake_cmd)
         if proc.returncode:
             log_dir = _save_log(workdir, trial, "cmake_config", proc)
             _report_build_failure("cmake_config", proc, log_dir)

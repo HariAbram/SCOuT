@@ -66,3 +66,7 @@ venv
 targets
 ADH
 runfiles
+*.out
+*.sh
+*.sif
+*.state.json

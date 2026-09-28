@@ -1,13 +1,14 @@
 {
   "backend": "parser",
   "project": {
-    "dir": "targets/gromacs",
+    "dir": "/cephyr/users/wincenth/Vera/ra/gromacs/gromacs-2026.3",
     "build_system": "cmake",
     "target": "gmx",
     "executable": "bin/gmx",
     "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
     "cmake_defs": [
-      "CMAKE_C_COMPILER=/usr/lib/llvm20/bin/clang",
+      "CMAKE_C_COMPILER=/usr/lib/llvm-18/bin/clang",
+      "CMAKE_CXX_COMPILER=/usr/lib/llvm-18/bin/clang++",
       "GMX_SYCL=ACPP",
       "GMX_GPU=SYCL",
       "ACPP_TARGETS=cuda:sm_90",
@@ -16,12 +17,12 @@
       "BUILD_TESTING=OFF"
     ]
   },
-  "compiler": "/usr/lib/llvm20/bin/clang++",
+  "compiler": "acpp",
   "runtime_cache_policy": "reuse",
   "compiler_flags_base": "",
   "compiler_flags": [
-    "-O2",
-    "-O3"
+    "-O3",
+    "-O2"
   ],
   "compiler_flag_pool": [
     "-ffast-math",
@@ -41,11 +42,11 @@
   "program_args": [
     "mdrun",
     "-s",
-    "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/ADH/adh_dodec/bench.tpr",
+    "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/runfiles/cubic.tpr",
     "-deffnm",
     "scout_gpu_acpp",
     "-nsteps",
-    "1000",
+    "2000",
     "-ntmpi",
     "1",
     "-ntomp",

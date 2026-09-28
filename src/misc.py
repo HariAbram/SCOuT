@@ -293,9 +293,10 @@ def output_prefixes(program_args: Sequence[str], extra_globs: Sequence[str] = ()
     """
     Infer the output-file prefixes a measured program writes into its run cwd.
 
-    GROMACS names its outputs after ``-deffnm`` (``<name>.log``, ``<name>.edr``,
-    …) and refuses to overwrite them, which breaks re-measuring a configuration
-    after an interrupted run. ``extra_globs`` lets a config add its own patterns.
+    GROMACS names its outputs after ``-deffnm`` and refuses to overwrite them,
+    which breaks re-measuring a configuration after an interrupted run.
+    
+    ``extra_globs`` lets a config add its own patterns.
     """
     globs: List[str] = [str(g) for g in extra_globs if str(g).strip()]
     args = _normalize_args(program_args)

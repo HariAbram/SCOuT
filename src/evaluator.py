@@ -230,7 +230,9 @@ class Evaluator:
         binary = Path(binary)
         artifact = build_dir / "artifact" / binary.name
         artifact.parent.mkdir(parents=True, exist_ok=True)
-        if binary.resolve() != artifact.resolve():
+        # gmx builds break if the binary is copied to a different path, so we only copy it if it's not gmx.
+        # gmx attempts to load libraries relative to the binary path, so copying it breaks that.
+        if binary.resolve() != artifact.resolve() and ("gmx" not in binary.name):
             shutil.copy2(binary, artifact)
             artifact.chmod(artifact.stat().st_mode | 0o111)
         else:

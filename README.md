@@ -41,6 +41,8 @@ transformation and code-generation operations.
 - Single-source, CMake, and Make-based builds
 - Measurement backends: `perf`, `likwid`, and output parsing via `parser`
 - Search methods: Optuna, `wavefront`, `tabu`, `beam_tabu`, and `anneal`
+- Restartable tabu runs: results are journaled to CSV as they complete, and `--resume` continues an
+  interrupted run without rebuilding or re-measuring known configurations
 
 ## More details
 
