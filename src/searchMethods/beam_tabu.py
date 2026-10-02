@@ -19,6 +19,7 @@ import os
 from src.config import Config
 from src.evaluator import Evaluator
 from src.misc import unique_csv_path, is_significant_improvement, rel_gain
+from src.logger import LOG
 
 ###############################################################################
 # Type helpers                                                                #
@@ -211,10 +212,7 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     # env combos
     env_combos = _env_combos(cfg, bt.env_mode, bt.env_cap, rng, fixed_env=bt.env)
-    with open("./scout.log", "a") as log_file:
-        log_file.write(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}\n")
-        
-    print(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
+    LOG.log(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
 
     # Initial candidate = base_flags (atoms apply *on top* of this)
     base = tuple(dict.fromkeys(

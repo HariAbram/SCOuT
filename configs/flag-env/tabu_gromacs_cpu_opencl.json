@@ -10,8 +10,7 @@
       "CMAKE_C_COMPILER=/usr/lib/llvm-18/bin/clang",
       "CMAKE_CXX_COMPILER=/usr/lib/llvm-18/bin/clang++",
       "GMX_SYCL=ACPP",
-      "GMX_GPU=SYCL",
-      "ACPP_TARGETS=cuda:sm_90",
+      "ACPP_TARGETS=generic",
       "GMX_BUILD_OWN_FFTW=ON",
       "REGRESSIONTEST_DOWNLOAD=ON",
       "BUILD_TESTING=OFF"
@@ -21,8 +20,8 @@
   "runtime_cache_policy": "reuse",
   "compiler_flags_base": "",
   "compiler_flags": [
-    "-O2",
-    "-O3"
+    "-O3",
+    "-O2"
   ],
   "compiler_flag_pool": [
     "-fno-math-errno",
@@ -60,23 +59,23 @@
     "-s",
     "/cephyr/users/wincenth/Vera/ra/gromacs/SCOuT/runfiles/cubic.tpr",
     "-deffnm",
-    "scout_gpu_acpp",
+    "scout_opencl_acpp",
     "-nsteps",
     "2000",
     "-ntmpi",
     "1",
     "-ntomp",
-    "8",
+    "32",
     "-pin",
     "on",
     "-nb",
-    "gpu",
+    "cpu",
     "-pme",
-    "gpu",
+    "cpu",
     "-update",
-    "gpu",
+    "cpu",
     "-bonded",
-    "gpu"
+    "cpu"
   ],
   "env": {
     
@@ -99,7 +98,7 @@
     "allow_env_moves": true,
     "env_mode": "sample",
     "env_cap": 4,
-    "results_csv": "./tabu_gpu_acpp.csv",
+    "results_csv": "./tabu_opencl_acpp.csv",
     "clean_run_outputs": true,
     "clean_globs": ["mdout.mdp"]
   },
@@ -111,6 +110,6 @@
     "format": "gromacs"
   },
   "runs": 5,
-  "csv_log": "./tabu_gpu_acpp_unused.csv",
-  "failed_builds": "./tabu_gpu_acpp_failed.csv"
+  "csv_log": "./tabu_opencl_acpp_unused.csv",
+  "failed_builds": "./tabu_opencl_acpp_failed.csv"
 }

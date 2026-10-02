@@ -5,6 +5,7 @@
     "build_system": "cmake",
     "target": "gmx",
     "executable": "bin/gmx",
+    "build_jobs": 32,
     "cmake_flag_vars": ["CMAKE_CXX_FLAGS"],
     "cmake_defs": [
       "CMAKE_C_COMPILER=/usr/lib/llvm-18/bin/clang",
@@ -21,8 +22,8 @@
   "runtime_cache_policy": "reuse",
   "compiler_flags_base": "",
   "compiler_flags": [
-    "-O2",
-    "-O3"
+    "-O3",
+    "-O2"
   ],
   "compiler_flag_pool": [
     "-fno-math-errno",
@@ -78,30 +79,15 @@
     "-bonded",
     "gpu"
   ],
-  "env": {
-    
-  },
+  "env": {},
   "objectives": [
     { "metric": "gmx_ns_per_day", "goal": "max" }
   ],
   "search": {
-    "study": "tabu",
+    "study": "optuna",
+    "sampler": "tpe",
+    "n_startup_trials": 8,
     "random_seed": 17
-  },
-  "tabu": {
-    "max_iters": 32,
-    "max_no_improve": 5,
-    "tabu_tenure": 8,
-    "neighborhood": 4,
-    "allow_variant_moves": true,
-    "allow_param_moves": true,
-    "allow_pool_moves": true,
-    "allow_env_moves": true,
-    "env_mode": "sample",
-    "env_cap": 4,
-    "results_csv": "./tabu_gpu_acpp.csv",
-    "clean_run_outputs": true,
-    "clean_globs": ["mdout.mdp"]
   },
   "parser": {
     "label": "sum",
@@ -111,6 +97,6 @@
     "format": "gromacs"
   },
   "runs": 5,
-  "csv_log": "./tabu_gpu_acpp_unused.csv",
-  "failed_builds": "./tabu_gpu_acpp_failed.csv"
+  "csv_log": "./optuna_gromacs_gpu_acpp.csv",
+  "failed_builds": "./optuna_gromacs_gpu_acpp_failed.csv"
 }

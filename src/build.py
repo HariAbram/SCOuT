@@ -28,6 +28,7 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 
 from src.config import BuildProject
+from src.logger import LOG
 
 ###############################################################################
 # Shell helpers                                                               #
@@ -36,9 +37,7 @@ from src.config import BuildProject
 def _run(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMap | None = None) -> subprocess.CompletedProcess:
     """Run a command, capturing output, and echo it to the console."""
     pretty = cmd if isinstance(cmd, str) else " ".join(shlex.quote(str(c)) for c in cmd)
-    print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
-    with open("./scout.log", "a") as log_file:
-        log_file.write(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else "") + "\n")
+    LOG.log(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
     return subprocess.run(
         cmd,
         shell=isinstance(cmd, str),
@@ -78,11 +77,8 @@ def _run_stream(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMa
     whose .stderr is empty.
     """
     pretty = " ".join(shlex.quote(str(c)) for c in cmd) if isinstance(cmd, Sequence) else cmd
-    print(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
-    print("[build] starting …")
-    with open("./scout.log", "a") as log_file:
-        log_file.write(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else "") + "\n")
-        log_file.write("[build] starting …\n")
+    LOG.log(f"[exec] {pretty}" + (f"  (cwd={cwd})" if cwd else ""))
+    LOG.log("[build] starting …")
 
     proc = subprocess.Popen(
         cmd,
@@ -102,14 +98,10 @@ def _run_stream(cmd: Sequence[str] | str, *, cwd: Path | None = None, env: EnvMa
         pct = _progress_pct(line)
         if pct is not None and pct != last_pct:
             last_pct = pct
-            print(f"[build] {pct:3d}%  {line.strip()}")
-            with open("./scout.log", "a") as log_file:
-                log_file.write(f"[build] {pct:3d}%  {line.strip()}\n")
+            LOG.log(f"[build] {pct:3d}%  {line.strip()}")
 
     rc = proc.wait()
-    print(f"[build] finished (rc={rc})")
-    with open("./scout.log", "a") as log_file:
-        log_file.write(f"[build] finished (rc={rc})\n")
+    LOG.log(f"[build] finished (rc={rc})")
     return subprocess.CompletedProcess(cmd, rc, stdout="".join(lines), stderr="")
 
 def _trial_tag(trial: Optional["optuna.Trial"]) -> str:

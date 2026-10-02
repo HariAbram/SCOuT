@@ -28,6 +28,7 @@ from src.build import compile_project, compile_single_source, _run
 from src.metrics import measure_likwid, measure_perf
 from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain, save_run_output
 from src.evaluator import Evaluator
+from src.logger import LOG
 
 @dataclass
 class _WFParams:
@@ -416,11 +417,10 @@ def measure_parser_sycl_wavefront(
         if not ns_per_day_vals:
             raise RuntimeError("Parser backend (GROMACS): no throughput values collected.")
 
-        with open("./scout.log", "a") as log_file:
-            log_file.write(f"[parser] gmx_ns_per_day = {mean(ns_per_day_vals):.6g}\n")
-            log_file.write(f"[parser] gmx_hour_per_ns = {mean(hour_per_ns_vals):.6g}\n")
-            log_file.write(f"[parser] gmx_ms_per_step = {mean(ms_per_step_vals):.6g}\n")
-            log_file.write(f"[parser] gmx_matom_steps_per_s = {mean(matom_steps_vals):.6g}\n")
+        LOG.write(f"[parser] gmx_ns_per_day = {mean(ns_per_day_vals):.6g}")
+        LOG.write(f"[parser] gmx_hour_per_ns = {mean(hour_per_ns_vals):.6g}")
+        LOG.write(f"[parser] gmx_ms_per_step = {mean(ms_per_step_vals):.6g}")
+        LOG.write(f"[parser] gmx_matom_steps_per_s = {mean(matom_steps_vals):.6g}")
 
         clear_acpp_runtime_cache()
         return {

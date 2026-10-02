@@ -41,6 +41,8 @@ from src.explore import (
     explore_beam_tabu,
     explore_anneal,
 )
+from src.stats import STATS, resolve_stats_path
+from src.logger import LOG
 
 ###############################################################################
 # Type helpers                                                                #
@@ -192,6 +194,16 @@ def main() -> None:
             "artifacts there are reused."
         ),
     )
+    parser.add_argument(
+        "--stats-file",
+        type=Path,
+        default=None,
+        help=(
+            "Where to write build/run/runtime statistics (default: config "
+            "stats_log, then $SCOUT_STATS_FILE, then ./scout_stats.csv). "
+            "Rows are appended every ~5s while a parameter-tuning run is active."
+        ),
+    )
     parser.add_argument("--interactive", action="store_true", help="Prompt for missing args")
 
     args = parser.parse_args()
@@ -225,8 +237,13 @@ def main() -> None:
                 trials = 50
 
         cfg = Config.load(config_path)
+        LOG.start(config_path=config_path)
         if args.pareto_log and not cfg.pareto_log:
             cfg.pareto_log = "pareto.csv"
+
+        stats_path = resolve_stats_path(args.stats_file, cfg.stats_log)
+        STATS.start(stats_path)
+        print(f"[stats] tracking build/run/runtime → {stats_path}")
 
         t0 = time.perf_counter()
         try:
@@ -240,7 +257,9 @@ def main() -> None:
             )
         finally:
             dt = time.perf_counter() - t0
+            STATS.finish()
             print(f"[explore] total wall time: {_fmt_dur(dt)} ({dt:.3f}s)")
+            print(STATS.summary_line())
     elif mode == "polymorph":
         # PolyMorph is an optional subsystem.  Import it only after the user
         # explicitly selects this mode so its Python/toolchain dependencies do
@@ -255,6 +274,7 @@ def main() -> None:
                 parser.error("config is required (or use --interactive)")
 
         cfg = Config.load(config_path)
+        LOG.start(config_path=config_path)
         t0 = time.perf_counter()
         try:
             if args.trials is not None:

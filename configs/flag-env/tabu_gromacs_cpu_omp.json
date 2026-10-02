@@ -25,10 +25,26 @@
     "-O3"
   ],
   "compiler_flag_pool": [
-    "-ffast-math",
     "-fno-math-errno",
+    "-ffp-contract=fast",
+    "-ffast-math",
+    "-fvectorize",
+    "-fno-vectorize",
+    "-fslp-vectorize",
+    "-fno-slp-vectorize",
     "-funroll-loops",
-    "-fvectorize"
+    "-fno-unroll-loops",
+    "-fstrict-aliasing",
+    "-fno-strict-aliasing",
+    "-fmerge-all-constants",
+    "-fno-merge-all-constants",
+    "-fdelete-null-pointer-checks",
+    "-fno-delete-null-pointer-checks",
+    "-fexceptions",
+    "-fno-exceptions",
+    "-fno-rtti",
+    "-mllvm -force-vector-interleave={2,4,8,16}",
+    "-mllvm -enable-loopinterchange"
   ],
   "compiler_params": {
     "-march": ["native", "znver4"],

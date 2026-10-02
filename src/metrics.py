@@ -312,6 +312,9 @@ def measure_parser_sycl(
 
         parse_format = (getattr(cfg, "format", "sycl") or "sycl").lower()
         if parse_format == "gromacs":
+            # Discard warm-up runs so the average covers exactly `runs` measurements.
+            if is_warmup:
+                continue
             perf_matches = list(_GROMACS_PERF_RE.finditer(text))
             if not perf_matches:
                 logs = (workdir or cwd) / "parser_logs"

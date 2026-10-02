@@ -14,6 +14,7 @@ from src.build import compile_project, compile_single_source
 from src.checkpoint import env_key
 from src.config import Config
 from src.metrics import measure_likwid, measure_parser_sycl, measure_perf
+from src.stats import STATS
 
 
 MetricDict = Dict[str, float]
@@ -216,12 +217,13 @@ class Evaluator:
         # normalize_flags uses shell quoting for stable keys; compiler APIs expect a
         # normal shell fragment and tokenize it safely themselves.
         flags_str = " ".join(shlex.quote(token) for token in shlex.split(normalized))
-        if self.cfg.source:
-            binary = compile_single_source(self.cfg.compiler, self.cfg.source, flags_str, build_dir / "program")
-        elif self.cfg.project:
-            binary = compile_project(self.cfg.project, self.cfg.compiler, flags_str, build_dir)
-        else:  # Config validation should make this unreachable.
-            raise RuntimeError("no source or project configured")
+        with STATS.time_build():
+            if self.cfg.source:
+                binary = compile_single_source(self.cfg.compiler, self.cfg.source, flags_str, build_dir / "program")
+            elif self.cfg.project:
+                binary = compile_project(self.cfg.project, self.cfg.compiler, flags_str, build_dir)
+            else:  # Config validation should make this unreachable.
+                raise RuntimeError("no source or project configured")
         if not binary:
             message = f"build failed; logs are under {build_dir / 'logs'}"
             self._build_failures[key] = message
@@ -254,22 +256,23 @@ class Evaluator:
         managed_keys = tuple((self.cfg.env or {}).keys())
         clear_runtime = self.cfg.runtime_cache_policy == "cold"
 
-        if self.cfg.backend == "perf":
-            metrics = measure_perf(
-                self.cfg.perf, binary, self.cfg.program_args, env, self.cfg.runs,
-                clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
-            )
-        elif self.cfg.backend == "parser":
-            metrics = measure_parser_sycl(
-                self.cfg.parser, binary, self.cfg.program_args, env, self.cfg.runs,
-                run_workdir, self.cfg.project,
-                clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
-            )
-        else:
-            metrics = measure_likwid(
-                self.cfg.likwid, binary, self.cfg.program_args, env, self.cfg.runs,
-                clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
-            )
+        with STATS.time_run():
+            if self.cfg.backend == "perf":
+                metrics = measure_perf(
+                    self.cfg.perf, binary, self.cfg.program_args, env, self.cfg.runs,
+                    clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
+                )
+            elif self.cfg.backend == "parser":
+                metrics = measure_parser_sycl(
+                    self.cfg.parser, binary, self.cfg.program_args, env, self.cfg.runs,
+                    run_workdir, self.cfg.project,
+                    clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
+                )
+            else:
+                metrics = measure_likwid(
+                    self.cfg.likwid, binary, self.cfg.program_args, env, self.cfg.runs,
+                    clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
+                )
 
         result = Evaluation({str(k): float(v) for k, v in metrics.items()}, binary)
         if self.cache_evaluations:

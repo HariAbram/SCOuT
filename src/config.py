@@ -464,6 +464,9 @@ class Config:
     fail_log: Optional[str]
     sqlite_log: Optional[str]
 
+    # Build/run/runtime statistics CSV (default: ./scout_stats.csv)
+    stats_log: Optional[str] = None
+
     # Wavefront
     wavefront: Optional[WavefrontSpec] = None
     #tabu
@@ -638,4 +641,5 @@ class Config:
             pareto_log=raw.get("pareto_log"),
             fail_log=raw.get("failed_builds"),
             sqlite_log=raw.get("sqlite_log"),
+            stats_log=raw.get("stats_log"),
         )

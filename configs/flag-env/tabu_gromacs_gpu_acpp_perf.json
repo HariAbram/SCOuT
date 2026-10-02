@@ -1,5 +1,5 @@
 {
-  "backend": "parser",
+  "backend": "perf",
   "project": {
     "dir": "/cephyr/users/wincenth/Vera/ra/gromacs/gromacs-2026.3",
     "build_system": "cmake",
@@ -82,7 +82,7 @@
     
   },
   "objectives": [
-    { "metric": "gmx_ns_per_day", "goal": "max" }
+    { "metric": "CPI", "goal": "min" }
   ],
   "search": {
     "study": "tabu",
@@ -99,18 +99,17 @@
     "allow_env_moves": true,
     "env_mode": "sample",
     "env_cap": 4,
-    "results_csv": "./tabu_gpu_acpp.csv",
+    "results_csv": "./tabu_gpu_perf_acpp.csv",
     "clean_run_outputs": true,
     "clean_globs": ["mdout.mdp"]
   },
-  "parser": {
-    "label": "sum",
-    "aggregate": "sum",
-    "run_cwd": "binary_dir",
+  "perf": {
+    "events": ["cycles", "instructions"],
+    "core_list": "",
     "warmup_runs": 2,
-    "format": "gromacs"
+    "objective": { "metric": "CPI", "goal": "min" }
   },
   "runs": 5,
-  "csv_log": "./tabu_gpu_acpp_unused.csv",
-  "failed_builds": "./tabu_gpu_acpp_failed.csv"
+  "csv_log": "./tabu_gpu_perf_acpp_unused.csv",
+  "failed_builds": "./tabu_gpu_perf_acpp_failed.csv"
 }
