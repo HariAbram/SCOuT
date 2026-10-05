@@ -79,6 +79,8 @@ class MetricSpec:
 
 @dataclasses.dataclass
 class ParserConfig:
+    # parser format
+    format: str = "sycl"               # "sycl" | "gromacs"
     # which lines to use from the SYCL output
     label: str = "avg"                 # "avg" | "sum"
     # which kernel ids to consider (None = all ids found)
@@ -95,6 +97,7 @@ class ParserConfig:
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ParserConfig":
         return cls(
+            format=d.get("format", "sycl"),
             label=d.get("label", "avg"),
             kernels=d.get("kernels"),
             aggregate=d.get("aggregate", "sum"),
@@ -141,6 +144,7 @@ class BuildProject:
     dir: Path
     build_system: str = "cmake"  # "cmake" | "make"
     target: Optional[str] = None
+    build_jobs: Optional[int] = None
     executable: Optional[Path] = None
     make_vars: Dict[str, str] = dataclasses.field(default_factory=dict)
     make_flags_var: str = "CXXFLAGS"
@@ -159,6 +163,7 @@ class BuildProject:
             dir=Path(d["dir"]),
             build_system=build_system,
             target=d.get("target"),
+            build_jobs=int(d["build_jobs"]) if d.get("build_jobs") is not None else None,
             executable=Path(d["executable"]) if d.get("executable") else None,
             make_vars=d.get("make_vars", {}),
             make_flags_var=d.get("make_flags_var", "CXXFLAGS"),
@@ -459,6 +464,9 @@ class Config:
     fail_log: Optional[str]
     sqlite_log: Optional[str]
 
+    # Build/run/runtime statistics CSV (default: ./scout_stats.csv)
+    stats_log: Optional[str] = None
+
     # Wavefront
     wavefront: Optional[WavefrontSpec] = None
     #tabu
@@ -633,4 +641,5 @@ class Config:
             pareto_log=raw.get("pareto_log"),
             fail_log=raw.get("failed_builds"),
             sqlite_log=raw.get("sqlite_log"),
+            stats_log=raw.get("stats_log"),
         )

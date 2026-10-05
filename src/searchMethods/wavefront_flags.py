@@ -23,9 +23,12 @@ MetricDict = Dict[str, Number]
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
-from src.config import Config
+from src.config import Config, ParserConfig, BuildProject
+from src.build import compile_project, compile_single_source, _run
+from src.metrics import measure_likwid, measure_perf
+from src.misc import unique_csv_path, clear_acpp_runtime_cache, is_significant_improvement, rel_gain, save_run_output
 from src.evaluator import Evaluator
-from src.misc import unique_csv_path, is_significant_improvement, rel_gain
+from src.logger import LOG
 
 @dataclass
 class _WFParams:
@@ -259,6 +262,205 @@ def _generate_beam_boost(
                 yield newc
 
 
+
+_SYCL_RE = re.compile(
+    r'^\[SYCL\]\[(?P<label>avg|sum)\]\s*kernel\s*(?P<kid>\d+)\s*:\s*'
+    r'(?P<val>[0-9]*\.?[0-9]+)\s*s\s*over\s*(?P<iters>\d+)\s*iters\s*$',
+    re.IGNORECASE | re.MULTILINE
+)
+
+_GROMACS_PERF_RE = re.compile(
+    r"Performance:\s+"
+    r"(?P<ns_per_day>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<hour_per_ns>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<ms_per_step>[0-9]*\.?[0-9]+)\s+"
+    r"(?P<matom_steps_per_s>[0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+
+def _wf_resolve_cwd(run_cwd: str, bin_path: Path, workdir: Optional[Path], project: Optional[BuildProject]) -> Path:
+    if run_cwd == "workdir" and workdir:
+        return workdir
+    if run_cwd == "project_dir" and project:
+        return project.dir
+    return bin_path.parent  # "binary_dir"
+
+def _wf_aggregate(vals: List[float], how: str) -> float:
+    how = (how or "sum").lower()
+    if how == "mean": return float(mean(vals))
+    if how == "max":  return float(max(vals))
+    if how == "min":  return float(min(vals))
+    return float(sum(vals))  # default sum
+
+def _tail_excerpt(stdout: str, stderr: str, n: int = 20) -> str:
+    """Return the last n lines of a run's merged output (for failure messages)."""
+    text = (stdout or "") + (("\n" + stderr) if stderr else "")
+    tail = text.strip().splitlines()[-n:]
+    return "\n".join(tail) if tail else "(no output)"
+
+def measure_parser_sycl_wavefront(
+    pcfg: ParserConfig,
+    bin_path: Path,
+    prog_args: List[str],
+    env: Dict[str, str],
+    runs: int,
+    workdir: Optional[Path] = None,
+    project: Optional[BuildProject] = None,
+) -> Dict[str, float]:
+    """
+    Launch like perf/likwid (prefix/taskset/cwd), parse standardized SYCL lines,
+    discard warm-up iterations, and return metrics dict.
+
+    Emits:
+      - per kernel:   sycl_kernel_<id>_<label>_s
+      - aggregate:    sycl_<label>_<aggregate>_s
+      - (optional)    sycl_iters  (if consistent and present)
+    """
+    merged_env = {**os.environ, **env}
+
+    cmd: List[str] = []
+    if pcfg.prefix:
+        cmd.extend(pcfg.prefix)
+    if pcfg.core_list:
+        cmd.extend(["taskset", "-c", pcfg.core_list])
+    cmd.append(str(bin_path))
+    cmd.extend(prog_args)
+
+    cwd = _wf_resolve_cwd(pcfg.run_cwd, Path(bin_path), workdir, project)
+
+    want_label = (pcfg.label or "avg").lower()
+    parse_format = (getattr(pcfg, "format", "sycl") or "sycl").lower()
+    meas_runs = max(1, runs)
+    total_runs = int(getattr(pcfg, "warmup_runs", 0)) + meas_runs
+    warmup_cut = int(getattr(pcfg, "warmup_runs", 0))
+
+    runs_kernel_vals: List[Dict[int, float]] = []
+    iterations_seen: List[int] = []
+
+    for i in range(total_runs):
+        proc = _run(cmd, cwd=cwd, env=merged_env)
+        tmp = save_run_output(proc.stdout or "", proc.stderr or "", prefix=f"scout_run_{i:02d}_")
+        print(f"[run] {i:02d} output → {tmp}")
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"program exited with rc={proc.returncode}.\n"
+                f"  output → {tmp}\n"
+                f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+            )
+
+        # ignore parse errors during warmup; still execute the binary to JIT
+        if i < warmup_cut:
+            continue
+
+        text = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        if parse_format == "gromacs":
+            perf_matches = list(_GROMACS_PERF_RE.finditer(text))
+            if not perf_matches:
+                logs = (workdir or cwd) / "parser_logs"
+                try:
+                    logs.mkdir(parents=True, exist_ok=True)
+                    (logs / f"no_match_{i:02d}.out").write_text(proc.stdout or "")
+                    (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    "Parser backend (GROMACS): no matching Performance line found.\n"
+                    f"  output → {tmp}\n"
+                    f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+                )
+            m = perf_matches[-1]
+            runs_kernel_vals.append({
+                0: float(m.group("ns_per_day")),
+                1: float(m.group("hour_per_ns")),
+                2: float(m.group("ms_per_step")),
+                3: float(m.group("matom_steps_per_s")),
+            })
+            iterations_seen.append(-1)
+            continue
+
+        per_kernel: Dict[int, float] = {}
+        iters_val: Optional[int] = None
+
+        for m in _SYCL_RE.finditer(text):
+            label = m.group("label").lower()
+            if label != want_label:
+                continue
+            kid   = int(m.group("kid"))
+            val   = float(m.group("val"))    # seconds
+            iters = int(m.group("iters"))
+            iters_val = iters
+            per_kernel[kid] = val
+
+        if not per_kernel:
+            # Helpful dump for debugging
+            logs = (workdir or cwd) / "parser_logs"
+            try:
+                logs.mkdir(parents=True, exist_ok=True)
+                (logs / f"no_match_{i:02d}.out").write_text(proc.stdout or "")
+                (logs / f"no_match_{i:02d}.err").write_text(proc.stderr or "")
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Parser backend (SYCL): no matching [SYCL] lines found.\n"
+                f"  output → {tmp}\n"
+                f"  --- tail ---\n{_tail_excerpt(proc.stdout or '', proc.stderr or '')}"
+            )
+
+        runs_kernel_vals.append(per_kernel)
+        iterations_seen.append(iters_val if iters_val is not None else -1)
+
+    if parse_format == "gromacs":
+        ns_per_day_vals = [d[0] for d in runs_kernel_vals if 0 in d]
+        hour_per_ns_vals = [d[1] for d in runs_kernel_vals if 1 in d]
+        ms_per_step_vals = [d[2] for d in runs_kernel_vals if 2 in d]
+        matom_steps_vals = [d[3] for d in runs_kernel_vals if 3 in d]
+        if not ns_per_day_vals:
+            raise RuntimeError("Parser backend (GROMACS): no throughput values collected.")
+
+        LOG.write(f"[parser] gmx_ns_per_day = {mean(ns_per_day_vals):.6g}")
+        LOG.write(f"[parser] gmx_hour_per_ns = {mean(hour_per_ns_vals):.6g}")
+        LOG.write(f"[parser] gmx_ms_per_step = {mean(ms_per_step_vals):.6g}")
+        LOG.write(f"[parser] gmx_matom_steps_per_s = {mean(matom_steps_vals):.6g}")
+
+        clear_acpp_runtime_cache()
+        return {
+            "gmx_ns_per_day": float(mean(ns_per_day_vals)),
+            "gmx_hour_per_ns": float(mean(hour_per_ns_vals)) if hour_per_ns_vals else 0.0,
+            "gmx_ms_per_step": float(mean(ms_per_step_vals)) if ms_per_step_vals else 0.0,
+            "gmx_matom_steps_per_s": float(mean(matom_steps_vals)) if matom_steps_vals else 0.0,
+        }
+
+    # average across measured runs per kernel
+    all_kids = sorted({k for d in runs_kernel_vals for k in d.keys()})
+    # filter if user specified explicit kernel IDs
+    selected = all_kids
+    if getattr(pcfg, "kernels", None):
+        ks = set(int(x) for x in pcfg.kernels)
+        selected = [k for k in all_kids if k in ks]
+
+    per_kernel_avg: Dict[int, float] = {}
+    for k in selected:
+        vals = [d[k] for d in runs_kernel_vals if k in d]
+        if vals:
+            per_kernel_avg[k] = float(mean(vals))
+
+    if not per_kernel_avg:
+        raise RuntimeError("Parser backend (SYCL): selected kernels missing in output.")
+
+    # aggregate across selected kernels
+    aggregate_val = _wf_aggregate(list(per_kernel_avg.values()), pcfg.aggregate)
+
+    # build metrics dict
+    mets: Dict[str, float] = {}
+    for k, v in per_kernel_avg.items():
+        mets[f"sycl_kernel_{k}_{want_label}_s"] = v
+    mets[f"sycl_{want_label}_{pcfg.aggregate}_s"] = aggregate_val
+
+    if iterations_seen and all(i == iterations_seen[0] and i >= 0 for i in iterations_seen):
+        mets["sycl_iters"] = float(iterations_seen[0])
+
+    clear_acpp_runtime_cache()
+    return mets
 
 def run_wavefront_study(cfg: Config) -> None:
     """

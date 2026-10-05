@@ -6,6 +6,7 @@
 import itertools
 import shlex
 import sys
+import tempfile
 import hashlib, json, os
 from pathlib import Path
 from datetime import datetime
@@ -287,3 +288,66 @@ def unique_csv_path(path: Union[str, Path]) -> Path:
         candidate = p.with_stem(f"{p.stem}_{stamp}_{counter}")
         counter += 1
     return candidate
+
+def output_prefixes(program_args: Sequence[str], extra_globs: Sequence[str] = ()) -> List[str]:
+    """
+    Infer the output-file prefixes a measured program writes into its run cwd.
+
+    GROMACS names its outputs after ``-deffnm`` and refuses to overwrite them,
+    which breaks re-measuring a configuration after an interrupted run.
+    
+    ``extra_globs`` lets a config add its own patterns.
+    """
+    globs: List[str] = [str(g) for g in extra_globs if str(g).strip()]
+    args = _normalize_args(program_args)
+    for index, token in enumerate(args):
+        if token in {"-deffnm", "--deffnm"} and index + 1 < len(args):
+            globs.append(f"{args[index + 1]}.*")
+        elif token.startswith("-deffnm=") or token.startswith("--deffnm="):
+            globs.append(f"{token.split('=', 1)[1]}.*")
+    return list(dict.fromkeys(globs))
+
+def clean_run_outputs(
+    run_dir: Optional[Path],
+    program_args: Sequence[str] = (),
+    extra_globs: Sequence[str] = (),
+) -> List[Path]:
+    """
+    Remove stale outputs of an interrupted measurement so it can be repeated.
+
+    Only files matching inferred/configured patterns inside ``run_dir`` are
+    touched; everything else (logs, build artifacts) is left alone.
+    """
+    if run_dir is None:
+        return []
+    run_dir = Path(run_dir)
+    if not run_dir.is_dir():
+        return []
+    removed: List[Path] = []
+    for pattern in output_prefixes(program_args, extra_globs):
+        for path in sorted(run_dir.glob(pattern)):
+            if not path.is_file() or path.is_symlink():
+                continue
+            try:
+                path.unlink()
+                removed.append(path)
+            except OSError:
+                continue
+    return removed
+
+def save_run_output(stdout: str, stderr: str, *, prefix: str = "scout_run") -> Path:
+    """
+    Write a single run's stdout and stderr to a unique temp file and return its path.
+
+    The file is created in the system tempdir via tempfile.mkstemp so it is
+    unique per call even when many runs share the same working directory. The
+    returned Path is meant to be surfaced in the terminal so a failed run can
+    be inspected.
+    """
+    fd, path = tempfile.mkstemp(prefix=prefix, suffix=".log")
+    with os.fdopen(fd, "w") as fp:
+        fp.write(stdout or "")
+        if stderr:
+            fp.write("\n--- stderr ---\n")
+            fp.write(stderr)
+    return Path(path)

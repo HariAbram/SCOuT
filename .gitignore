@@ -61,3 +61,12 @@ configs/polyMorph/**/*-trials.csv
 configs/polyMorph/**/*-cache.jsonl
 configs/polyMorph/**/*-history.jsonl
 test-benchmarks/polyMorph/jscop-reports/
+
+venv
+targets
+ADH
+runfiles
+*.out
+*.sh
+*.sif
+*.state.json

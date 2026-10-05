@@ -19,6 +19,7 @@ SCOuT explores compiler and runtime configurations for a target program. Each ru
 - `src/evaluator.py`: shared build/evaluation cache and measurement dispatch
 - `src/metrics.py`: `perf`, `likwid`, and `parser` backends
 - `src/misc.py`: shared sampling and utility helpers
+- `src/stats.py`: runtime build/run/SCOuT timing, flushed periodically to CSV
 - `src/searchMethods/`: heuristic search implementations
 - `src/polyMorph/`: optional Tadashi-based SYCL transformation workflow
 
@@ -63,6 +64,19 @@ Common fields:
 - `objectives`
 - `search`
 - `runs`
+
+## Runtime statistics
+
+`src/stats.py` provides a process-wide `RuntimeStats` tracker. `Evaluator` records the time spent
+in build (`get_or_build`) and measurement (`evaluate`) calls, while the CLI entry point starts the
+session and writes the final summary. SCOuT's own overhead is the overall wall time minus build and
+run time. Cumulative snapshots are appended to a CSV (default `./scout_stats.csv`) at most every
+five seconds as work completes, plus a final row on exit. The location is resolved in this order:
+
+- `--stats-file` on the command line
+- the config's `stats_log`
+- the `SCOUT_STATS_FILE` environment variable
+- `./scout_stats.csv` in the current working directory
 
 ## Build and measurement
 

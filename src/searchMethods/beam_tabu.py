@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Iterable, Union
 import tempfile
+import os
 
 ###############################################################################
 # Local imports                                                               #
@@ -18,6 +19,7 @@ import tempfile
 from src.config import Config
 from src.evaluator import Evaluator
 from src.misc import unique_csv_path, is_significant_improvement, rel_gain
+from src.logger import LOG
 
 ###############################################################################
 # Type helpers                                                                #
@@ -194,6 +196,11 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     rng = random.Random(getattr(getattr(cfg, "search", object()), "random_seed", None))
     workroot = Path(tempfile.mkdtemp(prefix="SCOuT_beamtabu_"))
+
+    # If we are in a cluster environment with a TMPDIR, use that as the workroot instead of /tmp
+    if (os.getenv("TMPDIR")):
+        workroot = Path(os.getenv("TMPDIR")) / workroot.name
+    
     evaluator = Evaluator(cfg, workroot)
     atoms = _collect_atoms(cfg, bt)
     metric_name, goal = _choose_objective(cfg)
@@ -205,7 +212,7 @@ def run_beam_tabu_study(cfg: Config) -> None:
 
     # env combos
     env_combos = _env_combos(cfg, bt.env_mode, bt.env_cap, rng, fixed_env=bt.env)
-    print(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
+    LOG.log(f"[beam-tabu] workdir={workroot} atoms={len(atoms)} beam={bt.beam_width} iters={tb.max_iters} env_combos={len(env_combos)}")
 
     # Initial candidate = base_flags (atoms apply *on top* of this)
     base = tuple(dict.fromkeys(

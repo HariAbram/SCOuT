@@ -41,6 +41,13 @@ transformation and code-generation operations.
 - Single-source, CMake, and Make-based builds
 - Measurement backends: `perf`, `likwid`, and output parsing via `parser`
 - Search methods: Optuna, `wavefront`, `tabu`, `beam_tabu`, and `anneal`
+- Restartable tabu runs: results are journaled to CSV as they complete, and `--resume` continues an
+  interrupted run without rebuilding or re-measuring known configurations
+- Runtime statistics: build, target-run, and SCOuT wall-clock times are appended to
+  `scout_stats.csv` (override with `stats_log`, `$SCOUT_STATS_FILE`, or `--stats-file`)
+- Activity log: build commands, progress, and parser metrics are written to a `*.log`
+  file in the current directory, named after the config file (e.g. `config.json` ->
+  `config.log`)
 
 ## More details
 
