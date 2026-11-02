@@ -7,13 +7,21 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from statistics import mean, stdev
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from src import build
-from src.config import BuildProject, Config
+from src.config import BuildProject, Config, LikwidConfig, MetricSpec, ParserConfig, PerfConfig
 from src.evaluator import Evaluator
-from src.metrics import _SYCL_RE, _measurement_env
+from src.metrics import (
+    _SYCL_RE,
+    _measurement_env,
+    measure_likwid,
+    measure_parser_sycl,
+    measure_perf,
+    resolve_run_cwd,
+)
 from src.misc import _render_one_param
 from src.searchMethods.anneal_flags import _score as anneal_score
 
@@ -127,6 +135,79 @@ class ParameterTuningTests(unittest.TestCase):
         self.assertEqual(key, "--tile=16")
         self.assertEqual(flag, "--tile=16")
 
+    def test_run_cwd_resolver_options(self):
+        binary = self.root / "build" / "bin" / "program"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("x")
+        project = BuildProject(self.root, "cmake", target="program")
+
+        # default / process -> inherit SCOuT's cwd
+        self.assertIsNone(resolve_run_cwd("process", binary, self.root / "wd", project))
+        self.assertIsNone(resolve_run_cwd(None, binary, self.root / "wd", project))
+        self.assertEqual(resolve_run_cwd("binary_dir", binary, self.root / "wd", project), binary.parent)
+        self.assertEqual(resolve_run_cwd("project_dir", binary, self.root / "wd", project), self.root)
+        self.assertEqual(resolve_run_cwd("workdir", binary, self.root / "wd", project), self.root / "wd")
+        # unknown -> binary_dir, matching the parser fallback
+        self.assertEqual(resolve_run_cwd("whatever", binary, None, None), binary.parent)
+
+    def test_measure_perf_runs_in_configured_cwd(self):
+        binary = self.root / "build" / "bin" / "program"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("x")
+        seen = []
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            seen.append(cwd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="1000 cycles\n500 instructions\n")
+
+        with patch("src.metrics._run", fake_run):
+            measure_perf(
+                PerfConfig(events=["cycles", "instructions"], core_list=None, run_cwd="binary_dir"),
+                binary, ["-nsteps", "1"], {}, 1,
+                clear_runtime_cache=False,
+            )
+        self.assertEqual(seen, [binary.parent])
+
+        seen.clear()
+        with patch("src.metrics._run", fake_run):
+            measure_perf(
+                PerfConfig(events=["cycles"], core_list=None),
+                binary, [], {}, 1,
+                clear_runtime_cache=False,
+            )
+        self.assertEqual(seen, [None])  # None -> child inherits SCOuT's cwd
+
+    def test_measure_likwid_runs_in_configured_cwd(self):
+        binary = self.root / "build" / "bin" / "program"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("x")
+        seen = []
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            seen.append(cwd)
+            return SimpleNamespace(returncode=0, stdout="| cycles | 100 |\n", stderr="")
+
+        likwid = LikwidConfig(
+            group=None, events=["cycles"], metrics=[MetricSpec(name="cycles")],
+            core_list=None, run_cwd="workdir",
+        )
+        with patch("src.metrics._run", fake_run):
+            measure_likwid(
+                likwid, binary, [], {}, 1,
+                workdir=self.root / "wd", clear_runtime_cache=False,
+            )
+        self.assertEqual(seen, [self.root / "wd"])
+
+    def test_run_cwd_config_is_validated(self):
+        cfg = Config.load(self.write_config(perf={"events": ["cycles"], "run_cwd": "binary_dir"}))
+        self.assertEqual(cfg.perf.run_cwd, "binary_dir")
+        self.assertEqual(
+            Config.load(self.write_config(perf={"events": ["cycles"]})).perf.run_cwd,
+            "process",
+        )
+        with self.assertRaisesRegex(ValueError, "run_cwd"):
+            Config.load(self.write_config(perf={"events": ["cycles"], "run_cwd": "nonsense"}))
+
     def test_parser_accepts_scientific_notation(self):
         match = _SYCL_RE.search("[SYCL][avg] kernel 2: 1.25e-06 s over 10 iters")
         self.assertIsNotNone(match)
@@ -184,6 +265,146 @@ assert 'src.polyMorph.runner' not in sys.modules
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    # ------------------------------------------------------------------
+    # Standard deviation across measurement runs (sample stdev, <metric>_stdev)
+    # ------------------------------------------------------------------
+    def test_measure_perf_reports_run_stdev(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+        counts = [1000.0, 1100.0, 1300.0]
+        calls = {"i": 0}
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            val = counts[calls["i"] % len(counts)]
+            calls["i"] += 1
+            return SimpleNamespace(returncode=0, stdout="", stderr=f"{int(val)} cycles\n500 instructions\n")
+
+        with patch("src.metrics._run", fake_run):
+            mets = measure_perf(
+                PerfConfig(events=["cycles", "instructions"], core_list=None),
+                binary, [], {}, 3, clear_runtime_cache=False,
+            )
+
+        self.assertAlmostEqual(mets["cycles"], mean(counts))
+        self.assertAlmostEqual(mets["cycles_stdev"], stdev(counts))
+        # Constant metric still reports a (zero) stddev once there are 2+ samples.
+        self.assertEqual(mets["instructions_stdev"], 0.0)
+
+    def test_measure_perf_single_run_omits_stdev(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            return SimpleNamespace(returncode=0, stdout="", stderr="1000 cycles\n")
+
+        with patch("src.metrics._run", fake_run):
+            mets = measure_perf(
+                PerfConfig(events=["cycles"], core_list=None),
+                binary, [], {}, 1, clear_runtime_cache=False,
+            )
+
+        self.assertIn("cycles", mets)
+        self.assertNotIn("cycles_stdev", mets)
+
+    def test_measure_likwid_reports_run_stdev(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+        values = [10.0, 20.0, 40.0]
+        calls = {"i": 0}
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            val = values[calls["i"] % len(values)]
+            calls["i"] += 1
+            return SimpleNamespace(returncode=0, stdout=f"| cycles | {val} |\n", stderr="")
+
+        likwid = LikwidConfig(
+            group=None, events=["cycles"], metrics=[MetricSpec(name="cycles")], core_list=None,
+        )
+        with patch("src.metrics._run", fake_run):
+            mets = measure_likwid(likwid, binary, [], {}, 3, clear_runtime_cache=False)
+
+        self.assertAlmostEqual(mets["cycles"], mean(values))
+        self.assertAlmostEqual(mets["cycles_stdev"], stdev(values))
+
+    def test_measure_parser_gromacs_reports_run_stdev(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+        values = [100.0, 120.0, 140.0]
+        calls = {"i": 0}
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            val = values[calls["i"] % len(values)]
+            calls["i"] += 1
+            return SimpleNamespace(returncode=0, stdout=f"Performance: {val} 0.1 0.2 0.3\n", stderr="")
+
+        cfg = ParserConfig(format="gromacs", run_cwd="binary_dir")
+        with patch("src.metrics._run", fake_run):
+            mets = measure_parser_sycl(cfg, binary, [], {}, 3, clear_runtime_cache=False)
+
+        self.assertAlmostEqual(mets["gmx_ns_per_day"], mean(values))
+        self.assertAlmostEqual(mets["gmx_ns_per_day_stdev"], stdev(values))
+
+    def _write_gmx_device_log(self, mapping):
+        (self.root / "scout.log").write_text(
+            "  GPU info:\n"
+            "    Number of GPUs detected: 2\n"
+            "    #0: name: AdaptiveCpp OpenMP host device, vendor: the AdaptiveCpp project, "
+            "device version: AdaptiveCpp 25.10, driver version: 1.2, status: compatible\n"
+            "    #1: name: cpu-skylake-avx512-AMD EPYC 9354 32-Core Processor, vendor: AuthenticAMD, "
+            "device version: OpenCL 3.0 PoCL HSTR: cpu-x86_64, driver version: 6.0, status: compatible\n"
+            "\n"
+            "1 GPU selected for this run.\n"
+            "Mapping of GPU IDs to the 1 GPU task in the 1 rank on this node:\n"
+            f"  {mapping}\n"
+            "PP tasks will do (non-perturbed) short-ranged interactions on the GPU\n"
+        )
+
+    def test_gromacs_device_report_checks_selected_device(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            return SimpleNamespace(returncode=0, stdout="Performance: 1.0 0.1 0.2 0.3\n", stderr="acpp debug")
+
+        args = ["mdrun", "-deffnm", "scout"]
+        cfg = ParserConfig(format="gromacs", run_cwd="binary_dir", expect_device="PoCL")
+        self._write_gmx_device_log("PP:1")
+        with patch("src.metrics._run", fake_run):
+            mets = measure_parser_sycl(cfg, binary, args, {}, 1, workdir=self.root, clear_runtime_cache=False)
+        self.assertAlmostEqual(mets["gmx_ns_per_day"], 1.0)
+        self.assertEqual((self.root / "parser_logs" / "device_run.err").read_text(), "acpp debug")
+
+        self._write_gmx_device_log("PP:0")
+        with patch("src.metrics._run", fake_run), self.assertRaisesRegex(RuntimeError, "OpenMP host device"):
+            measure_parser_sycl(cfg, binary, args, {}, 1, workdir=self.root, clear_runtime_cache=False)
+
+        (self.root / "scout.log").write_text("  GPU info:\n    Number of GPUs detected: 0\n\n")
+        with patch("src.metrics._run", fake_run), self.assertRaisesRegex(RuntimeError, "no GPU tasks"):
+            measure_parser_sycl(cfg, binary, args, {}, 1, workdir=self.root, clear_runtime_cache=False)
+
+    def test_measure_parser_sycl_reports_run_stdev(self):
+        binary = self.root / "program"
+        binary.write_text("x")
+        values = [0.001, 0.002, 0.004]
+        calls = {"i": 0}
+
+        def fake_run(cmd, *, cwd=None, env=None):
+            val = values[calls["i"] % len(values)]
+            calls["i"] += 1
+            return SimpleNamespace(
+                returncode=0, stdout=f"[SYCL][avg] kernel 1: {val} s over 10 iters\n", stderr=""
+            )
+
+        cfg = ParserConfig(format="sycl", aggregate="sum", run_cwd="binary_dir")
+        with patch("src.metrics._run", fake_run):
+            mets = measure_parser_sycl(cfg, binary, [], {}, 3, clear_runtime_cache=False)
+
+        self.assertAlmostEqual(mets["sycl_kernel_1_avg_s"], mean(values))
+        self.assertAlmostEqual(mets["sycl_kernel_1_avg_s_stdev"], stdev(values))
+        self.assertAlmostEqual(mets["sycl_avg_sum_s"], mean(values))
+        self.assertAlmostEqual(mets["sycl_avg_sum_s_stdev"], stdev(values))
+        self.assertNotIn("sycl_iters_stdev", mets)
 
 
 if __name__ == "__main__":

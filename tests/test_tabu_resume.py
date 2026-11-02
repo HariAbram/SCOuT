@@ -21,7 +21,11 @@ from src.checkpoint import (
 from src.config import Config
 from src.evaluator import Evaluator
 from src.misc import clean_run_outputs, output_prefixes
-from src.searchMethods.tabu_flags import run_tabu_study
+from src.searchMethods.tabu_flags import (
+    _effective_signature,
+    _render_flags,
+    run_tabu_study,
+)
 
 
 def _fake_value(binary: str, env: dict) -> float:
@@ -131,9 +135,10 @@ class TabuResumeTests(unittest.TestCase):
         self.assertEqual(self.read_state()["search"]["iteration"], 2)
 
     def test_resume_continues_and_reuses_recorded_results(self):
-        cfg = self.load()
+        # A larger pool keeps the search from exhausting the space, so four real
+        # (non-equivalent) iterations are available.
+        cfg = self.load(compiler_flag_pool=["-ffast-math", "-funroll-loops", "-fstrict-aliasing"])
         self.run_study(cfg, iters=2)
-        first_measures = self.calls["measure"]
         rows_before = self.read_rows()
 
         self.run_study(cfg, resume=True, iters=4)
@@ -144,7 +149,8 @@ class TabuResumeTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(len(rows_after), self.calls["measure"])
         self.assertGreater(len(rows_after), len(rows_before))
-        self.assertLess(len(rows_after) - len(rows_before), first_measures)
+        # Resume reuses earlier results instead of re-measuring them.
+        self.assertEqual(rows_after[: len(rows_before)], rows_before)
 
         state = self.read_state()["search"]
         self.assertEqual(state["iteration"], 4)
@@ -166,7 +172,7 @@ class TabuResumeTests(unittest.TestCase):
         self.assertEqual(self.calls["build"], builds)
 
     def test_missing_state_file_keeps_recorded_results(self):
-        cfg = self.load()
+        cfg = self.load(compiler_flag_pool=["-ffast-math", "-funroll-loops", "-fstrict-aliasing"])
         self.run_study(cfg, iters=2)
         rows_before = len(self.read_rows())
         (self.root / "tabu.state.json").unlink()
@@ -198,7 +204,9 @@ class TabuResumeTests(unittest.TestCase):
         self.assertEqual(self.read_state()["search"]["iteration"], 1)
 
     def test_budget_modes(self):
-        cfg = self.load()
+        # A pool large enough that three real (non-equivalent) iterations are
+        # available; the tiny default pool can be exhausted and then stall.
+        cfg = self.load(compiler_flag_pool=["-ffast-math", "-funroll-loops", "-fstrict-aliasing"])
         self.run_study(cfg, iters=1, budget="lifetime")
         self.assertEqual(self.read_state()["search"]["iteration"], 1)
 
@@ -230,6 +238,130 @@ class TabuResumeTests(unittest.TestCase):
         state = self.read_state()["search"]
         self.assertLess(state["iteration"], 20)
         self.assertTrue((self.root / "tabu.state.json").is_file())
+
+    def test_flag_constraints_prevent_conflicting_pool_flags(self):
+        cfg = self.load(
+            compiler_flag_pool=["-funroll-loops", "-fno-unroll-loops"],
+            flag_constraints={"exclusive": [["-funroll-loops", "-fno-unroll-loops"]]},
+            tabu={
+                "max_iters": 8, "max_no_improve": 20, "tabu_tenure": 4,
+                "neighborhood": 6, "allow_variant_moves": False,
+                "allow_param_moves": False, "allow_pool_moves": True,
+                "allow_env_moves": False, "env_mode": "fixed", "env": {},
+                "results_csv": str(self.root / "tabu.csv"),
+            },
+        )
+        self.run_study(cfg, iters=8)
+        rows = self.read_rows()
+        self.assertTrue(rows)
+        for row in rows:
+            tokens = set((row["compiler_flags"] or "").split("|"))
+            self.assertFalse(
+                {"-funroll-loops", "-fno-unroll-loops"} <= tokens,
+                row["compiler_flags"],
+            )
+
+    def test_flag_constraints_drop_flags_implied_by_variant(self):
+        cfg = self.load(
+            compiler_flags=["-O3"],
+            compiler_flag_pool=["-funroll-loops", "-fno-unroll-loops"],
+            flag_constraints={"implies": {"-O3": ["-funroll-loops"]}},
+            tabu={
+                "max_iters": 4, "max_no_improve": 20, "tabu_tenure": 4,
+                "neighborhood": 6, "allow_variant_moves": True,
+                "allow_param_moves": False, "allow_pool_moves": True,
+                "allow_env_moves": False, "env_mode": "fixed", "env": {},
+                "results_csv": str(self.root / "tabu.csv"),
+            },
+        )
+        self.run_study(cfg, iters=4)
+        rows = self.read_rows()
+        self.assertTrue(rows)
+        for row in rows:
+            tokens = set((row["compiler_flags"] or "").split("|"))
+            self.assertIn("-O3", tokens)
+            self.assertNotIn("-funroll-loops", tokens)
+
+    def test_equivalent_node_reuses_result_without_counting(self):
+        cfg = self.load(
+            compiler_flags_base="-O3",
+            compiler_flags=[],
+            compiler_flag_pool=["-funroll-loops"],
+            flag_constraints={"implies": {"-O3": ["-funroll-loops"]}},
+            tabu={
+                "max_iters": 10, "max_no_improve": 20, "max_skips": 3,
+                "tabu_tenure": 1, "neighborhood": 4,
+                "allow_variant_moves": False, "allow_param_moves": False,
+                "allow_pool_moves": True, "allow_env_moves": False,
+                "env_mode": "fixed", "env": {},
+                "results_csv": str(self.root / "tabu.csv"),
+            },
+        )
+        self.run_study(cfg, iters=10)
+        # Only the baseline effective configuration (-O3) is ever measured:
+        # "-O3 -funroll-loops" is equivalent because -O3 implies -funroll-loops.
+        self.assertEqual(len(self.read_rows()), 1)
+        self.assertEqual(self.calls["measure"], 1)
+        # Equivalent nodes are still traversed but do not count as iterations.
+        self.assertEqual(self.read_state()["search"]["iteration"], 0)
+
+    def test_multitoken_pool_entries_are_not_tokenised(self):
+        cfg = self.load(
+            compiler_flag_pool=[
+                "-mllvm -force-vector-interleave={2,4,8,16}",
+                "-mllvm -enable-loopinterchange",
+            ],
+            flag_constraints={"exclusive": [["-funroll-loops", "-fno-unroll-loops"]]},
+        )
+        entries = [
+            "-O2",
+            "-mllvm -enable-loop-flatten",
+            "-mllvm -enable-unroll-and-jam",
+        ]
+        # Entries are opaque: a pool item that contains a space must survive
+        # intact, including its repeated '-mllvm'.
+        self.assertEqual(list(_effective_signature(cfg, entries)), entries)
+
+        key, flags_str, parts = _render_flags(cfg, "", "-O2", {}, entries[1:])
+        self.assertEqual(parts, entries)
+        self.assertEqual(flags_str.count("-mllvm"), 2)
+        self.assertIn("-mllvm -enable-loop-flatten", key)
+        self.assertIn("-mllvm -enable-unroll-and-jam", key)
+
+    def test_multitoken_entries_survive_into_results_csv(self):
+        cfg = self.load(
+            compiler_flag_pool=[
+                "-mllvm -enable-loop-flatten",
+                "-mllvm -enable-unroll-and-jam",
+            ],
+            flag_constraints={"exclusive": [["-funroll-loops", "-fno-unroll-loops"]]},
+            tabu={
+                "max_iters": 4, "max_no_improve": 20, "tabu_tenure": 4,
+                "neighborhood": 6, "allow_variant_moves": False,
+                "allow_param_moves": False, "allow_pool_moves": True,
+                "allow_env_moves": False, "env_mode": "fixed", "env": {},
+                "results_csv": str(self.root / "tabu.csv"),
+            },
+        )
+        self.run_study(cfg, iters=4)
+        rows = self.read_rows()
+        self.assertTrue(rows)
+        for row in rows:
+            key = row["compiler_flags"] or ""
+            # Every generated configuration keeps the full multi-token entry.
+            if "-enable-loop-flatten" in key:
+                self.assertIn("-mllvm -enable-loop-flatten", key)
+            if "-enable-unroll-and-jam" in key:
+                self.assertIn("-mllvm -enable-unroll-and-jam", key)
+
+    def test_resume_refuses_changed_flag_constraints(self):
+        self.run_study(
+            self.load(flag_constraints={"exclusive": [["-funroll-loops", "-fno-unroll-loops"]]}),
+            iters=1,
+        )
+        changed = self.load(flag_constraints={"exclusive": [["-ffast-math", "-fno-fast-math"]]})
+        with self.assertRaises(SystemExit):
+            self.run_study(changed, resume=True, iters=2)
 
     def test_invalid_budget_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -291,6 +423,62 @@ class TabuResumeTests(unittest.TestCase):
             header = next(csv.reader(fp))
         self.assertIn("cycles", header)
         self.assertIn("instructions", header)
+
+    def test_objective_stdev_is_recorded_in_the_results_csv(self):
+        def measure_with_stdev(_cfg, _binary, _args, env, _runs, **_kwargs):
+            return {"CPI": _fake_value(str(_binary), env), "CPI_stdev": 0.125}
+
+        with patch("src.evaluator.measure_perf", measure_with_stdev):
+            self.run_study(self.load(), iters=2)
+
+        rows = self.read_rows()
+        self.assertTrue(rows)
+        self.assertIn("CPI_stdev", rows[0])
+        for row in rows:
+            self.assertAlmostEqual(float(row["CPI_stdev"]), 0.125)
+        # The stddev is an extra column next to the objective, not a replacement.
+        with open(self.root / "tabu.csv", newline="") as fp:
+            header = next(csv.reader(fp))
+        self.assertIn("CPI", header)
+        self.assertIn("CPI_stdev", header)
+
+    def test_objective_stdev_survives_resume(self):
+        def measure_with_stdev(_cfg, _binary, _args, env, _runs, **_kwargs):
+            return {"CPI": _fake_value(str(_binary), env), "CPI_stdev": 0.5}
+
+        with patch("src.evaluator.measure_perf", measure_with_stdev):
+            cfg = self.load(compiler_flag_pool=["-ffast-math", "-funroll-loops", "-fstrict-aliasing"])
+            self.run_study(cfg, iters=2)
+            self.run_study(cfg, resume=True, iters=4)
+
+        rows = self.read_rows()
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertIn("CPI_stdev", row)
+
+    def test_journal_round_trips_metric_stdev(self):
+        journal = RunJournal(
+            self.root / "s.csv",
+            objective_metrics=["CPI"],
+            failure_path=self.root / "s_failed.csv",
+        )
+        journal.append(
+            EvalRecord(
+                k=0, eval_id="e1", value=1.0, flags_key="-O2", flags="-O2",
+                env={"MODE": "a"}, binary="/tmp/bin", compile_key="c0",
+                metrics={"CPI": 1.0, "CPI_stdev": 0.01},
+            )
+        )
+        reopened = RunJournal(
+            self.root / "s.csv",
+            objective_metrics=["CPI"],
+            failure_path=self.root / "s_failed.csv",
+        )
+        reopened.load()
+        with open(self.root / "s.csv", newline="") as fp:
+            header = next(csv.reader(fp))
+        self.assertIn("CPI_stdev", header)
+        self.assertAlmostEqual(reopened.lookup("e1").metrics["CPI_stdev"], 0.01)
 
     def test_eval_id_identifies_flags_and_environment(self):
         self.assertEqual(eval_id("k", {"A": "1", "B": "2"}), eval_id("k", {"B": "2", "A": "1"}))

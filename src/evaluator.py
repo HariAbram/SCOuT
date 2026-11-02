@@ -20,6 +20,15 @@ from src.stats import STATS
 MetricDict = Dict[str, float]
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True when ``path`` resolves to a location inside ``root``."""
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
 @dataclass(frozen=True)
 class Evaluation:
     metrics: MetricDict
@@ -210,6 +219,11 @@ class Evaluator:
             # Old tree under this key: rebuild from scratch instead of
             # inheriting a mismatched incremental build.
             shutil.rmtree(build_dir, ignore_errors=True)
+            # Drop in-memory entries pointing into the removed tree so a later
+            # request cannot be served a path that no longer belongs to its key.
+            for cached_key, cached_path in list(self._build_cache.items()):
+                if _is_within(cached_path, build_dir):
+                    del self._build_cache[cached_key]
 
         build_dir.mkdir(parents=True, exist_ok=True)
         normalized = self.normalize_flags(flags)
@@ -239,8 +253,15 @@ class Evaluator:
             artifact.chmod(artifact.stat().st_mode | 0o111)
         else:
             artifact = binary
-        self._write_build_meta(build_dir, key, flags_str, artifact) # Write build metadata to disk for future reuse
-        self._build_cache[key] = artifact
+
+        # Only artifacts that live inside this key's build directory may be cached
+        # or persisted. A raw build output elsewhere (for example a "gmx" binary
+        # produced by make, or an absolute project.executable) is shared between
+        # configurations: a later build would overwrite it, so serving it from the
+        # in-memory build cache would hand one configuration another's binary.
+        if _is_within(artifact, build_dir):
+            self._write_build_meta(build_dir, key, flags_str, artifact)  # allow future reuse
+            self._build_cache[key] = artifact
         return key, artifact
 
     def evaluate(self, flags: str | Sequence[str], env: Dict[str, str], run_workdir: Path) -> Evaluation:
@@ -260,6 +281,7 @@ class Evaluator:
             if self.cfg.backend == "perf":
                 metrics = measure_perf(
                     self.cfg.perf, binary, self.cfg.program_args, env, self.cfg.runs,
+                    workdir=run_workdir, project=self.cfg.project,
                     clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
                 )
             elif self.cfg.backend == "parser":
@@ -271,6 +293,7 @@ class Evaluator:
             else:
                 metrics = measure_likwid(
                     self.cfg.likwid, binary, self.cfg.program_args, env, self.cfg.runs,
+                    workdir=run_workdir, project=self.cfg.project,
                     clear_runtime_cache=clear_runtime, managed_env_keys=managed_keys,
                 )
 

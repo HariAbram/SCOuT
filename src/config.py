@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 from statistics import mean, variance
@@ -19,11 +20,29 @@ Number = float
 EnvMap = Dict[str, str]
 MetricDict = Dict[str, Number]
 
+# Working directory options for a measured program.
+#   process     - inherit SCOuT's own working directory (legacy default)
+#   binary_dir  - the directory holding the built executable (parser default)
+#   project_dir - the configured project directory
+#   workdir     - the per-evaluation scratch directory
+RUN_CWD_MODES = ("process", "cwd", "binary_dir", "project_dir", "workdir")
+
+
+def _validate_run_cwd(value: Any, *, block: str) -> str:
+    mode = str(value if value is not None else "process").strip().lower()
+    if mode not in RUN_CWD_MODES:
+        raise ValueError(
+            f"{block}.run_cwd must be one of {', '.join(RUN_CWD_MODES)} (got {value!r})"
+        )
+    return mode
+
 ###############################################################################
 # Local imports                                                               #
 ###############################################################################
 
 from src.misc import _normalize_args
+from src.flag_constraints import FlagConstraints
+from src.logger import LOG
 
 ###############################################################################
 # Data‑classes for strongly‑typed config handling                             #
@@ -48,14 +67,17 @@ class PerfConfig:
     events: List[str]
     core_list: Optional[str]
     warmup_runs: int = 0
-    
+    # Working directory of the measured program. "process" (default) keeps
+    # SCOuT's own cwd; "binary_dir" mirrors the parser backend.
+    run_cwd: Optional[str] = "process"
 
     @classmethod
     def from_dict(cls, d: Dict) -> "PerfConfig":
         return cls(
             events=d.get("events", ["cycles", "instructions"]),
             core_list=d.get("core_list"),
-            warmup_runs=int(d.get("warmup_runs", 0))
+            warmup_runs=int(d.get("warmup_runs", 0)),
+            run_cwd=_validate_run_cwd(d.get("run_cwd"), block="perf"),
         )
 
 
@@ -94,6 +116,13 @@ class ParserConfig:
     prefix: Optional[List[str]] = None # e.g. ["numactl","-N","0","-m","0"]
     run_cwd: str = "binary_dir"        # "binary_dir" | "project_dir" | "workdir"
 
+    # GROMACS only: after the first run, print which SYCL device mdrun mapped its
+    # GPU tasks to (parsed from the mdrun .log) and keep that run's stdout/stderr.
+    device_report: bool = False
+    # GROMACS only: regex that every selected device line must match, e.g.
+    # "Portable Computing Language|cpu-.*" for PoCL; implies device_report.
+    expect_device: Optional[str] = None
+
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ParserConfig":
         return cls(
@@ -105,6 +134,8 @@ class ParserConfig:
             prefix=d.get("prefix"),
             run_cwd=d.get("run_cwd", "binary_dir"),
             warmup_runs=int(d.get("warmup_runs", 0)),
+            device_report=bool(d.get("device_report", False)),
+            expect_device=d.get("expect_device"),
         )
 
 @dataclasses.dataclass
@@ -114,6 +145,8 @@ class LikwidConfig:
     metrics: List[MetricSpec]
     core_list: Optional[str]
     warmup_runs: int = 0
+    # Same working-directory options as the perf backend.
+    run_cwd: Optional[str] = "process"
 
     @classmethod
     def from_dict(cls, d: Dict) -> "LikwidConfig":
@@ -136,6 +169,7 @@ class LikwidConfig:
             metrics=metrics,
             core_list=d.get("core_list"),
             warmup_runs=int(d.get("warmup_runs", 0)),
+            run_cwd=_validate_run_cwd(d.get("run_cwd"), block="likwid"),
         )
 
 
@@ -170,6 +204,16 @@ class BuildProject:
             cmake_flag_vars=d.get("cmake_flag_vars", ["CMAKE_CXX_FLAGS"]),
             cmake_defs=d.get("cmake_defs", []),
         )
+
+    # ``dir`` and ``cmake_defs`` may reference environment variables such as
+    # $TMPDIR (e.g. a per-job, node-local source copy). They are kept unexpanded
+    # so compile keys and the resume fingerprint stay stable across jobs, and
+    # are only expanded where the build actually uses them.
+    def resolved_dir(self) -> Path:
+        return Path(os.path.expandvars(str(self.dir)))
+
+    def resolved_cmake_defs(self) -> List[str]:
+        return [os.path.expandvars(d) for d in self.cmake_defs]
 
 
 @dataclasses.dataclass
@@ -467,6 +511,9 @@ class Config:
     # Build/run/runtime statistics CSV (default: ./scout_stats.csv)
     stats_log: Optional[str] = None
 
+    # Declarative rules over flag combinations (exclusive groups / implied flags)
+    flag_constraints: FlagConstraints = dataclasses.field(default_factory=FlagConstraints)
+
     # Wavefront
     wavefront: Optional[WavefrontSpec] = None
     #tabu
@@ -529,6 +576,14 @@ class Config:
             raw.get("compiler_params_select", {}),
             list(compiler_params.keys())
         )
+
+        # Declarative flag constraints (exclusive groups / implied flags)
+        flag_constraints = FlagConstraints.from_dict(raw.get("flag_constraints"))
+
+        # Exclusive-group members are part of the flag space implicitly; they do
+        # not need to be repeated in compiler_flag_pool. ``implies`` values do.
+        raw_flag_pool = [str(flag) for flag in (raw.get("compiler_flag_pool", []) or [])]
+        flag_pool = flag_constraints.expand_pool(raw_flag_pool)
 
         # Environment space
         env_schema = raw.get("env")
@@ -604,13 +659,22 @@ class Config:
         loaded_source = Path(source) if source else None
         if loaded_source is not None and not loaded_source.is_file():
             raise ValueError(f"source does not exist: {loaded_source}")
-        if loaded_project is not None and not loaded_project.dir.is_dir():
-            raise ValueError(f"project.dir does not exist: {loaded_project.dir}")
+        if loaded_project is not None and not loaded_project.resolved_dir().is_dir():
+            raise ValueError(f"project.dir does not exist: {loaded_project.resolved_dir()}")
         if loaded_project is not None and loaded_project.executable is None:
             raise ValueError(
                 "project.executable is required; build target names such as 'all' "
                 "do not identify the runnable file"
             )
+
+        if not flag_constraints.is_empty:
+            raw_flags = raw.get("compiler_flags", []) or []
+            if isinstance(raw_flags, dict):
+                raw_flags = list(raw_flags.values())
+            universe = {str(flag) for flag in raw_flags}
+            universe |= {str(flag) for flag in flag_pool}
+            for message in flag_constraints.validate_against(universe):
+                LOG.log(f"[config] warning: {message}")
 
         return cls(
             backend=backend,
@@ -621,7 +685,7 @@ class Config:
             compiler_flags=raw.get("compiler_flags", []),
             compiler_params = compiler_params,
             compiler_params_select = compiler_params_select,
-            compiler_flag_pool  = raw.get("compiler_flag_pool", []),
+            compiler_flag_pool  = flag_pool,
             program_args=program_args,
             env=env_schema,
             perf=PerfConfig.from_dict(raw.get("perf", {})) if backend == "perf" else None,
@@ -636,6 +700,7 @@ class Config:
             beam_tabu=raw.get("beam_tabu", {}) or {},
             anneal=anneal,
             poly_morph=poly_morph,
+            flag_constraints=flag_constraints,
             runs=runs,
             csv_log=raw.get("csv_log"),
             pareto_log=raw.get("pareto_log"),

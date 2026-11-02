@@ -186,10 +186,10 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
     if cfg.build_system == "cmake":
         build_dir = workdir / f"cmake_{uuid.uuid4().hex[:8]}"
         build_dir.mkdir()
-        defs = cfg.cmake_defs
+        defs = cfg.resolved_cmake_defs()
 
         cmake_cmd = [
-            "cmake", "-S", str(cfg.dir), "-B", str(build_dir),
+            "cmake", "-S", str(cfg.resolved_dir()), "-B", str(build_dir),
              f"-DCMAKE_CXX_COMPILER={compiler}",
              "-DCMAKE_BUILD_TYPE=Release"
             ] 
@@ -226,11 +226,26 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
         return binary
 
     if cfg.build_system == "make":
-        clean = _run(["make", "clean"], cwd=cfg.dir)
+        project_dir = cfg.resolved_dir()
+        clean = _run(["make", "clean"], cwd=project_dir)
         if clean.returncode:
             _save_log(workdir, trial, "make_clean", clean)
             return None
-        build_cmd = ["make", f"CXX={compiler}"]
+
+        # Remove a previously built, explicitly declared target. The project's own
+        # clean target may not remove it, and because compiler flags are passed as
+        # make variables (not file changes), make could otherwise treat the old
+        # binary as up to date and hand back a previous run's artifact.
+        stale = _declared_executable_path(cfg, project_dir)
+        if stale is not None and (stale.is_file() or stale.is_symlink()):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+        # ``--always-make`` forces recompilation/relinking regardless of timestamps,
+        # so the returned binary always reflects this configuration's flags.
+        build_cmd = ["make", "--always-make", f"CXX={compiler}"]
         if cfg.build_jobs and cfg.build_jobs > 0:
             build_cmd.append(f"-j{cfg.build_jobs}")
         else:
@@ -243,18 +258,31 @@ def compile_project(cfg: BuildProject, compiler: str, flags: str, workdir: Path,
         if cfg.target:
             build_cmd.append(cfg.target)
 
-        proc = _run(build_cmd, cwd=cfg.dir)
+        proc = _run(build_cmd, cwd=project_dir)
         if proc.returncode:
             log_dir = _save_log(workdir, trial, "make", proc)
             _report_build_failure("make", proc, log_dir)
             return None
         
-        binary = _resolve_project_executable(cfg, cfg.dir)
+        binary = _resolve_project_executable(cfg, project_dir)
         if binary is None:
             _save_message(workdir, trial, "make_artifact", "Build succeeded but no executable was found")
         return binary
 
     raise ValueError(f"unknown build_system '{cfg.build_system}'")
+
+def _declared_executable_path(cfg: BuildProject, build_root: Path) -> Optional[Path]:
+    """Path of the explicitly configured executable/target, or None.
+
+    Unlike :func:`_resolve_project_executable` this never searches the build tree,
+    so it is safe to use for deleting a specific, configured artifact.
+    """
+    if cfg.executable:
+        return cfg.executable if cfg.executable.is_absolute() else build_root / cfg.executable
+    if cfg.target:
+        return build_root / cfg.target
+    return None
+
 
 def _resolve_project_executable(cfg: BuildProject, build_root: Path) -> Optional[Path]:
     """Resolve the runnable artifact independently from the build target name."""
